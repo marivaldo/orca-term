@@ -23,13 +23,16 @@ SSH. Fechado no charting de propósito, pra o mapa não crescer pra sempre.
 
 ## Fatos do ambiente que mudam decisões
 
+> Dois fatos desta tabela estavam errados e foram corrigidos em 2026-10-07 pelas pesquisas do mapa.
+> O charting partiu deles, então a correção fica visível em vez de reescrita em silêncio.
+
 | Fato | Por que importa |
 | --- | --- |
-| kitty com `allow_remote_control yes`, tmux instalado, ghostty também | Duas superfícies de multiplexação possíveis, não só tmux. É decisão real. |
+| kitty com `allow_remote_control yes` mas `listen_on` no default `none`, tmux instalado, ghostty **não** instalado | **Fato corrigido.** A premissa de "duas superfícies possíveis" era falsa: sem `listen_on` o kitty não tem socket e não é dirigível, e o ghostty era só um symlink órfão de cask. Medido na issue #2: a multiplexação é tmux. |
 | `sindrets/diffview.nvim` + `git-delta` + `lazygit` já em uso | O review pode ser extensão do que já existe em vez de camada nova. |
 | nvim é LazyVim, config enxuta (6 plugins próprios) | Plugin novo entra fácil; não há arquitetura própria competindo. |
 | Agentes instalados: `claude-code` e `opencode` | "Qualquer CLI agent" é promessa caríssima. O universo real hoje são dois. |
-| fish como shell; rust, node e pnpm disponíveis | Linguagem do core é aberta; fish importa porque não é POSIX e glue script quebra. |
+| fish como shell; rust e node disponíveis, mas `pnpm` **não roda** no node v22.5.1 instalado (exige v22.13+) | **Fato corrigido** na issue #3. Linguagem do core segue aberta, e escolher Node implica upgrade de node antes. fish importa porque não é POSIX: todo `shell-command` do tmux roda sob `/bin/sh`, nunca sob fish. |
 
 ## Os 10 focos de névoa
 
