@@ -9,12 +9,18 @@ document in this repo is written in.
 **Lane**:
 The unit a person creates, names, lists and switches between: one tracked git worktree together
 with at most one agent and its session. A lane is identified by the path of its worktree, and its
-name is that directory's basename. A lane with no agent attached is still a lane.
+name is that directory's basename. A lane with no agent attached is still a lane. The primary
+checkout is never a lane.
 _Avoid_: unit, task, workspace, slot, station, tab
 
 **Fleet**:
 Every lane of one repository. No fleet spans repositories.
 _Avoid_: swarm, pool, roster
+
+**Primary checkout**:
+The repository's main worktree, the one the person works in. It is listed by git alongside the
+lanes but is not one of them, so no agent runs in it.
+_Avoid_: main lane, root lane, base worktree
 
 **Agent**:
 The CLI program driven in a lane — `claude-code` or `opencode`. An agent is a mutable attribute of
