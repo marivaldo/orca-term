@@ -33,8 +33,9 @@ session, and holds it mutably: discarding a conversation starts a new session on
 _Avoid_: run, thread, conversation, chat
 
 **Turn**:
-One cycle of prompt → response → diff inside a session. A turn is what the core is invoked for,
-and what a change's authorship is attributed to — never the lane, whose agent can change.
+One cycle of prompt → response → diff inside a session, whether the core drives it or the person
+does under takeover. A turn is what a change's authorship is attributed to — never the lane, whose
+agent can change. Edits the person makes between turns belong to no turn.
 _Avoid_: run, round, iteration, request
 
 **Unseen**:

@@ -32,7 +32,9 @@ measurements.
 ## Consequences
 
 - **State dies with the lane.** `git worktree remove` and `prune` delete the admin directory,
-  turn records included, even when `lane rm` keeps an unmerged branch. That is accepted, because
+  turn records included, even when `lane rm` keeps an unmerged branch. The one exception is the
+  ref that holds a lane's turn snapshots, which git would prune from a per-worktree namespace
+  ([ADR 0006](0006-turns-are-bounded-by-tree-snapshots-under-a-shared-ref.md)). That is accepted, because
   inline review sends comments back to the lane's agent and a removed lane has none.
 - **Measured on git 2.55**: the admin directory survives `worktree move` (its id is unchanged) and
   `gc`, and its id disambiguates two lanes that share a basename (`lane-c`, `lane-c1`).
