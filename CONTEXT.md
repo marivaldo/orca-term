@@ -37,6 +37,11 @@ One cycle of prompt → response → diff inside a session. A turn is what the c
 and what a change's authorship is attributed to — never the lane, whose agent can change.
 _Avoid_: run, round, iteration, request
 
+**Unseen**:
+A lane whose latest turn ended after the person last reviewed it, whatever the outcome. It is a
+mark on the lane, independent of its state, and opening the lane's review clears it.
+_Avoid_: unread, new, unacknowledged
+
 **Takeover**:
 A person holding a lane's session directly instead of driving it through the core. Takeover is
 exclusive: while it lasts, the core does not drive that lane.
