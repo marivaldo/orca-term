@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, partially superseded by 0005
 ---
 
 # The core owns no agent process
@@ -46,3 +46,7 @@ Decided in [issue #6](https://github.com/marivaldo/orca-term/issues/6), which ho
   depends on. So while the human holds a session, the core does not drive it.
 - **`opencode serve` becomes a daemon we start but do not outlive**, which needs its own
   reuse-and-health story.
+
+> **Superseded in part by [ADR 0005](0005-opencode-is-driven-one-shot.md)**: `opencode` is no
+> longer driven through `opencode serve` but one-shot, with `opencode run` per turn, so the
+> server, its daemon story and the "uniformity rejected" option above no longer apply to it.
