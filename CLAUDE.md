@@ -7,6 +7,8 @@ cargo-deny, typos, actionlint, zizmor, the vocabulary lint and the commit lint).
 hooks once with `just hooks`. Every rule is enforced by a guard listed in `docs/harness.md`; a
 slice is done only when the guards for its behaviour are green there.
 
+`ARCHITECTURE.md` maps the code: its five layers, where each concept lives and the invariants.
+
 Commits are always signed and hooks are never skipped: `.claude/hooks/git-guard.sh` refuses
 `--no-verify`, `--no-gpg-sign`, signing overrides, `core.hooksPath` and `GIT_CONFIG_*` overrides.
 Commit messages are one line with a type prefix (`feat: ...`), with no Jira id and no AI
