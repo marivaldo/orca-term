@@ -1,5 +1,5 @@
 ---
-status: accepted, partially superseded by 0005
+status: accepted, partially superseded by 0005 and 0009
 ---
 
 # The core owns no agent process

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, extended to every agent by 0009
 ---
 
 # Core-driven turns run in an OS sandbox, with everything allowed inside it

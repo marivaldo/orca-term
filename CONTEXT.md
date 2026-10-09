@@ -35,8 +35,8 @@ the current session again, even after swapping agents.
 _Avoid_: run, thread, conversation, chat
 
 **Turn**:
-One cycle of prompt → response → diff inside a session, whether the core drives it or the person
-does under takeover. A turn is what a change's authorship is attributed to — never the lane, whose
+One cycle of prompt → response → diff inside a session: it starts when the person submits a prompt
+to the agent and ends when the agent stops. A turn is what a change's authorship is attributed to — never the lane, whose
 agent can change. Turns are numbered across the whole lane, never per session, so no two turns of
 a lane share a number. Edits the person makes between turns belong to no turn.
 _Avoid_: run, round, iteration, request
@@ -51,15 +51,17 @@ A remark the person attaches to a line, a range of lines or a whole file of a la
 waits, pending, until the person sends it to the lane's current session, and sending it consumes it.
 _Avoid_: comment, annotation, review comment
 
-**Takeover**:
-A person holding a lane's session directly instead of driving it through the core. Takeover is
-exclusive: while it lasts, the core does not drive that lane.
-_Avoid_: attach, interactive mode, manual mode
-
 **Core**:
-The orchestrator itself: a library plus a CLI, invoked once per turn, owning no agent process and
-no daemon of its own. Neovim is a client of the core, never its host.
+The orchestrator itself: a library plus a CLI, invoked per action, running no daemon of its own.
+It keeps each running agent alive through that agent's holder. Neovim is a client of the core,
+never its host.
 _Avoid_: daemon, server, engine, plugin
+
+**Holder**:
+The detached process that keeps one lane's agent running and holds its screen, so the agent
+survives Neovim quitting and Neovim can attach to it again. A lane has at most one holder, and it
+lives exactly as long as the agent.
+_Avoid_: daemon, server, session, multiplexer
 
 **Worktree**:
 Git's worktree and nothing more: a checkout of the repository at a path of its own. A lane has

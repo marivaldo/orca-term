@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0009, except the opencode plugin
 ---
 
 # opencode is driven one-shot, with no `opencode serve`
