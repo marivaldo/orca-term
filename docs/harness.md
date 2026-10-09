@@ -30,6 +30,7 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | No typos | typos | pre-commit, CI `meta` | #27 | active |
 | Workflows valid, actions pinned by SHA, least privilege | actionlint, zizmor | CI `meta` | #27 | active |
 | Commit messages: one line, type prefix, no Jira id, no AI attribution | `cargo xtask commit-lint` | commit-msg hook, CI `meta` over the pushed range | #27 | active |
+| PR titles read `#<issue> - <lowercase description>`, with no type prefix | `cargo xtask pr-title-lint` (`just pr-title`) | CI `pr-title`, on every PR including retitles | [#24](https://github.com/marivaldo/orca-term/issues/24) | active |
 | The glossary's *Avoid* synonyms never appear in code or docs, and the config file is only ever called `orca-term.yaml` | `cargo xtask vocab` (waivers in `docs/vocabulary-waivers.md`) | CI `meta` | #27 | active |
 | Coding agents never skip hooks or signing | `.claude/hooks/git-guard.sh`, tested by `just guard-test` | agent sessions, CI `meta` | #27 | active |
 | main takes changes only through a PR with `check` green and signed commits; no force-push or deletion; PRs land as merge commits, so each commit keeps its own signature and linted message | ruleset `main` on the default branch (maintainer may bypass), merge commits only | GitHub | #27 | active |

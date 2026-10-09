@@ -49,6 +49,12 @@ commit-lint range="origin/main..HEAD":
         echo "commit-lint: ${base} not found, skipped"
     fi
 
+# A PR title: `#<issue> - <lowercase description>`. CI runs it on every pull request. The title is
+# passed as a positional argument, never interpolated, because anyone can write a PR title.
+[positional-arguments]
+pr-title title:
+    cargo xtask pr-title-lint "$1"
+
 # The commit-msg hook.
 commit-msg file:
     cargo xtask commit-lint --file "{{ file }}"
