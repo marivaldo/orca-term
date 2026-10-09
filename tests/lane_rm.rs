@@ -269,3 +269,54 @@ fn a_lane_whose_state_is_unreadable_can_still_be_removed() {
     assert!(!docs.exists());
     assert!(!repo.root.join(".git/worktrees/docs").exists());
 }
+
+#[test]
+fn the_default_branch_is_never_deleted_even_with_force() {
+    for force in [false, true] {
+        let repo = Repo::new();
+        repo.git(&["switch", "--quiet", "-c", "side"]);
+        let trunk = repo.tmp.path().join("lanes/trunk");
+        repo.git(&[
+            "worktree",
+            "add",
+            "--quiet",
+            trunk.to_str().unwrap(),
+            "main",
+        ]);
+
+        let args: &[&str] = if force {
+            &["--force", "trunk"]
+        } else {
+            &["trunk"]
+        };
+        rm(&repo, args).success().stdout(predicate::str::contains(
+            "kept branch main: it is the default branch",
+        ));
+        assert!(!trunk.exists(), "force={force}");
+        assert!(has_branch(&repo, "main"), "force={force}");
+    }
+}
+
+#[test]
+fn a_branch_checked_out_in_another_worktree_is_kept() {
+    let repo = Repo::new();
+    let one = lane(&repo, "lanes/one", "shared");
+    let two = repo.tmp.path().join("lanes/two");
+    repo.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "--force",
+        two.to_str().unwrap(),
+        "shared",
+    ]);
+
+    rm(&repo, &["--force", one.to_str().unwrap()])
+        .success()
+        .stdout(predicate::str::contains(
+            "kept branch shared: could not delete it",
+        ));
+    assert!(!one.exists());
+    assert!(two.exists());
+    assert!(has_branch(&repo, "shared"));
+}

@@ -198,7 +198,13 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     let primary = &fleet.primary.path;
 
     // Decided before the worktree goes, so a failure here leaves everything in place.
+    // The default branch is never deleted, not even with `--force`: it is trivially merged into
+    // itself.
+    let default = default_branch(primary).ok();
     let merged = match (&lane.branch, force) {
+        (Some(branch), _) if default.as_deref() == Some(branch.as_str()) => {
+            Some(Err("it is the default branch".to_owned()))
+        }
         (Some(branch), false) => Some(merged_into_default(primary, branch)?),
         _ => None,
     };
