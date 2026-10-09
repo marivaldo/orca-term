@@ -6,9 +6,10 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context, Result, bail};
 
 mod commit;
+mod pr_title;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | vocab";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -47,6 +48,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
             }
             Ok(problems)
         }
+        ["pr-title-lint", title] => Ok(pr_title::lint(title)),
         ["vocab"] => vocab::lint_repository(Path::new(".")),
         _ => bail!(USAGE),
     }

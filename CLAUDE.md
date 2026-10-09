@@ -10,7 +10,8 @@ slice is done only when the guards for its behaviour are green there.
 Commits are always signed and hooks are never skipped: `.claude/hooks/git-guard.sh` refuses
 `--no-verify`, `--no-gpg-sign`, signing overrides, `core.hooksPath` and `GIT_CONFIG_*` overrides.
 Commit messages are one line with a type prefix (`feat: ...`), with no Jira id and no AI
-attribution.
+attribution. PR titles read `#<issue> - <lowercase description>` (the issue number stands where
+a Jira id would), with no type prefix; PR bodies are in English and say `Closes #<issue>`.
 
 ## Agent skills
 

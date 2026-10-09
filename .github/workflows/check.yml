@@ -2,6 +2,8 @@ name: check
 
 on:
   pull_request:
+    # `edited` re-checks a retitled PR.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -88,17 +90,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # The one status the ruleset on main requires.
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - run: just pr-title "$PR_TITLE"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+
+  # The one status the ruleset on main requires. `pr-title` only runs on pull requests, so a
+  # skipped `pr-title` passes; every other job must succeed.
   check:
     if: always()
-    needs: [rust, deny, meta]
+    needs: [rust, deny, meta, pr-title]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
       - name: Every job passed
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RESULTS: ${{ needs.rust.result }} ${{ needs.deny.result }} ${{ needs.meta.result }}
+          PR_TITLE_RESULT: ${{ needs.pr-title.result }}
         run: |
           for r in $RESULTS; do
             [ "$r" = success ] || { echo "a required job ended: $r"; exit 1; }
           done
+          case "$PR_TITLE_RESULT" in
+            success|skipped) ;;
+            *) echo "pr-title ended: $PR_TITLE_RESULT"; exit 1 ;;
+          esac
