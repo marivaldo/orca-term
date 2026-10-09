@@ -63,15 +63,44 @@ the adapters, and returns a domain value that `output` prints.
 
 - `domain/worktree.rs`: a worktree's name rules and path, which worktree a `rm` target means,
   and the branch's fate on removal.
+- `domain/branch.rs`: a branch's name, the start point a new branch is created from, and git's
+  rules for a valid branch name, mirrored without running git.
 - `domain/fleet.rs`: the fleet derived from git's list: the primary checkout apart, names,
-  broken and gone worktrees, what a prune cleaned.
+  gone worktrees, what a prune cleaned.
 - `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`.
 - `domain/config.rs`: `orca-term.yaml` parsing, the precedence of the config files, `~` and
   relative path expansion.
-- `domain/state.rs`: the `worktree.json` schema rules and its bytes.
+- `domain/state.rs`: a worktree's state and why it is broken, its admin directory, and the
+  `worktree.json` schema rules and bytes.
 - `domain/include.rs`: the copy list: which paths `.worktreeinclude` makes copyable, and the
   rule that a path never escapes the worktree.
 - `domain/contract.rs`: the `contract` and `version` integers every `--json` output carries.
+
+### Domain types
+
+Values that would otherwise travel as a bare `String`, `PathBuf` or `bool` get a type of their
+own, so a mix-up does not compile and a value is checked once, where it enters ("parse, don't
+validate"):
+
+- `WorktreeName` (`domain/worktree.rs`): a name `worktree new` accepts. It can only be built by
+  parsing (`FromStr`), which clap does on the argument, so an invalid name is refused before
+  anything runs, with a `WorktreeNameError` naming the rule it breaks.
+- `Target` (`domain/worktree.rs`): what `worktree rm` is given, a `Name` or a `Path` (it contains
+  `/` or is `.` or `..`), parsed by clap.
+- `Removal` (`domain/worktree.rs`): `Safe` or `Forced`, the `--force` flag from the edge down to
+  `git worktree remove`.
+- `BranchOutcome` and `KeptReason` (`domain/worktree.rs`): what `worktree rm` did with the
+  branch, and why it kept it.
+- `Branch` and `StartPoint` (`domain/branch.rs`): a local branch's name, and the default branch a
+  new worktree starts from, `Local` or `Remote` (on `origin`). `BranchNameError` names the git
+  rule a branch name breaks.
+- `PrimaryCheckout` (`domain/fleet.rs`): the primary checkout's path and branch. The git adapter
+  and the config sources take it where they need the primary checkout, so they cannot be handed a
+  worktree's path by mistake.
+- `State` and `BrokenReason` (`domain/state.rs`): `NoAgent`, or `Broken` because the directory
+  is missing, git marks it prunable, or the state file cannot be read.
+- `AdminDir` (`domain/state.rs`): the directory holding a worktree's state, and its
+  `worktree.json`.
 
 ## Invariants
 
@@ -87,8 +116,10 @@ the adapters, and returns a domain value that `output` prints.
 - **Dependencies point down**: main > edge > ops > adapters > domain. A module uses its own layer
   or a lower one, through `crate::` paths, never a higher one.
 - **Nothing writes on a read path**: `worktree ls` only reads.
-- **Errors** are `anyhow` errors with context, written for a person. Typed errors, for failures
-  the client must tell apart, arrive with their first case (#53, #29).
+- **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
+  `thiserror` enums (`WorktreeNameError`, `BranchNameError`) whose messages a person can read.
+  Typed errors for failures the client must tell apart, with a JSON `error.kind`, arrive with
+  their first case (#29).
 
 ## Guards
 
