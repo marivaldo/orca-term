@@ -24,8 +24,8 @@ test:
 deny:
     cargo deny check
 
-# Spelling, workflows, vocabulary, commit messages and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab (commit-lint range) guard-test
+# Spelling, workflows, vocabulary, layers, commit messages and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree.
 typos *files:
@@ -37,6 +37,10 @@ workflows:
 
 vocab:
     cargo xtask vocab
+
+# The core's layers: imports point down, each file names its layer, I/O opt-outs only in adapters.
+layers:
+    cargo xtask layers
 
 # Lints every commit in the range; skipped when its base does not exist (no remote yet).
 commit-lint range="origin/main..HEAD":
