@@ -6,6 +6,8 @@ use serde::Serialize;
 
 use crate::contract::{CONTRACT, VERSION};
 use crate::fleet::Fleet;
+use crate::include;
+use crate::lane::Created;
 
 #[derive(Debug, Serialize)]
 struct Envelope<'a, T: Serialize> {
@@ -35,7 +37,8 @@ fn render_fleet_table(fleet: &Fleet) -> String {
     if fleet.lanes.is_empty() {
         return format!("no lanes in {}", fleet.primary.path.display());
     }
-    let rows: Vec<[String; 3]> = fleet
+    let header = ["NAME", "BRANCH", "STATE", "PATH"].map(str::to_owned);
+    let rows: Vec<[String; 4]> = fleet
         .lanes
         .iter()
         .map(|lane| {
@@ -44,33 +47,52 @@ fn render_fleet_table(fleet: &Fleet) -> String {
                 lane.branch
                     .clone()
                     .unwrap_or_else(|| "(detached)".to_owned()),
+                lane.state.label().to_owned(),
                 lane.path.display().to_string(),
             ]
         })
         .collect();
-    let header = ["NAME".to_owned(), "BRANCH".to_owned(), "PATH".to_owned()];
-    let name_w = rows
-        .iter()
-        .chain([&header])
-        .map(|r| r[0].len())
-        .max()
-        .unwrap_or(0);
-    let branch_w = rows
-        .iter()
-        .chain([&header])
-        .map(|r| r[1].len())
-        .max()
-        .unwrap_or(0);
+    let width = |col: usize| {
+        rows.iter()
+            .chain([&header])
+            .map(|r| r[col].len())
+            .max()
+            .unwrap_or(0)
+    };
+    let (name_w, branch_w, state_w) = (width(0), width(1), width(2));
     let mut table = String::new();
     for row in [&header].into_iter().chain(&rows) {
         let _ = writeln!(
             table,
-            "{:name_w$}  {:branch_w$}  {}",
-            row[0], row[1], row[2]
+            "{:name_w$}  {:branch_w$}  {:state_w$}  {}",
+            row[0], row[1], row[2], row[3]
         );
     }
     table.truncate(table.trim_end().len());
     table
+}
+
+/// Prints what `lane new` made, ending with the `base` it used and where that came from.
+pub fn lane_created(created: &Created) {
+    out(&render_lane_created(created));
+}
+
+fn render_lane_created(created: &Created) -> String {
+    let files = if created.copied == 1 { "file" } else { "files" };
+    format!(
+        "created lane {}\n\
+         path:   {}\n\
+         branch: {} (from {})\n\
+         copied: {} {files} from {}\n\
+         base:   {}",
+        created.name,
+        created.path.display(),
+        created.branch,
+        created.start,
+        created.copied,
+        include::FILE_NAME,
+        created.base,
+    )
 }
 
 /// Prints an error, with its causes, to stderr.
@@ -93,7 +115,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::config::Setting;
     use crate::fleet::{Lane, Worktree};
+    use crate::state::State;
 
     fn fleet(lanes: Vec<Lane>) -> Fleet {
         Fleet {
@@ -117,18 +141,44 @@ mod tests {
                 name: "fix-login".to_owned(),
                 path: PathBuf::from("/l/fix-login"),
                 branch: Some("fix-login".to_owned()),
+                state: State::NoAgent,
             },
             Lane {
                 name: "docs".to_owned(),
                 path: PathBuf::from("/l/docs"),
                 branch: None,
+                state: State::NoAgent,
             },
         ]));
         assert_eq!(
             table,
-            "NAME       BRANCH      PATH\n\
-             fix-login  fix-login   /l/fix-login\n\
-             docs       (detached)  /l/docs"
+            "NAME       BRANCH      STATE     PATH\n\
+             fix-login  fix-login   no agent  /l/fix-login\n\
+             docs       (detached)  no agent  /l/docs"
+        );
+    }
+
+    #[test]
+    fn lane_new_names_the_base_and_its_source() {
+        let text = render_lane_created(&Created {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/repo/fix"),
+            branch: "fix".to_owned(),
+            start: "main".to_owned(),
+            copied: 1,
+            base: Setting {
+                value: PathBuf::from("/l"),
+                source: Some(".git/orca-term.yaml".to_owned()),
+                overridden: vec!["orca-term.yaml".to_owned()],
+            },
+        });
+        assert_eq!(
+            text,
+            "created lane fix\n\
+             path:   /l/repo/fix\n\
+             branch: fix (from main)\n\
+             copied: 1 file from .worktreeinclude\n\
+             base:   /l (from .git/orca-term.yaml, overriding orca-term.yaml)"
         );
     }
 }

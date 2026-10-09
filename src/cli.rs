@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use crate::config::Env;
 use crate::fleet::Fleet;
-use crate::output;
+use crate::{lane, output};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -34,14 +35,28 @@ enum LaneCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Create a lane: a worktree on a new branch from the default branch.
+    New {
+        /// The lane's name, which is also its branch and its directory's name.
+        #[arg(allow_hyphen_values = true)]
+        name: String,
+    },
 }
 
 pub fn run(cli: &Cli) -> Result<()> {
-    match cli.command {
+    let cwd = std::env::current_dir().context("could not read the current directory")?;
+    match &cli.command {
+        Command::Lane {
+            command: LaneCommand::New { name },
+        } => {
+            let created = lane::create(&cwd, name, &Env::from_process())?;
+            output::lane_created(&created);
+            Ok(())
+        }
         Command::Lane {
             command: LaneCommand::Ls { json },
         } => {
-            let cwd = std::env::current_dir().context("could not read the current directory")?;
+            let json = *json;
             let fleet = Fleet::discover(&cwd)?;
             if json {
                 output::json(&fleet)

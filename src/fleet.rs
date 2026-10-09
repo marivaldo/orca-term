@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::git;
+use crate::state::{self, State};
 
 /// A worktree as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +27,7 @@ pub struct Lane {
     pub name: String,
     pub path: PathBuf,
     pub branch: Option<String>,
+    pub state: State,
 }
 
 /// The primary checkout and every lane of its repository.
@@ -38,8 +40,15 @@ pub struct Fleet {
 impl Fleet {
     /// Reads the fleet of the repository containing `dir`. Never writes.
     pub fn discover(dir: &Path) -> Result<Self> {
-        let porcelain = git::output(dir, &["worktree", "list", "--porcelain", "-z"])?;
-        Self::from_worktrees(parse_porcelain(&porcelain))
+        let mut fleet = Self::from_worktrees(list_worktrees(dir)?)?;
+        for lane in &mut fleet.lanes {
+            // A lane whose directory is gone has no admin dir git can resolve from it; it stays
+            // `no_agent` until the broken state exists.
+            if lane.path.is_dir() {
+                lane.state = state::read(&state::admin_dir(&lane.path)?)?;
+            }
+        }
+        Ok(fleet)
     }
 
     fn from_worktrees(worktrees: Vec<Worktree>) -> Result<Self> {
@@ -52,10 +61,24 @@ impl Fleet {
                 name: lane_name(&wt.path),
                 path: wt.path,
                 branch: wt.branch,
+                state: State::NoAgent,
             })
             .collect();
         Ok(Self { primary, lanes })
     }
+}
+
+/// The primary checkout of the repository containing `dir`, without reading any lane. Never writes.
+pub fn primary_checkout(dir: &Path) -> Result<Worktree> {
+    match list_worktrees(dir)?.into_iter().next() {
+        Some(primary) => Ok(primary),
+        None => bail!("git listed no worktrees"),
+    }
+}
+
+fn list_worktrees(dir: &Path) -> Result<Vec<Worktree>> {
+    let porcelain = git::output(dir, &["worktree", "list", "--porcelain", "-z"])?;
+    Ok(parse_porcelain(&porcelain))
 }
 
 fn lane_name(path: &Path) -> String {

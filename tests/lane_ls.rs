@@ -5,6 +5,10 @@
     reason = "clippy.toml relaxes unwrap only inside #[test] fns; fixture helpers panic on failure too"
 )]
 
+#[expect(
+    dead_code,
+    reason = "the fixture is shared between suites, and this one leaves part of it unused"
+)]
 mod support;
 
 use predicates::prelude::*;
@@ -65,6 +69,7 @@ fn a_hand_made_worktree_is_a_lane_and_the_primary_checkout_is_not() {
     assert_eq!(lanes[0]["name"], "fix-login");
     assert_eq!(lanes[0]["branch"], "fix-login");
     assert_eq!(lanes[0]["path"], lane.to_str().unwrap());
+    assert_eq!(lanes[0]["state"], "no_agent");
     assert_eq!(doc["primary"]["path"], repo.root.to_str().unwrap());
     assert!(!lane_paths(&doc).contains(&repo.root.to_str().unwrap().to_owned()));
 
@@ -74,6 +79,7 @@ fn a_hand_made_worktree_is_a_lane_and_the_primary_checkout_is_not() {
         .success()
         .stdout(
             predicate::str::contains("fix-login")
+                .and(predicate::str::contains("no agent"))
                 .and(predicate::str::contains(lane.to_str().unwrap())),
         )
         .stdout(predicate::str::contains(format!("{}\n", repo.root.display())).not());
@@ -115,11 +121,27 @@ fn the_fleet_is_the_same_from_inside_a_lane() {
 fn listing_never_writes_to_the_repository() {
     let repo = Repo::new();
     repo.add_worktree(&repo.tmp.path().join("lanes/docs"), "docs");
+    let admin = repo.root.join(".git/worktrees/docs/orca-term");
     let before = repo.git(&["status", "--porcelain", "--ignored"]);
     let refs_before = repo.git(&["for-each-ref"]);
     ls_json(&repo, &repo.root);
     assert_eq!(repo.git(&["status", "--porcelain", "--ignored"]), before);
     assert_eq!(repo.git(&["for-each-ref"]), refs_before);
+    assert!(
+        !admin.exists(),
+        "reading a lane's state never creates its admin dir"
+    );
+}
+
+#[test]
+fn a_lane_state_of_a_newer_schema_still_lists_and_is_left_untouched() {
+    let repo = Repo::new();
+    repo.add_worktree(&repo.tmp.path().join("lanes/docs"), "docs");
+    let newer = r#"{"schema":9,"agent":null,"future":{"x":1}}"#;
+    let file = repo.write(".git/worktrees/docs/orca-term/lane.json", newer);
+    let doc = ls_json(&repo, &repo.root);
+    assert_eq!(doc["lanes"][0]["state"], "no_agent");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), newer);
 }
 
 #[test]

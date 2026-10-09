@@ -38,8 +38,9 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | Lanes sharing a basename are told apart by path | `tests/lane_ls.rs` | CI `rust` | #27 | active |
 | Every `--json` output carries `contract` and `version` | `tests/lane_ls.rs` | CI `rust` | #27 | active |
 | The core never writes on a read path | `tests/lane_ls.rs` (listing leaves status and refs untouched) | CI `rust` | #27 | active |
-| State files carry `schema`; an older core refuses to write a newer schema | seam 1 tests | CI `rust` | [#28](https://github.com/marivaldo/orca-term/issues/28) | planned |
-| Lanes never share dependency trees | seam 1 tests | CI `rust` | #28 | planned |
+| State files carry `schema`; an older core refuses to write a newer schema | unit tests in the state module (`refuses_to_write_over_a_newer_schema`, `reads_any_schema_and_ignores_unknown_fields`), `tests/lane_new.rs` (`the_lane_state_is_written_to_the_admin_dir_and_lists_as_no_agent`) | CI `rust` | [#28](https://github.com/marivaldo/orca-term/issues/28) | active |
+| Lanes never share dependency trees | `tests/lane_new.rs` (`the_copy_list_copies_ignored_files_and_never_shares_them`: plain byte copies, no shared inode, symlinks skipped) | CI `rust` | #28 | active |
+| Config precedence is printed; unknown keys refused | `tests/lane_new.rs`, unit tests in the config module | CI `rust` | #28 | active |
 | Writes to a lane's state hold a per-lane lock | seam 1 concurrency test | CI `rust` | [#29](https://github.com/marivaldo/orca-term/issues/29) | planned |
 | Lua formatted, linted and type-checked | stylua, selene, LuaLS `--check` | pre-commit, CI | [#30](https://github.com/marivaldo/orca-term/issues/30) | planned |
 | The client refuses a core with another contract | seam 2 test | CI | #30 | planned |
