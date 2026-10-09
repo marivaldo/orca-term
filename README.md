@@ -7,10 +7,17 @@ runs in its own git worktree, and review happens in the tools already living in 
 
 ## Status
 
-Not built yet. The route is being charted as a [wayfinder](https://aihero.dev/skills-wayfinder)
-map in this repo's issues — see the issue labelled `wayfinder:map`.
+Early. The route was charted as a [wayfinder](https://aihero.dev/skills-wayfinder) map in this
+repo's issues (the issue labelled `wayfinder:map`) and synthesised into a spec. It is now being
+built in small slices, each a GitHub issue under that spec.
 
-Nothing here is settled until that map clears.
+Today: `orca-term lane ls [--json]` lists the lanes of the current repository.
+
+## Development
+
+Needs Rust 1.97 and [just](https://github.com/casey/just). `just check` runs every check CI runs;
+see `docs/harness.md` for the tools it expects and the rules it enforces. `just hooks` installs the
+local git hooks (needs [lefthook](https://github.com/evilmartians/lefthook)).
 
 ## Scope
 
