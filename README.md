@@ -5,6 +5,10 @@ Orchestrate a fleet of parallel CLI coding agents from the terminal, with Neovim
 Inspired by [Orca](https://github.com/stablyai/orca), but without the Electron app: each agent
 runs in its own git worktree, and review happens in the tools already living in the terminal.
 
+> **Not affiliated with Orca or Stably.** orca-term is an independent open-source project. It is
+> not made, endorsed or supported by Stably or by the Orca team, and it shares no code with Orca.
+> "Orca" is used here only to credit the project that inspired it.
+
 ## Status
 
 Early. The route was charted as a [wayfinder](https://aihero.dev/skills-wayfinder) map in this
