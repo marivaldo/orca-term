@@ -41,6 +41,16 @@ enum LaneCommand {
         #[arg(allow_hyphen_values = true)]
         name: String,
     },
+    /// Remove a lane's worktree; its branch goes too only when merged into the default branch.
+    Rm {
+        /// The lane's name, or its path when several lanes share the name.
+        lane: String,
+        /// Remove a worktree with changes and delete an unmerged branch.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Clean the lanes whose directory is gone (`git worktree prune`). Nothing else prunes.
+    Prune,
 }
 
 pub fn run(cli: &Cli) -> Result<()> {
@@ -51,6 +61,19 @@ pub fn run(cli: &Cli) -> Result<()> {
         } => {
             let created = lane::create(&cwd, name, &Env::from_process())?;
             output::lane_created(&created);
+            Ok(())
+        }
+        Command::Lane {
+            command: LaneCommand::Rm { lane, force },
+        } => {
+            let removed = lane::remove(&cwd, lane, *force)?;
+            output::lane_removed(&removed);
+            Ok(())
+        }
+        Command::Lane {
+            command: LaneCommand::Prune,
+        } => {
+            output::lanes_pruned(&lane::prune(&cwd)?);
             Ok(())
         }
         Command::Lane {

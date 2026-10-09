@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::contract::{CONTRACT, VERSION};
 use crate::fleet::Fleet;
 use crate::include;
-use crate::lane::Created;
+use crate::lane::{BranchOutcome, Created, Removed};
 
 #[derive(Debug, Serialize)]
 struct Envelope<'a, T: Serialize> {
@@ -95,6 +95,45 @@ fn render_lane_created(created: &Created) -> String {
     )
 }
 
+/// Prints what `lane rm` removed and what happened to the lane's branch.
+pub fn lane_removed(removed: &Removed) {
+    out(&render_lane_removed(removed));
+}
+
+fn render_lane_removed(removed: &Removed) -> String {
+    let branch = match &removed.branch {
+        BranchOutcome::DeletedMerged { branch, into } => {
+            format!("deleted branch {branch} (merged into {into})")
+        }
+        BranchOutcome::DeletedForced { branch } => format!("deleted branch {branch} (--force)"),
+        BranchOutcome::Kept { branch, reason } => format!("kept branch {branch}: {reason}"),
+        BranchOutcome::Detached => "no branch to delete: the lane was detached".to_owned(),
+    };
+    format!(
+        "removed lane {}\n\
+         path:   {}\n\
+         {branch}",
+        removed.name,
+        removed.path.display(),
+    )
+}
+
+/// Prints the lanes `lane prune` cleaned, one path per line, or that there was nothing to prune.
+pub fn lanes_pruned(pruned: &[std::path::PathBuf]) {
+    out(&render_lanes_pruned(pruned));
+}
+
+fn render_lanes_pruned(pruned: &[std::path::PathBuf]) -> String {
+    if pruned.is_empty() {
+        return "nothing to prune".to_owned();
+    }
+    pruned
+        .iter()
+        .map(|path| format!("pruned {}", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Prints an error, with its causes, to stderr.
 pub fn error(err: &anyhow::Error) {
     #[expect(clippy::print_stderr, reason = "this module owns the process's output")]
@@ -124,6 +163,7 @@ mod tests {
             primary: Worktree {
                 path: PathBuf::from("/repo"),
                 branch: Some("main".to_owned()),
+                prunable: None,
             },
             lanes,
         }
@@ -142,19 +182,23 @@ mod tests {
                 path: PathBuf::from("/l/fix-login"),
                 branch: Some("fix-login".to_owned()),
                 state: State::NoAgent,
+                detail: None,
+                gone: false,
             },
             Lane {
                 name: "docs".to_owned(),
                 path: PathBuf::from("/l/docs"),
                 branch: None,
-                state: State::NoAgent,
+                state: State::Broken,
+                detail: Some("directory missing; run orca-term lane prune".to_owned()),
+                gone: true,
             },
         ]));
         assert_eq!(
             table,
             "NAME       BRANCH      STATE     PATH\n\
              fix-login  fix-login   no agent  /l/fix-login\n\
-             docs       (detached)  no agent  /l/docs"
+             docs       (detached)  broken    /l/docs"
         );
     }
 
@@ -179,6 +223,38 @@ mod tests {
              branch: fix (from main)\n\
              copied: 1 file from .worktreeinclude\n\
              base:   /l (from .git/orca-term.yaml, overriding orca-term.yaml)"
+        );
+    }
+
+    #[test]
+    fn lane_rm_says_what_happened_to_the_branch() {
+        let removed = |branch| Removed {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/repo/fix"),
+            branch,
+        };
+        assert_eq!(
+            render_lane_removed(&removed(BranchOutcome::Kept {
+                branch: "fix".to_owned(),
+                reason: "not merged into main".to_owned(),
+            })),
+            "removed lane fix\npath:   /l/repo/fix\nkept branch fix: not merged into main"
+        );
+        assert_eq!(
+            render_lane_removed(&removed(BranchOutcome::DeletedMerged {
+                branch: "fix".to_owned(),
+                into: "main".to_owned(),
+            })),
+            "removed lane fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
+        );
+    }
+
+    #[test]
+    fn lane_prune_lists_paths_or_says_nothing() {
+        assert_eq!(render_lanes_pruned(&[]), "nothing to prune");
+        assert_eq!(
+            render_lanes_pruned(&[PathBuf::from("/a"), PathBuf::from("/b")]),
+            "pruned /a\npruned /b"
         );
     }
 }

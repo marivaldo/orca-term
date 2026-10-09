@@ -156,3 +156,55 @@ fn outside_a_repository_it_fails_with_a_reason() {
         .failure()
         .stderr(predicate::str::contains("not inside a git repository"));
 }
+
+fn registered_worktrees(repo: &Repo) -> String {
+    repo.git(&["worktree", "list", "--porcelain"])
+}
+
+#[test]
+fn a_lane_whose_directory_is_gone_lists_as_broken_and_is_not_pruned() {
+    let repo = Repo::new();
+    let lane = repo.add_worktree(&repo.tmp.path().join("lanes/gone"), "gone");
+    std::fs::remove_dir_all(&lane).unwrap();
+
+    let doc = ls_json(&repo, &repo.root);
+    assert_eq!(doc["lanes"][0]["path"], lane.to_str().unwrap());
+    assert_eq!(doc["lanes"][0]["state"], "broken");
+    let detail = doc["lanes"][0]["detail"].as_str().unwrap();
+    assert!(detail.contains("directory missing"), "{detail}");
+    assert!(detail.contains("orca-term lane prune"), "{detail}");
+
+    repo.orca_term(&repo.root)
+        .args(["lane", "ls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("broken"));
+    assert!(
+        registered_worktrees(&repo).contains(&format!("worktree {}", lane.display())),
+        "listing never prunes"
+    );
+    assert!(
+        !repo.root.join(".git/worktrees/gone/orca-term").exists(),
+        "listing never creates the admin dir"
+    );
+}
+
+#[test]
+fn a_lane_whose_state_cannot_be_parsed_lists_as_broken_without_failing_the_fleet() {
+    let repo = Repo::new();
+    repo.add_worktree(&repo.tmp.path().join("lanes/docs"), "docs");
+    repo.add_worktree(&repo.tmp.path().join("lanes/fine"), "fine");
+    let corrupt = repo.write(".git/worktrees/docs/orca-term/lane.json", "{not json");
+
+    let doc = ls_json(&repo, &repo.root);
+    let lanes = doc["lanes"].as_array().unwrap();
+    let docs = lanes.iter().find(|l| l["name"] == "docs").unwrap();
+    let fine = lanes.iter().find(|l| l["name"] == "fine").unwrap();
+    assert_eq!(docs["state"], "broken");
+    let detail = docs["detail"].as_str().unwrap();
+    assert!(detail.contains("could not parse"), "{detail}");
+    assert!(detail.contains("lane.json"), "{detail}");
+    assert_eq!(fine["state"], "no_agent");
+    assert_eq!(fine["detail"], Value::Null);
+    assert_eq!(std::fs::read_to_string(corrupt).unwrap(), "{not json");
+}

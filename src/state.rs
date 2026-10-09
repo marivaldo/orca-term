@@ -24,6 +24,8 @@ const LANE_FILE: &str = "lane.json";
 pub enum State {
     /// No agent is attached to the lane.
     NoAgent,
+    /// The lane's directory is gone, or its state cannot be read.
+    Broken,
 }
 
 impl State {
@@ -31,6 +33,7 @@ impl State {
     pub fn label(self) -> &'static str {
         match self {
             Self::NoAgent => "no agent",
+            Self::Broken => "broken",
         }
     }
 }
