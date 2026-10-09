@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::git;
+use crate::state::{self, State};
 
 /// A worktree as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -18,6 +19,9 @@ pub struct Worktree {
     pub path: PathBuf,
     /// The checked-out branch, without `refs/heads/`. `None` when detached or bare.
     pub branch: Option<String>,
+    /// Why git marks the worktree prunable, when it does: its directory or `.git` file is gone.
+    #[serde(skip)]
+    pub prunable: Option<String>,
 }
 
 /// One lane of the fleet.
@@ -26,6 +30,12 @@ pub struct Lane {
     pub name: String,
     pub path: PathBuf,
     pub branch: Option<String>,
+    pub state: State,
+    /// Why the lane is in its state, when there is something to say.
+    pub detail: Option<String>,
+    /// Whether the lane's worktree is gone, so only `lane prune` can clean it.
+    #[serde(skip)]
+    pub gone: bool,
 }
 
 /// The primary checkout and every lane of its repository.
@@ -38,8 +48,22 @@ pub struct Fleet {
 impl Fleet {
     /// Reads the fleet of the repository containing `dir`. Never writes.
     pub fn discover(dir: &Path) -> Result<Self> {
-        let porcelain = git::output(dir, &["worktree", "list", "--porcelain", "-z"])?;
-        Self::from_worktrees(parse_porcelain(&porcelain))
+        let worktrees = list_worktrees(dir)?;
+        let prunable: Vec<Option<String>> = worktrees
+            .iter()
+            .skip(1)
+            .map(|wt| wt.prunable.clone())
+            .collect();
+        let mut fleet = Self::from_worktrees(worktrees)?;
+        for (lane, prunable) in fleet.lanes.iter_mut().zip(prunable) {
+            lane.read_state(prunable);
+        }
+        Ok(fleet)
+    }
+
+    /// The lanes whose worktree is gone: the ones `lane prune` would clean.
+    pub fn gone_lanes(&self) -> impl Iterator<Item = &Lane> {
+        self.lanes.iter().filter(|lane| lane.gone)
     }
 
     fn from_worktrees(worktrees: Vec<Worktree>) -> Result<Self> {
@@ -52,10 +76,51 @@ impl Fleet {
                 name: lane_name(&wt.path),
                 path: wt.path,
                 branch: wt.branch,
+                state: State::NoAgent,
+                detail: None,
+                gone: false,
             })
             .collect();
         Ok(Self { primary, lanes })
     }
+}
+
+impl Lane {
+    /// Reads the lane's state. A lane whose directory is gone, or whose state cannot be read, is
+    /// broken, and the reason goes in `detail`: reading one lane never fails the fleet.
+    fn read_state(&mut self, prunable: Option<String>) {
+        if !self.path.is_dir() || prunable.is_some() {
+            self.state = State::Broken;
+            self.gone = true;
+            self.detail = Some(if self.path.is_dir() {
+                let reason = prunable.unwrap_or_default();
+                format!("git marks it prunable ({reason}); run orca-term lane prune")
+            } else {
+                "directory missing; run orca-term lane prune".to_owned()
+            });
+            return;
+        }
+        match state::admin_dir(&self.path).and_then(|admin| state::read(&admin)) {
+            Ok(state) => self.state = state,
+            Err(err) => {
+                self.state = State::Broken;
+                self.detail = Some(format!("{err:#}"));
+            }
+        }
+    }
+}
+
+/// The primary checkout of the repository containing `dir`, without reading any lane. Never writes.
+pub fn primary_checkout(dir: &Path) -> Result<Worktree> {
+    match list_worktrees(dir)?.into_iter().next() {
+        Some(primary) => Ok(primary),
+        None => bail!("git listed no worktrees"),
+    }
+}
+
+fn list_worktrees(dir: &Path) -> Result<Vec<Worktree>> {
+    let porcelain = git::output(dir, &["worktree", "list", "--porcelain", "-z"])?;
+    Ok(parse_porcelain(&porcelain))
 }
 
 fn lane_name(path: &Path) -> String {
@@ -77,11 +142,15 @@ fn parse_porcelain(raw: &[u8]) -> Vec<Worktree> {
             current = Some(Worktree {
                 path: PathBuf::from(OsStr::from_bytes(path)),
                 branch: None,
+                prunable: None,
             });
         } else if let (Some(branch), Some(wt)) = (field.strip_prefix(b"branch "), current.as_mut())
         {
             let branch = branch.strip_prefix(b"refs/heads/").unwrap_or(branch);
             wt.branch = Some(String::from_utf8_lossy(branch).into_owned());
+        } else if let (Some(rest), Some(wt)) = (field.strip_prefix(b"prunable"), current.as_mut()) {
+            let reason = rest.strip_prefix(b" ").unwrap_or(rest);
+            wt.prunable = Some(String::from_utf8_lossy(reason).into_owned());
         }
     }
     worktrees.extend(current);
@@ -96,6 +165,7 @@ mod tests {
         Worktree {
             path: PathBuf::from(path),
             branch: branch.map(str::to_owned),
+            prunable: None,
         }
     }
 
@@ -121,7 +191,13 @@ worktree /gone\0HEAD def\0branch refs/heads/gone\0prunable gitdir file points to
 worktree /held\0HEAD 456\0branch refs/heads/held\0locked\0\0";
         let parsed = parse_porcelain(raw);
         assert_eq!(parsed.len(), 3);
-        assert_eq!(parsed[1], wt("/gone", Some("gone")));
+        assert_eq!(parsed[1].path, PathBuf::from("/gone"));
+        assert_eq!(parsed[1].branch.as_deref(), Some("gone"));
+        assert_eq!(
+            parsed[1].prunable.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
+        assert_eq!(parsed[2], wt("/held", Some("held")));
     }
 
     #[test]
