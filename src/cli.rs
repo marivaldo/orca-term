@@ -4,6 +4,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{worktree_ls, worktree_new, worktree_prune, worktree_rm};
 use crate::output;
 
@@ -39,13 +40,15 @@ enum WorktreeCommand {
     /// Create a worktree on a new branch from the default branch.
     New {
         /// The worktree's name, which is also its branch and its directory's name.
+        // Parsed by clap through `WorktreeName`'s `FromStr`: a name that breaks a rule is refused
+        // here, before anything runs.
         #[arg(allow_hyphen_values = true)]
-        name: String,
+        name: WorktreeName,
     },
     /// Remove a worktree; its branch goes too only when merged into the default branch.
     Rm {
         /// The worktree's name, or its path when several worktrees share the name.
-        worktree: String,
+        worktree: Target,
         /// Remove a worktree with changes and delete an unmerged branch.
         #[arg(long)]
         force: bool,
@@ -65,7 +68,12 @@ fn run_worktree(command: &WorktreeCommand) -> Result<()> {
     match command {
         WorktreeCommand::New { name } => output::worktree_created(&worktree_new::run(name)?),
         WorktreeCommand::Rm { worktree, force } => {
-            output::worktree_removed(&worktree_rm::run(worktree, *force)?);
+            let removal = if *force {
+                Removal::Forced
+            } else {
+                Removal::Safe
+            };
+            output::worktree_removed(&worktree_rm::run(worktree, removal)?);
         }
         WorktreeCommand::Prune => output::worktrees_pruned(&worktree_prune::run()?),
         WorktreeCommand::Ls { json: true } => output::fleet_json(&worktree_ls::run()?)?,

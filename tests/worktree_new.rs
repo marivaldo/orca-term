@@ -14,6 +14,7 @@ mod support;
 
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use predicates::prelude::*;
 use serde_json::Value;
@@ -283,6 +284,45 @@ fn invalid_names_are_refused() {
         cmd.assert()
             .failure()
             .stderr(predicate::str::contains(reason));
+    }
+    assert_eq!(worktree_count(&repo), 1);
+    assert_eq!(repo.git(&["branch", "--list"]).trim(), "* main");
+}
+
+/// The worktree name's branch rules mirror `git check-ref-format --branch` without running git:
+/// every name here is one git rejects, and the core refuses it while parsing its arguments.
+#[test]
+fn names_git_rejects_as_branches_are_refused_while_parsing() {
+    let repo = Repo::new();
+    for name in [
+        "bad..name",
+        "has space",
+        "tab\there",
+        "del\u{7f}",
+        "a~1",
+        "a^1",
+        "a:b",
+        "a?b",
+        "a*b",
+        "a[b",
+        "a\\b",
+        ".hidden",
+        "trailing.",
+        "x.lock",
+        "a@{1}",
+        "HEAD",
+    ] {
+        let git = Command::new("git")
+            .args(["check-ref-format", "--branch", name])
+            .output()
+            .unwrap();
+        assert!(!git.status.success(), "git accepts {name:?}");
+        repo.orca_term(&repo.root)
+            .args(["worktree", "new", name])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid value"))
+            .stderr(predicate::str::contains("not a valid branch name"));
     }
     assert_eq!(worktree_count(&repo), 1);
     assert_eq!(repo.git(&["branch", "--list"]).trim(), "* main");
