@@ -15,7 +15,7 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | `just check` | everything below, as CI runs it |
 | `just rust` | rustfmt check, Clippy with `-D warnings`, the test suites |
 | `just deny` | cargo-deny |
-| `just meta` | typos, actionlint, zizmor, the vocabulary lint, the commit lint over `origin/main..HEAD`, the agent guard's tests |
+| `just meta` | typos, actionlint, zizmor, the vocabulary lint, the layers lint, the commit lint over `origin/main..HEAD`, the agent guard's tests |
 | `just hooks` | installs the pre-commit and commit-msg hooks as lefthook shims (never touches `core.hooksPath`) |
 
 ## Rules and guards
@@ -30,6 +30,10 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | Visibility is `pub(crate)` by default; `pub` only for what the binary and the tests use | rustc `unreachable_pub`, Cargo `[workspace.lints]` | CI `rust` | #51 | active |
 | One file per module, `foo.rs` next to `foo/`, never `mod.rs` | Clippy `mod_module_files` | CI `rust` | #51 | active |
 | Functions of at most 60 lines and at most 4 levels of nesting | Clippy `too_many_lines`, `excessive_nesting` (thresholds in `clippy.toml`) | CI `rust` | #51 | active |
+| The core sits in five layers (main > edge > ops > adapters > domain), and a module uses only its own layer or a lower one (ADR 0010) | `cargo xtask layers` (every `crate::` reference against the table `MODULES` in `xtask/src/layers.rs`), with unit tests including an upward import | CI `meta` | [#52](https://github.com/marivaldo/orca-term/issues/52) | active |
+| Only adapters touch git, files and the environment; the domain is pure | Clippy `disallowed-methods` and `disallowed-types` (`clippy.toml`), each adapter opting out with `#![expect(..., reason)]`; `cargo xtask layers` rejects the opt-out outside `src/adapters/` | CI `rust`, CI `meta` | #52 | active |
+| Every file under `src/` starts with a `//!` line naming its layer (`//! Domain: ...`) | `cargo xtask layers` | CI `meta` | #52 | active |
+| `ARCHITECTURE.md` is the code map: the layers, where each concept lives, the invariants; it changes with every change that moves a module | review, against the layer table `cargo xtask layers` enforces | PR review | #52 | active |
 | Dependencies: no yanked, unmaintained or vulnerable crates; MIT, Apache-2.0 or Unicode-3.0 only; crates.io only; no wildcards | cargo-deny | CI `deny` | #27 | active |
 | No typos | typos | pre-commit, CI `meta` | #27 | active |
 | Workflows valid, actions pinned by SHA, least privilege | actionlint, zizmor | CI `meta` | #27 | active |

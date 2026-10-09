@@ -1,30 +1,18 @@
-//! The only module that writes to stdout and stderr.
+//! Edge: the only module that writes to stdout and stderr. It renders the text people read; the
+//! JSON documents live in `output::json`.
+
+mod json;
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
-use serde::Serialize;
+use crate::domain::fleet::Fleet;
+use crate::domain::include;
+use crate::domain::worktree::{BranchOutcome, Created, Removed};
 
-use crate::contract::{CONTRACT, VERSION};
-use crate::fleet::Fleet;
-use crate::include;
-use crate::worktree::{BranchOutcome, Created, Removed};
-
-#[derive(Debug, Serialize)]
-struct Envelope<'a, T: Serialize> {
-    contract: u32,
-    version: &'a str,
-    #[serde(flatten)]
-    body: &'a T,
-}
-
-/// Prints `body` as one JSON document carrying `contract` and `version`.
-pub(crate) fn json<T: Serialize>(body: &T) -> anyhow::Result<()> {
-    let doc = serde_json::to_string(&Envelope {
-        contract: CONTRACT,
-        version: VERSION,
-        body,
-    })?;
-    out(&doc);
+/// Prints the fleet as one JSON document carrying `contract` and `version`.
+pub(crate) fn fleet_json(fleet: &Fleet) -> anyhow::Result<()> {
+    out(&json::fleet(fleet)?);
     Ok(())
 }
 
@@ -120,11 +108,11 @@ fn render_worktree_removed(removed: &Removed) -> String {
 }
 
 /// Prints the worktrees `worktree prune` cleaned, one path per line, or that there was nothing to prune.
-pub(crate) fn worktrees_pruned(pruned: &[std::path::PathBuf]) {
+pub(crate) fn worktrees_pruned(pruned: &[PathBuf]) {
     out(&render_worktrees_pruned(pruned));
 }
 
-fn render_worktrees_pruned(pruned: &[std::path::PathBuf]) -> String {
+fn render_worktrees_pruned(pruned: &[PathBuf]) -> String {
     if pruned.is_empty() {
         return "nothing to prune".to_owned();
     }
@@ -152,12 +140,10 @@ fn out(text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-    use crate::config::Setting;
-    use crate::fleet::{Worktree, WorktreeEntry};
-    use crate::state::State;
+    use crate::domain::config::Setting;
+    use crate::domain::fleet::{Worktree, WorktreeEntry};
+    use crate::domain::state::State;
 
     fn fleet(worktrees: Vec<Worktree>) -> Fleet {
         Fleet {

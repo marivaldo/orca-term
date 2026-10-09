@@ -1,4 +1,5 @@
-//! The `orca-term` binary: parses the arguments, runs the core and turns an error into an exit code.
+//! Main: the `orca-term` binary. It parses the arguments, runs the core and turns an error into
+//! an exit code.
 
 use std::process::ExitCode;
 

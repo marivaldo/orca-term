@@ -4,3 +4,40 @@ allow-dbg-in-tests = true
 allow-print-in-tests = true
 too-many-lines-threshold = 60
 excessive-nesting-threshold = 4
+
+# I/O happens only in the adapter modules (`src/adapters/`), which opt out one by one with a
+# module-level `#![expect(clippy::disallowed_methods, reason = "...")]`. `cargo xtask layers`
+# rejects the opt-out anywhere else. See ARCHITECTURE.md.
+disallowed-types = [
+    { path = "std::process::Command", reason = "only the git adapter (src/adapters/git.rs) starts processes" },
+    { path = "std::fs::File", reason = "only the fs adapter (src/adapters/fs.rs) opens files" },
+]
+disallowed-methods = [
+    { path = "std::fs::read", reason = "only the fs adapter (src/adapters/fs.rs) reads files" },
+    { path = "std::fs::read_to_string", reason = "only the fs adapter (src/adapters/fs.rs) reads files" },
+    { path = "std::fs::write", reason = "only the fs adapter (src/adapters/fs.rs) writes files" },
+    { path = "std::fs::create_dir_all", reason = "only the fs adapter (src/adapters/fs.rs) creates directories" },
+    { path = "std::fs::copy", reason = "only the fs adapter (src/adapters/fs.rs) copies files" },
+    { path = "std::fs::rename", reason = "only the fs adapter (src/adapters/fs.rs) moves files" },
+    { path = "std::fs::remove_file", reason = "only the fs adapter (src/adapters/fs.rs) removes files" },
+    { path = "std::fs::set_permissions", reason = "only the fs adapter (src/adapters/fs.rs) changes permissions" },
+    { path = "std::fs::metadata", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::fs::symlink_metadata", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::fs::read_dir", reason = "only the fs adapter (src/adapters/fs.rs) lists directories" },
+    { path = "std::fs::File::open", reason = "only the fs adapter (src/adapters/fs.rs) opens files" },
+    { path = "std::fs::File::create", reason = "only the fs adapter (src/adapters/fs.rs) creates files" },
+    { path = "std::fs::OpenOptions::new", reason = "only the fs adapter (src/adapters/fs.rs) opens files" },
+    { path = "std::path::Path::canonicalize", reason = "only the fs adapter (src/adapters/fs.rs) resolves paths on disk" },
+    { path = "std::path::Path::exists", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::path::Path::is_dir", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::path::Path::is_file", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::path::Path::metadata", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::path::Path::symlink_metadata", reason = "only the fs adapter (src/adapters/fs.rs) inspects files" },
+    { path = "std::path::Path::read_dir", reason = "only the fs adapter (src/adapters/fs.rs) lists directories" },
+    { path = "std::path::Path::read_link", reason = "only the fs adapter (src/adapters/fs.rs) reads symlinks" },
+    { path = "std::env::var", reason = "only the env adapter (src/adapters/env.rs) reads the environment" },
+    { path = "std::env::var_os", reason = "only the env adapter (src/adapters/env.rs) reads the environment" },
+    { path = "std::env::current_dir", reason = "only the env adapter (src/adapters/env.rs) reads the current directory" },
+    { path = "std::env::args", reason = "only clap, through the edge, reads the arguments" },
+    { path = "std::env::home_dir", reason = "only the env adapter (src/adapters/env.rs) reads the environment" },
+]

@@ -1,4 +1,9 @@
 //! The repository's own lints, which no off-the-shelf tool covers. Run with `cargo xtask`.
+#![expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "the layer rule binds the core; the xtask is a tool that reads files and runs git"
+)]
 
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -6,10 +11,11 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context, Result, bail};
 
 mod commit;
+mod layers;
 mod pr_title;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,6 +56,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
         }
         ["pr-title-lint", title] => Ok(pr_title::lint(title)),
         ["vocab"] => vocab::lint_repository(Path::new(".")),
+        ["layers"] => layers::lint_repository(Path::new(".")),
         _ => bail!(USAGE),
     }
 }
