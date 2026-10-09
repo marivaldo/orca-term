@@ -14,7 +14,7 @@ const ATTRIBUTION: &[&str] = &[
 ];
 
 /// Drops git's comment lines and everything below the scissors line, as git does.
-pub fn strip_git_comments(raw: &str) -> String {
+pub(crate) fn strip_git_comments(raw: &str) -> String {
     raw.lines()
         .take_while(|l| !l.starts_with("# ------------------------ >8 ------------------------"))
         .filter(|l| !l.starts_with('#'))
@@ -23,7 +23,7 @@ pub fn strip_git_comments(raw: &str) -> String {
 }
 
 /// Returns every rule the message breaks.
-pub fn lint(message: &str) -> Vec<String> {
+pub(crate) fn lint(message: &str) -> Vec<String> {
     let message = message.trim_end();
     let mut problems = Vec::new();
     if message.trim().is_empty() {

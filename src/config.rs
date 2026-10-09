@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_norway::Value;
 
 /// The config file's name, both committed and in the git common dir.
-pub const FILE_NAME: &str = "orca-term.yaml";
+pub(crate) const FILE_NAME: &str = "orca-term.yaml";
 
 /// Every key this version understands.
 const KEYS: &[&str] = &["base"];
@@ -25,13 +25,13 @@ const DEFAULT_BASE: &str = "~/orca-term/worktrees";
 
 /// The process environment config resolution depends on.
 #[derive(Debug, Clone, Default)]
-pub struct Env {
-    pub home: Option<PathBuf>,
-    pub xdg_config_home: Option<PathBuf>,
+pub(crate) struct Env {
+    pub(crate) home: Option<PathBuf>,
+    pub(crate) xdg_config_home: Option<PathBuf>,
 }
 
 impl Env {
-    pub fn from_process() -> Self {
+    pub(crate) fn from_process() -> Self {
         let var = |name| {
             std::env::var_os(name)
                 .filter(|v| !v.is_empty())
@@ -56,12 +56,12 @@ impl Env {
 
 /// One resolved key: its value, the source that won and the lower sources it overrode.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Setting<T> {
-    pub value: T,
+pub(crate) struct Setting<T> {
+    pub(crate) value: T,
     /// The winning file's label, or `None` for the built-in default.
-    pub source: Option<String>,
+    pub(crate) source: Option<String>,
     /// Labels of the lower-precedence files that also set the key, highest first.
-    pub overridden: Vec<String>,
+    pub(crate) overridden: Vec<String>,
 }
 
 impl fmt::Display for Setting<PathBuf> {
@@ -81,9 +81,9 @@ impl fmt::Display for Setting<PathBuf> {
 
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Config {
+pub(crate) struct Config {
     /// The directory worktrees live under, as `<base>/<repo>/<name>`.
-    pub base: Setting<PathBuf>,
+    pub(crate) base: Setting<PathBuf>,
 }
 
 /// One config file that exists.
@@ -106,7 +106,7 @@ impl Config {
     /// Reads every config file of the repository whose primary checkout is `primary` and whose git
     /// common dir is `common_dir`. Missing files are skipped; unreadable, malformed or unknown keys
     /// are errors naming the file.
-    pub fn load(primary: &Path, common_dir: &Path, env: &Env) -> Result<Self> {
+    pub(crate) fn load(primary: &Path, common_dir: &Path, env: &Env) -> Result<Self> {
         let mut layers = Vec::new();
         let local = common_dir.join(FILE_NAME);
         if let Some(raw) = read_layer(&local)? {

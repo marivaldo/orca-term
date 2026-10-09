@@ -15,39 +15,39 @@ use crate::state::{self, State};
 
 /// A worktree as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WorktreeEntry {
-    pub path: PathBuf,
+pub(crate) struct WorktreeEntry {
+    pub(crate) path: PathBuf,
     /// The checked-out branch, without `refs/heads/`. `None` when detached or bare.
-    pub branch: Option<String>,
+    pub(crate) branch: Option<String>,
     /// Why git marks the worktree prunable, when it does: its directory or `.git` file is gone.
     #[serde(skip)]
-    pub prunable: Option<String>,
+    pub(crate) prunable: Option<String>,
 }
 
 /// One worktree of the fleet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Worktree {
-    pub name: String,
-    pub path: PathBuf,
-    pub branch: Option<String>,
-    pub state: State,
+pub(crate) struct Worktree {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) branch: Option<String>,
+    pub(crate) state: State,
     /// Why the worktree is in its state, when there is something to say.
-    pub detail: Option<String>,
+    pub(crate) detail: Option<String>,
     /// Whether the worktree's directory is gone, so only `worktree prune` can clean it.
     #[serde(skip)]
-    pub gone: bool,
+    pub(crate) gone: bool,
 }
 
 /// The primary checkout and every worktree of its repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Fleet {
-    pub primary: WorktreeEntry,
-    pub worktrees: Vec<Worktree>,
+pub(crate) struct Fleet {
+    pub(crate) primary: WorktreeEntry,
+    pub(crate) worktrees: Vec<Worktree>,
 }
 
 impl Fleet {
     /// Reads the fleet of the repository containing `dir`. Never writes.
-    pub fn discover(dir: &Path) -> Result<Self> {
+    pub(crate) fn discover(dir: &Path) -> Result<Self> {
         let entries = list_entries(dir)?;
         let prunable: Vec<Option<String>> = entries
             .iter()
@@ -62,7 +62,7 @@ impl Fleet {
     }
 
     /// The worktrees whose directory is gone: the ones `worktree prune` would clean.
-    pub fn gone_worktrees(&self) -> impl Iterator<Item = &Worktree> {
+    pub(crate) fn gone_worktrees(&self) -> impl Iterator<Item = &Worktree> {
         self.worktrees.iter().filter(|worktree| worktree.gone)
     }
 
@@ -111,7 +111,7 @@ impl Worktree {
 }
 
 /// The primary checkout of the repository containing `dir`, without reading any worktree. Never writes.
-pub fn primary_checkout(dir: &Path) -> Result<WorktreeEntry> {
+pub(crate) fn primary_checkout(dir: &Path) -> Result<WorktreeEntry> {
     match list_entries(dir)?.into_iter().next() {
         Some(primary) => Ok(primary),
         None => bail!("git listed no worktrees"),

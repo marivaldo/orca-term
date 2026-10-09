@@ -13,19 +13,19 @@ use assert_fs::TempDir;
 use assert_fs::prelude::*;
 
 #[derive(Debug)]
-pub struct Repo {
-    pub tmp: TempDir,
-    pub root: PathBuf,
+pub(crate) struct Repo {
+    pub(crate) tmp: TempDir,
+    pub(crate) root: PathBuf,
     /// The binary's `HOME`.
-    pub home: PathBuf,
+    pub(crate) home: PathBuf,
     /// The binary's `XDG_CONFIG_HOME`.
-    pub xdg: PathBuf,
+    pub(crate) xdg: PathBuf,
     gitconfig: PathBuf,
 }
 
 impl Repo {
     /// A repository with one commit on `main`, at `<tmp>/repo`.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let tmp = TempDir::new().unwrap();
         let gitconfig = tmp.child("gitconfig");
         gitconfig
@@ -50,7 +50,7 @@ impl Repo {
     }
 
     /// Runs git in the primary checkout and panics on failure.
-    pub fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         let out = self
             .env(Command::new("git").arg("-C").arg(&self.root).args(args))
             .output()
@@ -64,7 +64,7 @@ impl Repo {
     }
 
     /// Writes `contents` to `rel` under the primary checkout, creating parent directories.
-    pub fn write(&self, rel: &str, contents: &str) -> PathBuf {
+    pub(crate) fn write(&self, rel: &str, contents: &str) -> PathBuf {
         let path = self.root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, contents).unwrap();
@@ -72,13 +72,13 @@ impl Repo {
     }
 
     /// Stages everything and commits it.
-    pub fn commit_all(&self, message: &str) {
+    pub(crate) fn commit_all(&self, message: &str) {
         self.git(&["add", "--all"]);
         self.git(&["commit", "--quiet", "-m", message]);
     }
 
     /// Adds a worktree by hand, as a person would with plain git, on a new branch.
-    pub fn add_worktree(&self, path: &Path, branch: &str) -> PathBuf {
+    pub(crate) fn add_worktree(&self, path: &Path, branch: &str) -> PathBuf {
         self.git(&[
             "worktree",
             "add",
@@ -91,7 +91,7 @@ impl Repo {
     }
 
     /// The `orca-term` binary, run from `dir` with the fixture's git environment.
-    pub fn orca_term(&self, dir: &Path) -> assert_cmd::Command {
+    pub(crate) fn orca_term(&self, dir: &Path) -> assert_cmd::Command {
         let mut cmd = cargo_bin_cmd!("orca-term");
         cmd.current_dir(dir);
         self.env_assert(&mut cmd);

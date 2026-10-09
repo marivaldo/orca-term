@@ -1,22 +1,12 @@
-//! `orca-term`: the core CLI.
+//! The `orca-term` binary: parses the arguments, runs the core and turns an error into an exit code.
 
 use std::process::ExitCode;
 
 use clap::Parser;
-
-mod cli;
-mod config;
-mod contract;
-mod fleet;
-mod git;
-mod include;
-mod output;
-mod state;
-mod worktree;
+use orca_term::{Cli, output};
 
 fn main() -> ExitCode {
-    let cli = cli::Cli::parse();
-    match cli::run(&cli) {
+    match orca_term::run(&Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             output::error(&err);
