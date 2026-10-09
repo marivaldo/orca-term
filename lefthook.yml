@@ -1,0 +1,19 @@
+# Local mirror of the fast subset of `just check`. Install with `just hooks`.
+# lefthook only calls just recipes, so the rules live in one place.
+
+# `just hooks` installs the shims; lefthook never installs or rewrites hooks itself.
+no_auto_install: true
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: just fmt-check
+    - name: typos
+      run: just typos {staged_files}
+
+commit-msg:
+  jobs:
+    - name: commit-lint
+      run: just commit-msg {1}

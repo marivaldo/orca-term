@@ -1,0 +1,5 @@
+# typos: https://github.com/crate-ci/typos
+
+[files]
+# The map's original input, kept verbatim in Portuguese.
+extend-exclude = ["docs/wayfinder-input.md"]

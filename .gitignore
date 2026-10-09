@@ -2,3 +2,6 @@
 
 # worktrees created by background agents
 .claude/worktrees/
+
+# build output
+/target/
