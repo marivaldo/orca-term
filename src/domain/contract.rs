@@ -1,4 +1,4 @@
-//! The integers that keep the core and its clients in step (ADR 0008).
+//! Domain: the integers that keep the core and its clients in step (ADR 0008).
 
 /// Carried by every `--json` output. Rises only when the JSON contract breaks.
 pub(crate) const CONTRACT: u32 = 1;

@@ -1,4 +1,4 @@
-//! Configuration: YAML files layered key by key.
+//! Domain: the configuration, YAML files layered key by key.
 //!
 //! Precedence, highest first: the uncommitted override `orca-term.yaml` in the git common dir, the
 //! committed `orca-term.yaml` at the primary checkout root, the global
@@ -7,7 +7,6 @@
 //! precedence can be printed.
 
 use std::fmt;
-use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -23,7 +22,7 @@ const KEYS: &[&str] = &["base"];
 /// The built-in default for `base`, the directory worktrees live under.
 const DEFAULT_BASE: &str = "~/orca-term/worktrees";
 
-/// The process environment config resolution depends on.
+/// The process environment config resolution depends on, as values: the env adapter reads them.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Env {
     pub(crate) home: Option<PathBuf>,
@@ -31,18 +30,6 @@ pub(crate) struct Env {
 }
 
 impl Env {
-    pub(crate) fn from_process() -> Self {
-        let var = |name| {
-            std::env::var_os(name)
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        };
-        Self {
-            home: var("HOME"),
-            xdg_config_home: var("XDG_CONFIG_HOME"),
-        }
-    }
-
     /// The global config file. A relative `XDG_CONFIG_HOME` is ignored, as the XDG spec says.
     fn global_file(&self) -> Option<PathBuf> {
         let dir = self
@@ -86,9 +73,18 @@ pub(crate) struct Config {
     pub(crate) base: Setting<PathBuf>,
 }
 
-/// One config file that exists.
+/// Where a config file may be, how the precedence line names it and what relative paths in it
+/// resolve against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Source {
+    pub(crate) path: PathBuf,
+    label: String,
+    anchor: PathBuf,
+}
+
+/// One config file that exists, parsed.
 #[derive(Debug)]
-struct Layer {
+pub(crate) struct Layer {
     /// How the precedence line names it.
     label: String,
     /// What relative paths in it resolve against.
@@ -102,43 +98,48 @@ struct Raw {
     base: Option<String>,
 }
 
-impl Config {
-    /// Reads every config file of the repository whose primary checkout is `primary` and whose git
-    /// common dir is `common_dir`. Missing files are skipped; unreadable, malformed or unknown keys
-    /// are errors naming the file.
-    pub(crate) fn load(primary: &Path, common_dir: &Path, env: &Env) -> Result<Self> {
-        let mut layers = Vec::new();
-        let local = common_dir.join(FILE_NAME);
-        if let Some(raw) = read_layer(&local)? {
-            layers.push(Layer {
-                label: label_within(&local, primary),
-                anchor: primary.to_owned(),
-                raw,
-            });
-        }
-        let committed = primary.join(FILE_NAME);
-        if let Some(raw) = read_layer(&committed)? {
-            layers.push(Layer {
-                label: FILE_NAME.to_owned(),
-                anchor: primary.to_owned(),
-                raw,
-            });
-        }
-        if let Some(global) = env.global_file()
-            && let Some(raw) = read_layer(&global)?
-        {
-            layers.push(Layer {
-                label: global.display().to_string(),
-                anchor: global.parent().map(Path::to_owned).unwrap_or_default(),
-                raw,
-            });
-        }
-        resolve(&layers, env)
+/// Every config file of the repository whose primary checkout is `primary` and whose git common
+/// dir is `common_dir`, highest precedence first. Some of them may not exist.
+pub(crate) fn sources(primary: &Path, common_dir: &Path, env: &Env) -> Vec<Source> {
+    let local = common_dir.join(FILE_NAME);
+    let mut sources = vec![
+        Source {
+            label: label_within(&local, primary),
+            path: local,
+            anchor: primary.to_owned(),
+        },
+        Source {
+            path: primary.join(FILE_NAME),
+            label: FILE_NAME.to_owned(),
+            anchor: primary.to_owned(),
+        },
+    ];
+    if let Some(global) = env.global_file() {
+        sources.push(Source {
+            label: global.display().to_string(),
+            anchor: global.parent().map(Path::to_owned).unwrap_or_default(),
+            path: global,
+        });
+    }
+    sources
+}
+
+impl Layer {
+    /// Parses the text of the config file `source`. Malformed YAML and unknown keys are errors
+    /// naming the file.
+    pub(crate) fn parse(source: Source, text: &str) -> Result<Self> {
+        let raw = parse(text)
+            .with_context(|| format!("invalid config file {}", source.path.display()))?;
+        Ok(Self {
+            label: source.label,
+            anchor: source.anchor,
+            raw,
+        })
     }
 }
 
 /// Resolves `layers`, highest precedence first, over the built-in defaults.
-fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
+pub(crate) fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
     let home = env.home.as_deref();
     let mut setters = layers
         .iter()
@@ -159,16 +160,6 @@ fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
         },
     };
     Ok(Config { base })
-}
-
-fn read_layer(path: &Path) -> Result<Option<Raw>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text)
-            .with_context(|| format!("invalid config file {}", path.display()))
-            .map(Some),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("could not read {}", path.display())),
-    }
 }
 
 fn parse(text: &str) -> Result<Raw> {
@@ -325,6 +316,34 @@ mod tests {
         assert!(parse("base: [\n").is_err());
         assert!(parse("- base\n").is_err());
         assert!(parse("base: [a, b]\n").is_err());
+    }
+
+    #[test]
+    fn the_sources_go_local_then_committed_then_global() {
+        let sources = sources(Path::new("/repo"), Path::new("/repo/.git"), &env());
+        let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                ".git/orca-term.yaml",
+                "orca-term.yaml",
+                "/home/me/.config/orca-term/config.yaml"
+            ]
+        );
+        assert_eq!(
+            sources[2].anchor,
+            PathBuf::from("/home/me/.config/orca-term")
+        );
+    }
+
+    #[test]
+    fn a_malformed_file_is_named_in_the_error() {
+        let source = sources(Path::new("/repo"), Path::new("/repo/.git"), &env()).remove(1);
+        let err = Layer::parse(source, "bogus: 1\n").unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "invalid config file /repo/orca-term.yaml: unknown key `bogus` (known keys: base)"
+        );
     }
 
     #[test]

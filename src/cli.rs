@@ -1,11 +1,11 @@
-//! The command-line surface.
+//! Edge: the command-line surface. It parses the arguments, hands each command to its ops module
+//! and gives the result to `output`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::config::Env;
-use crate::fleet::Fleet;
-use crate::{output, worktree};
+use crate::ops::{worktree_ls, worktree_new, worktree_prune, worktree_rm};
+use crate::output;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -54,40 +54,22 @@ enum WorktreeCommand {
     Prune,
 }
 
+/// Runs the command `cli` names.
 pub fn run(cli: &Cli) -> Result<()> {
-    let cwd = std::env::current_dir().context("could not read the current directory")?;
     match &cli.command {
-        Command::Worktree {
-            command: WorktreeCommand::New { name },
-        } => {
-            let created = worktree::create(&cwd, name, &Env::from_process())?;
-            output::worktree_created(&created);
-            Ok(())
-        }
-        Command::Worktree {
-            command: WorktreeCommand::Rm { worktree, force },
-        } => {
-            let removed = worktree::remove(&cwd, worktree, *force)?;
-            output::worktree_removed(&removed);
-            Ok(())
-        }
-        Command::Worktree {
-            command: WorktreeCommand::Prune,
-        } => {
-            output::worktrees_pruned(&worktree::prune(&cwd)?);
-            Ok(())
-        }
-        Command::Worktree {
-            command: WorktreeCommand::Ls { json },
-        } => {
-            let json = *json;
-            let fleet = Fleet::discover(&cwd)?;
-            if json {
-                output::json(&fleet)
-            } else {
-                output::fleet_table(&fleet);
-                Ok(())
-            }
-        }
+        Command::Worktree { command } => run_worktree(command),
     }
+}
+
+fn run_worktree(command: &WorktreeCommand) -> Result<()> {
+    match command {
+        WorktreeCommand::New { name } => output::worktree_created(&worktree_new::run(name)?),
+        WorktreeCommand::Rm { worktree, force } => {
+            output::worktree_removed(&worktree_rm::run(worktree, *force)?);
+        }
+        WorktreeCommand::Prune => output::worktrees_pruned(&worktree_prune::run()?),
+        WorktreeCommand::Ls { json: true } => output::fleet_json(&worktree_ls::run()?)?,
+        WorktreeCommand::Ls { json: false } => output::fleet_table(&worktree_ls::run()?),
+    }
+    Ok(())
 }

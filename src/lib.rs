@@ -1,13 +1,10 @@
-//! The `orca-term` core as a library: every module lives here, and the binary only calls [`run`].
+//! Main: the `orca-term` core as a library. It declares the five layers (see `ARCHITECTURE.md`),
+//! and the binary only calls [`run`].
 
+mod adapters;
 mod cli;
-mod config;
-mod contract;
-mod fleet;
-mod git;
-mod include;
+mod domain;
+mod ops;
 pub mod output;
-mod state;
-mod worktree;
 
 pub use cli::{Cli, run};

@@ -4,6 +4,11 @@
     clippy::unwrap_used,
     reason = "clippy.toml relaxes unwrap only inside #[test] fns; fixture helpers panic on failure too"
 )]
+#![expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "a black-box test builds real repositories and files around the binary it drives"
+)]
 
 mod support;
 

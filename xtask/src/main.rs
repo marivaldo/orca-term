@@ -1,4 +1,9 @@
 //! The repository's own lints, which no off-the-shelf tool covers. Run with `cargo xtask`.
+#![expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "the layer rule binds the core; the xtask is a tool that reads files and runs git"
+)]
 
 use std::path::Path;
 use std::process::{Command, ExitCode};
