@@ -32,7 +32,7 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | Commit messages: one line, type prefix, no Jira id, no AI attribution | `cargo xtask commit-lint` | commit-msg hook, CI `meta` over the pushed range | #27 | active |
 | The glossary's *Avoid* synonyms never appear in code or docs, and the config file is only ever called `orca-term.yaml` | `cargo xtask vocab` (waivers in `docs/vocabulary-waivers.md`) | CI `meta` | #27 | active |
 | Coding agents never skip hooks or signing | `.claude/hooks/git-guard.sh`, tested by `just guard-test` | agent sessions, CI `meta` | #27 | active |
-| main takes changes only through a PR with `check` green and signed commits; no force-push or deletion | ruleset on main (maintainer may bypass) | GitHub | #27 | active |
+| main takes changes only through a PR with `check` green and signed commits; no force-push or deletion; PRs land as merge commits, so each commit keeps its own signature and linted message | ruleset `main` on the default branch (maintainer may bypass), merge commits only | GitHub | #27 | active |
 | The fleet is `git worktree list` minus the primary checkout; a hand-made worktree is a lane | `tests/lane_ls.rs` | CI `rust` | #27 | active |
 | The primary checkout is never a lane | `tests/lane_ls.rs`, unit tests in the fleet module | CI `rust` | #27 | active |
 | Lanes sharing a basename are told apart by path | `tests/lane_ls.rs` | CI `rust` | #27 | active |
