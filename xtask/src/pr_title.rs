@@ -2,7 +2,7 @@
 //! convention puts a Jira id, with a lowercase description and no type prefix.
 
 /// Returns every rule the title breaks.
-pub fn lint(title: &str) -> Vec<String> {
+pub(crate) fn lint(title: &str) -> Vec<String> {
     let title = title.trim();
     let Some((id, desc)) = title.split_once(" - ") else {
         return vec![format!(

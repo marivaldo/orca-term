@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::git;
 
 /// The newest schema this core reads and writes.
-pub const SUPPORTED_SCHEMA: u64 = 1;
+pub(crate) const SUPPORTED_SCHEMA: u64 = 1;
 
 /// The worktree's state file, inside its admin directory.
 const WORKTREE_FILE: &str = "worktree.json";
@@ -21,7 +21,7 @@ const WORKTREE_FILE: &str = "worktree.json";
 /// What a worktree is doing, as the fleet shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum State {
+pub(crate) enum State {
     /// No agent is attached to the worktree.
     NoAgent,
     /// The worktree's directory is gone, or its state cannot be read.
@@ -30,7 +30,7 @@ pub enum State {
 
 impl State {
     /// How a table shows the state.
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::NoAgent => "no agent",
             Self::Broken => "broken",
@@ -40,14 +40,14 @@ impl State {
 
 /// `worktree.json` as this core writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WorktreeFile {
-    pub schema: u64,
-    pub agent: Option<String>,
+pub(crate) struct WorktreeFile {
+    pub(crate) schema: u64,
+    pub(crate) agent: Option<String>,
 }
 
 impl WorktreeFile {
     /// The state of a worktree just created: no agent.
-    pub fn fresh() -> Self {
+    pub(crate) fn fresh() -> Self {
         Self {
             schema: SUPPORTED_SCHEMA,
             agent: None,
@@ -69,7 +69,7 @@ struct Seen {
 }
 
 /// The admin directory holding the state of the worktree at `worktree`.
-pub fn admin_dir(worktree: &Path) -> Result<PathBuf> {
+pub(crate) fn admin_dir(worktree: &Path) -> Result<PathBuf> {
     let dir = git::text(
         worktree,
         &[
@@ -83,14 +83,14 @@ pub fn admin_dir(worktree: &Path) -> Result<PathBuf> {
 }
 
 /// The state recorded in `admin_dir`. A missing `worktree.json` is a worktree with no agent. Never writes.
-pub fn read(admin_dir: &Path) -> Result<State> {
+pub(crate) fn read(admin_dir: &Path) -> Result<State> {
     // Parsed even though only `no_agent` exists yet, so a corrupt file is reported, not hidden.
     read_seen(&admin_dir.join(WORKTREE_FILE))?;
     Ok(State::NoAgent)
 }
 
 /// Writes `file` as `worktree.json` in `admin_dir`, atomically, refusing to overwrite a newer schema.
-pub fn write(admin_dir: &Path, file: &WorktreeFile) -> Result<()> {
+pub(crate) fn write(admin_dir: &Path, file: &WorktreeFile) -> Result<()> {
     let path = admin_dir.join(WORKTREE_FILE);
     if let Some(seen) = read_seen(&path)?
         && let Some(schema) = seen.schema

@@ -19,11 +19,11 @@ use anyhow::{Context, Result, bail};
 use crate::git;
 
 /// The copy list's file name, at the primary checkout root.
-pub const FILE_NAME: &str = ".worktreeinclude";
+pub(crate) const FILE_NAME: &str = ".worktreeinclude";
 
 /// The repository-relative paths to copy from `primary`: ignored, untracked files that
 /// `.worktreeinclude` matches. Empty when there is no `.worktreeinclude`.
-pub fn list(primary: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn list(primary: &Path) -> Result<Vec<PathBuf>> {
     let include = primary.join(FILE_NAME);
     if !include.is_file() {
         return Ok(Vec::new());
@@ -55,7 +55,7 @@ pub fn list(primary: &Path) -> Result<Vec<PathBuf>> {
 
 /// Copies each of `paths` from `primary` into `worktree`, returning how many files were copied.
 /// Symlinks and anything else that is not a regular file are skipped.
-pub fn copy(primary: &Path, worktree: &Path, paths: &[PathBuf]) -> Result<usize> {
+pub(crate) fn copy(primary: &Path, worktree: &Path, paths: &[PathBuf]) -> Result<usize> {
     let worktree_real = worktree
         .canonicalize()
         .with_context(|| format!("could not resolve {}", worktree.display()))?;

@@ -26,6 +26,10 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | Clippy `all` + `pedantic` and the chosen restriction lints, no `#[allow]` without a reason | Clippy, Cargo `[workspace.lints]` | CI `rust` | #27 | active |
 | No unsafe code | `unsafe_code = "forbid"` | compiler | #27 | active |
 | Only stdout/stderr through the output module | `print_stdout`, `print_stderr` | CI `rust` | #27 | active |
+| The core is a library (`src/lib.rs` declares every module) and `src/main.rs` only parses arguments, calls it and maps an error to an exit code (ADR 0010) | the crate layout: the black-box tests in `tests/` run the binary, the unit tests run in the library | CI `rust` | [#51](https://github.com/marivaldo/orca-term/issues/51) | active |
+| Visibility is `pub(crate)` by default; `pub` only for what the binary and the tests use | rustc `unreachable_pub`, Cargo `[workspace.lints]` | CI `rust` | #51 | active |
+| One file per module, `foo.rs` next to `foo/`, never `mod.rs` | Clippy `mod_module_files` | CI `rust` | #51 | active |
+| Functions of at most 60 lines and at most 4 levels of nesting | Clippy `too_many_lines`, `excessive_nesting` (thresholds in `clippy.toml`) | CI `rust` | #51 | active |
 | Dependencies: no yanked, unmaintained or vulnerable crates; MIT, Apache-2.0 or Unicode-3.0 only; crates.io only; no wildcards | cargo-deny | CI `deny` | #27 | active |
 | No typos | typos | pre-commit, CI `meta` | #27 | active |
 | Workflows valid, actions pinned by SHA, least privilege | actionlint, zizmor | CI `meta` | #27 | active |

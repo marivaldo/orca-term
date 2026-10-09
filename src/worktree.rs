@@ -13,18 +13,18 @@ use crate::{fleet, git, include, state};
 
 /// What `worktree new` made.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Created {
-    pub name: String,
-    pub path: PathBuf,
-    pub branch: String,
+pub(crate) struct Created {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) branch: String,
     /// The commit-ish the branch starts from: the default branch, local or `origin/`.
-    pub start: String,
-    pub copied: usize,
-    pub base: Setting<PathBuf>,
+    pub(crate) start: String,
+    pub(crate) copied: usize,
+    pub(crate) base: Setting<PathBuf>,
 }
 
 /// Creates the worktree `name` in the repository containing `dir`.
-pub fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
+pub(crate) fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
     let primary = fleet::primary_checkout(dir)?.path;
     let primary = primary
         .canonicalize()
@@ -163,15 +163,15 @@ fn has_ref(dir: &Path, full_ref: &str) -> Result<bool> {
 
 /// What `worktree rm` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Removed {
-    pub name: String,
-    pub path: PathBuf,
-    pub branch: BranchOutcome,
+pub(crate) struct Removed {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) branch: BranchOutcome,
 }
 
 /// What `worktree rm` did with the worktree's branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BranchOutcome {
+pub(crate) enum BranchOutcome {
     /// Deleted because it is merged into `into`.
     DeletedMerged { branch: String, into: String },
     /// Deleted because of `--force`.
@@ -184,7 +184,7 @@ pub enum BranchOutcome {
 
 /// Removes the worktree named or located by `target` in the repository containing `dir`. Its branch
 /// is deleted only when merged into the default branch, or when `force` is set.
-pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
+pub(crate) fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     let fleet = Fleet::discover(dir)?;
     let worktree = resolve(&fleet, dir, target)?;
     if worktree.gone {
@@ -212,45 +212,8 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
         _ => None,
     };
 
-    let mut args = vec![OsStr::new("worktree"), OsStr::new("remove")];
-    if force {
-        args.push(OsStr::new("--force"));
-    }
-    args.push(worktree.path.as_os_str());
-    git::output(primary, &args).with_context(|| {
-        let hint = if force {
-            String::new()
-        } else {
-            "; pass --force to remove it anyway, discarding its changes".to_owned()
-        };
-        format!(
-            "could not remove worktree {}{hint}",
-            worktree.path.display()
-        )
-    })?;
-
-    let branch = match (&worktree.branch, merged) {
-        (None, _) => BranchOutcome::Detached,
-        (Some(branch), None) => delete_branch(
-            primary,
-            branch,
-            BranchOutcome::DeletedForced {
-                branch: branch.clone(),
-            },
-        ),
-        (Some(branch), Some(Ok(into))) => delete_branch(
-            primary,
-            branch,
-            BranchOutcome::DeletedMerged {
-                branch: branch.clone(),
-                into,
-            },
-        ),
-        (Some(branch), Some(Err(reason))) => BranchOutcome::Kept {
-            branch: branch.clone(),
-            reason,
-        },
-    };
+    remove_worktree_directory(primary, &worktree.path, force)?;
+    let branch = settle_branch(primary, worktree.branch.as_deref(), merged);
     Ok(Removed {
         name: worktree.name.clone(),
         path: worktree.path.clone(),
@@ -258,9 +221,59 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     })
 }
 
+/// Runs `git worktree remove` on the worktree at `path`, with `--force` when `force` is set.
+fn remove_worktree_directory(primary: &Path, path: &Path, force: bool) -> Result<()> {
+    let mut args = vec![OsStr::new("worktree"), OsStr::new("remove")];
+    if force {
+        args.push(OsStr::new("--force"));
+    }
+    args.push(path.as_os_str());
+    git::output(primary, &args).with_context(|| {
+        let hint = if force {
+            String::new()
+        } else {
+            "; pass --force to remove it anyway, discarding its changes".to_owned()
+        };
+        format!("could not remove worktree {}{hint}", path.display())
+    })?;
+    Ok(())
+}
+
+/// Deletes or keeps the removed worktree's branch, following the decision `remove` made before
+/// the worktree went: `None` deletes it (forced), `Some(Ok(into))` deletes it as merged into
+/// `into`, `Some(Err(reason))` keeps it.
+fn settle_branch(
+    primary: &Path,
+    branch: Option<&str>,
+    merged: Option<Result<String, String>>,
+) -> BranchOutcome {
+    match (branch, merged) {
+        (None, _) => BranchOutcome::Detached,
+        (Some(branch), None) => delete_branch(
+            primary,
+            branch,
+            BranchOutcome::DeletedForced {
+                branch: branch.to_owned(),
+            },
+        ),
+        (Some(branch), Some(Ok(into))) => delete_branch(
+            primary,
+            branch,
+            BranchOutcome::DeletedMerged {
+                branch: branch.to_owned(),
+                into,
+            },
+        ),
+        (Some(branch), Some(Err(reason))) => BranchOutcome::Kept {
+            branch: branch.to_owned(),
+            reason,
+        },
+    }
+}
+
 /// Runs `git worktree prune` from the primary checkout and returns the paths of the worktrees it
 /// cleaned. Only ever invoked by the person, through `worktree prune`.
-pub fn prune(dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn prune(dir: &Path) -> Result<Vec<PathBuf>> {
     let before = Fleet::discover(dir)?;
     git::output(&before.primary.path, &["worktree", "prune"])?;
     let after = Fleet::discover(&before.primary.path)?;

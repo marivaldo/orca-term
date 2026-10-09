@@ -18,7 +18,7 @@ struct Envelope<'a, T: Serialize> {
 }
 
 /// Prints `body` as one JSON document carrying `contract` and `version`.
-pub fn json<T: Serialize>(body: &T) -> anyhow::Result<()> {
+pub(crate) fn json<T: Serialize>(body: &T) -> anyhow::Result<()> {
     let doc = serde_json::to_string(&Envelope {
         contract: CONTRACT,
         version: VERSION,
@@ -29,7 +29,7 @@ pub fn json<T: Serialize>(body: &T) -> anyhow::Result<()> {
 }
 
 /// Prints the fleet as an aligned table, one worktree per line.
-pub fn fleet_table(fleet: &Fleet) {
+pub(crate) fn fleet_table(fleet: &Fleet) {
     out(&render_fleet_table(fleet));
 }
 
@@ -74,7 +74,7 @@ fn render_fleet_table(fleet: &Fleet) -> String {
 }
 
 /// Prints what `worktree new` made, ending with the `base` it used and where that came from.
-pub fn worktree_created(created: &Created) {
+pub(crate) fn worktree_created(created: &Created) {
     out(&render_worktree_created(created));
 }
 
@@ -97,7 +97,7 @@ fn render_worktree_created(created: &Created) -> String {
 }
 
 /// Prints what `worktree rm` removed and what happened to the worktree's branch.
-pub fn worktree_removed(removed: &Removed) {
+pub(crate) fn worktree_removed(removed: &Removed) {
     out(&render_worktree_removed(removed));
 }
 
@@ -120,7 +120,7 @@ fn render_worktree_removed(removed: &Removed) -> String {
 }
 
 /// Prints the worktrees `worktree prune` cleaned, one path per line, or that there was nothing to prune.
-pub fn worktrees_pruned(pruned: &[std::path::PathBuf]) {
+pub(crate) fn worktrees_pruned(pruned: &[std::path::PathBuf]) {
     out(&render_worktrees_pruned(pruned));
 }
 

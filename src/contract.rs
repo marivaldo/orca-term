@@ -1,7 +1,7 @@
 //! The integers that keep the core and its clients in step (ADR 0008).
 
 /// Carried by every `--json` output. Rises only when the JSON contract breaks.
-pub const CONTRACT: u32 = 1;
+pub(crate) const CONTRACT: u32 = 1;
 
 /// The core's own version, carried next to the contract.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");

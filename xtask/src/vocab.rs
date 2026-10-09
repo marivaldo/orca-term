@@ -25,7 +25,7 @@ const SKIP: &[&str] = &[
     "Cargo.lock",
 ];
 
-pub fn lint_repository(root: &Path) -> Result<Vec<String>> {
+pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
     let glossary = std::fs::read_to_string(root.join(GLOSSARY)).context("reading CONTEXT.md")?;
     let waivers = std::fs::read_to_string(root.join(WAIVERS)).unwrap_or_default();
     let avoided = avoided_terms(&glossary);
