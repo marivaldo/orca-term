@@ -3,7 +3,7 @@
 ## Harness
 
 Run `just check` before every commit: it runs everything CI runs (rustfmt, Clippy, tests,
-cargo-deny, typos, actionlint, zizmor, the vocabulary lint and the commit lint). Install the local
+cargo-deny, typos, actionlint, zizmor, the vocabulary, layers and commit lints). Install the local
 hooks once with `just hooks`. Every rule is enforced by a guard listed in `docs/harness.md`; a
 slice is done only when the guards for its behaviour are green there.
 
