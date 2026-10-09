@@ -43,6 +43,11 @@ A lane whose latest turn ended after the person last reviewed it, whatever the o
 mark on the lane, independent of its state, and opening the lane's review clears it.
 _Avoid_: unread, new, unacknowledged
 
+**Note**:
+A remark the person attaches to a line, a range of lines or a whole file of a lane's diff. A note
+waits, pending, until the person sends it to the lane's current session, and sending it consumes it.
+_Avoid_: comment, annotation, review comment
+
 **Takeover**:
 A person holding a lane's session directly instead of driving it through the core. Takeover is
 exclusive: while it lasts, the core does not drive that lane.
