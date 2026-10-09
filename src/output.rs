@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::contract::{CONTRACT, VERSION};
 use crate::fleet::Fleet;
 use crate::include;
-use crate::lane::{BranchOutcome, Created, Removed};
+use crate::worktree::{BranchOutcome, Created, Removed};
 
 #[derive(Debug, Serialize)]
 struct Envelope<'a, T: Serialize> {
@@ -28,27 +28,28 @@ pub fn json<T: Serialize>(body: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prints the fleet as an aligned table, one lane per line.
+/// Prints the fleet as an aligned table, one worktree per line.
 pub fn fleet_table(fleet: &Fleet) {
     out(&render_fleet_table(fleet));
 }
 
 fn render_fleet_table(fleet: &Fleet) -> String {
-    if fleet.lanes.is_empty() {
-        return format!("no lanes in {}", fleet.primary.path.display());
+    if fleet.worktrees.is_empty() {
+        return format!("no worktrees in {}", fleet.primary.path.display());
     }
     let header = ["NAME", "BRANCH", "STATE", "PATH"].map(str::to_owned);
     let rows: Vec<[String; 4]> = fleet
-        .lanes
+        .worktrees
         .iter()
-        .map(|lane| {
+        .map(|worktree| {
             [
-                lane.name.clone(),
-                lane.branch
+                worktree.name.clone(),
+                worktree
+                    .branch
                     .clone()
                     .unwrap_or_else(|| "(detached)".to_owned()),
-                lane.state.label().to_owned(),
-                lane.path.display().to_string(),
+                worktree.state.label().to_owned(),
+                worktree.path.display().to_string(),
             ]
         })
         .collect();
@@ -72,15 +73,15 @@ fn render_fleet_table(fleet: &Fleet) -> String {
     table
 }
 
-/// Prints what `lane new` made, ending with the `base` it used and where that came from.
-pub fn lane_created(created: &Created) {
-    out(&render_lane_created(created));
+/// Prints what `worktree new` made, ending with the `base` it used and where that came from.
+pub fn worktree_created(created: &Created) {
+    out(&render_worktree_created(created));
 }
 
-fn render_lane_created(created: &Created) -> String {
+fn render_worktree_created(created: &Created) -> String {
     let files = if created.copied == 1 { "file" } else { "files" };
     format!(
-        "created lane {}\n\
+        "created worktree {}\n\
          path:   {}\n\
          branch: {} (from {})\n\
          copied: {} {files} from {}\n\
@@ -95,22 +96,22 @@ fn render_lane_created(created: &Created) -> String {
     )
 }
 
-/// Prints what `lane rm` removed and what happened to the lane's branch.
-pub fn lane_removed(removed: &Removed) {
-    out(&render_lane_removed(removed));
+/// Prints what `worktree rm` removed and what happened to the worktree's branch.
+pub fn worktree_removed(removed: &Removed) {
+    out(&render_worktree_removed(removed));
 }
 
-fn render_lane_removed(removed: &Removed) -> String {
+fn render_worktree_removed(removed: &Removed) -> String {
     let branch = match &removed.branch {
         BranchOutcome::DeletedMerged { branch, into } => {
             format!("deleted branch {branch} (merged into {into})")
         }
         BranchOutcome::DeletedForced { branch } => format!("deleted branch {branch} (--force)"),
         BranchOutcome::Kept { branch, reason } => format!("kept branch {branch}: {reason}"),
-        BranchOutcome::Detached => "no branch to delete: the lane was detached".to_owned(),
+        BranchOutcome::Detached => "no branch to delete: the worktree was detached".to_owned(),
     };
     format!(
-        "removed lane {}\n\
+        "removed worktree {}\n\
          path:   {}\n\
          {branch}",
         removed.name,
@@ -118,12 +119,12 @@ fn render_lane_removed(removed: &Removed) -> String {
     )
 }
 
-/// Prints the lanes `lane prune` cleaned, one path per line, or that there was nothing to prune.
-pub fn lanes_pruned(pruned: &[std::path::PathBuf]) {
-    out(&render_lanes_pruned(pruned));
+/// Prints the worktrees `worktree prune` cleaned, one path per line, or that there was nothing to prune.
+pub fn worktrees_pruned(pruned: &[std::path::PathBuf]) {
+    out(&render_worktrees_pruned(pruned));
 }
 
-fn render_lanes_pruned(pruned: &[std::path::PathBuf]) -> String {
+fn render_worktrees_pruned(pruned: &[std::path::PathBuf]) -> String {
     if pruned.is_empty() {
         return "nothing to prune".to_owned();
     }
@@ -155,29 +156,29 @@ mod tests {
 
     use super::*;
     use crate::config::Setting;
-    use crate::fleet::{Lane, Worktree};
+    use crate::fleet::{Worktree, WorktreeEntry};
     use crate::state::State;
 
-    fn fleet(lanes: Vec<Lane>) -> Fleet {
+    fn fleet(worktrees: Vec<Worktree>) -> Fleet {
         Fleet {
-            primary: Worktree {
+            primary: WorktreeEntry {
                 path: PathBuf::from("/repo"),
                 branch: Some("main".to_owned()),
                 prunable: None,
             },
-            lanes,
+            worktrees,
         }
     }
 
     #[test]
     fn an_empty_fleet_says_so() {
-        assert_eq!(render_fleet_table(&fleet(vec![])), "no lanes in /repo");
+        assert_eq!(render_fleet_table(&fleet(vec![])), "no worktrees in /repo");
     }
 
     #[test]
     fn columns_align() {
         let table = render_fleet_table(&fleet(vec![
-            Lane {
+            Worktree {
                 name: "fix-login".to_owned(),
                 path: PathBuf::from("/l/fix-login"),
                 branch: Some("fix-login".to_owned()),
@@ -185,12 +186,12 @@ mod tests {
                 detail: None,
                 gone: false,
             },
-            Lane {
+            Worktree {
                 name: "docs".to_owned(),
                 path: PathBuf::from("/l/docs"),
                 branch: None,
                 state: State::Broken,
-                detail: Some("directory missing; run orca-term lane prune".to_owned()),
+                detail: Some("directory missing; run orca-term worktree prune".to_owned()),
                 gone: true,
             },
         ]));
@@ -203,8 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn lane_new_names_the_base_and_its_source() {
-        let text = render_lane_created(&Created {
+    fn worktree_new_names_the_base_and_its_source() {
+        let text = render_worktree_created(&Created {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/repo/fix"),
             branch: "fix".to_owned(),
@@ -218,7 +219,7 @@ mod tests {
         });
         assert_eq!(
             text,
-            "created lane fix\n\
+            "created worktree fix\n\
              path:   /l/repo/fix\n\
              branch: fix (from main)\n\
              copied: 1 file from .worktreeinclude\n\
@@ -227,33 +228,33 @@ mod tests {
     }
 
     #[test]
-    fn lane_rm_says_what_happened_to_the_branch() {
+    fn worktree_rm_says_what_happened_to_the_branch() {
         let removed = |branch| Removed {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/repo/fix"),
             branch,
         };
         assert_eq!(
-            render_lane_removed(&removed(BranchOutcome::Kept {
+            render_worktree_removed(&removed(BranchOutcome::Kept {
                 branch: "fix".to_owned(),
                 reason: "not merged into main".to_owned(),
             })),
-            "removed lane fix\npath:   /l/repo/fix\nkept branch fix: not merged into main"
+            "removed worktree fix\npath:   /l/repo/fix\nkept branch fix: not merged into main"
         );
         assert_eq!(
-            render_lane_removed(&removed(BranchOutcome::DeletedMerged {
+            render_worktree_removed(&removed(BranchOutcome::DeletedMerged {
                 branch: "fix".to_owned(),
                 into: "main".to_owned(),
             })),
-            "removed lane fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
+            "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
         );
     }
 
     #[test]
-    fn lane_prune_lists_paths_or_says_nothing() {
-        assert_eq!(render_lanes_pruned(&[]), "nothing to prune");
+    fn worktree_prune_lists_paths_or_says_nothing() {
+        assert_eq!(render_worktrees_pruned(&[]), "nothing to prune");
         assert_eq!(
-            render_lanes_pruned(&[PathBuf::from("/a"), PathBuf::from("/b")]),
+            render_worktrees_pruned(&[PathBuf::from("/a"), PathBuf::from("/b")]),
             "pruned /a\npruned /b"
         );
     }

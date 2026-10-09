@@ -11,7 +11,7 @@ Early. The route was charted as a [wayfinder](https://aihero.dev/skills-wayfinde
 repo's issues (the issue labelled `wayfinder:map`) and synthesised into a spec. It is now being
 built in small slices, each a GitHub issue under that spec.
 
-Today: `orca-term lane ls [--json]` lists the lanes of the current repository.
+Today: `orca-term worktree ls [--json]` lists the worktrees of the current repository.
 
 ## Development
 

@@ -3,7 +3,7 @@
 //! Every git process, ours and the binary's, runs against a gitconfig of the fixture's own, so
 //! tests never read the developer's global config and behave the same on CI. The binary also gets
 //! a `HOME` and an `XDG_CONFIG_HOME` inside the fixture, so it never reads the developer's global
-//! orca-term config nor places lanes under the developer's home.
+//! orca-term config nor places worktrees under the developer's home.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

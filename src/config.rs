@@ -20,8 +20,8 @@ pub const FILE_NAME: &str = "orca-term.yaml";
 /// Every key this version understands.
 const KEYS: &[&str] = &["base"];
 
-/// The built-in default for `base`, the directory lanes live under.
-const DEFAULT_BASE: &str = "~/orca-term/lanes";
+/// The built-in default for `base`, the directory worktrees live under.
+const DEFAULT_BASE: &str = "~/orca-term/worktrees";
 
 /// The process environment config resolution depends on.
 #[derive(Debug, Clone, Default)]
@@ -82,7 +82,7 @@ impl fmt::Display for Setting<PathBuf> {
 /// The resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// The directory lanes live under, as `<base>/<repo>/<name>`.
+    /// The directory worktrees live under, as `<base>/<repo>/<name>`.
     pub base: Setting<PathBuf>,
 }
 
@@ -152,7 +152,7 @@ fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
         },
         None => Setting {
             value: expand(DEFAULT_BASE, Path::new("/"), home).context(
-                "cannot place lanes under the built-in default; set `base` in orca-term.yaml",
+                "cannot place worktrees under the built-in default; set `base` in orca-term.yaml",
             )?,
             source: None,
             overridden: Vec::new(),
@@ -252,11 +252,14 @@ mod tests {
     #[test]
     fn the_built_in_default_lives_under_home() {
         let config = resolve(&[], &env()).unwrap();
-        assert_eq!(config.base.value, PathBuf::from("/home/me/orca-term/lanes"));
+        assert_eq!(
+            config.base.value,
+            PathBuf::from("/home/me/orca-term/worktrees")
+        );
         assert_eq!(config.base.source, None);
         assert_eq!(
             config.base.to_string(),
-            "/home/me/orca-term/lanes (built-in default)"
+            "/home/me/orca-term/worktrees (built-in default)"
         );
     }
 
@@ -265,7 +268,7 @@ mod tests {
         let layers = [
             layer(".git/orca-term.yaml", "/repo", Some("/l")),
             layer("orca-term.yaml", "/repo", None),
-            layer("/g/config.yaml", "/g", Some("/g/lanes")),
+            layer("/g/config.yaml", "/g", Some("/g/worktrees")),
         ];
         let base = resolve(&layers, &env()).unwrap().base;
         assert_eq!(
@@ -277,13 +280,13 @@ mod tests {
     #[test]
     fn relative_paths_resolve_against_the_layer_anchor() {
         let base = resolve(
-            &[layer("orca-term.yaml", "/w/repo", Some("../lanes"))],
+            &[layer("orca-term.yaml", "/w/repo", Some("../worktrees"))],
             &env(),
         )
         .unwrap()
         .base;
-        assert_eq!(base.value, PathBuf::from("/w/lanes"));
-        assert_eq!(base.to_string(), "/w/lanes (from orca-term.yaml)");
+        assert_eq!(base.value, PathBuf::from("/w/worktrees"));
+        assert_eq!(base.to_string(), "/w/worktrees (from orca-term.yaml)");
     }
 
     #[test]

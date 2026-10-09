@@ -10,8 +10,7 @@ lint.
 - `run`: the verb for executing a program (`fn run`, "run git"), never a session or a turn.
 - `workspace`: Cargo's workspace, the build unit of this repository.
 - `clone`: Rust's `Clone` trait and `.clone()`, never a copy of the repository.
-- `checkout`: part of the glossary term *primary checkout*.
 - `comment`: git's comment lines in a commit message, and code comments.
 - `request`: GitHub's pull request and the `pull_request` event.
-- `tab`: Neovim's tabpage, which each lane gets one of.
+- `tab`: Neovim's tabpage, which each worktree gets one of.
 - `unit`: unit tests.
