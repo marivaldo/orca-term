@@ -17,6 +17,8 @@
 --                        Selected row = a background wash
 --   C  Compact + card    one line per lane (Orca's compact cards), attention order without
 --                        headings; the selected lane expands into a full card with every detail
+--   D  Attention + card  the user's pick after the first look: B, with A's rounded card as the
+--                        selection. Opens first.
 -- Closing the sidebar (S) leaves #17's strip of counts in the tabline. States and marks come from
 -- #10, denials from #18, pending notes from #11. Nothing is read from disk; `t` replays events.
 --
@@ -26,7 +28,7 @@ if _G.OrcaSideProto and _G.OrcaSideProto.quit then _G.OrcaSideProto.quit() end
 
 local api = vim.api
 local ns = api.nvim_create_namespace("orca_side_proto")
-local P = { variant = 1, frame = 0, ev = 0, last = "press t to replay an event", rowmap = {}, firsts = {}, open = true }
+local P = { variant = 4, frame = 0, ev = 0, last = "press t to replay an event", rowmap = {}, firsts = {}, open = true }
 _G.OrcaSideProto = P
 
 local WIDTH = 36
@@ -242,6 +244,25 @@ local function name_seg(l, w)
   return { trunc(l.name, w), unseen(l) and "OrcaSideBold" or nil }
 end
 
+-- Rounded card around the selected lane, as Orca draws the active worktree. `body` rows must be
+-- built at width WIDTH - 3 with `strip` (A drops its leading pad), or WIDTH - 4 without.
+local function boxed(rows, body, lane, strip)
+  rows[#rows + 1] = row({ { " ╭" .. string.rep("─", WIDTH - 4) .. "╮", "OrcaSideBorder" } }, lane)
+  for _, b in ipairs(body) do
+    local inner = strip and vim.fn.strcharpart(b.text, 1) or b.text
+    local cut = #b.text - #inner
+    local t = " │" .. pad(inner, WIDTH - 4) .. "│"
+    local shifted = {}
+    for _, h in ipairs(b.hls) do
+      if h[2] > cut then shifted[#shifted + 1] = { math.max(h[1] - cut, 0) + #" │", h[2] - cut + #" │", h[3] } end
+    end
+    shifted[#shifted + 1] = { 0, #" │", "OrcaSideBorder" }
+    shifted[#shifted + 1] = { #t - #"│", #t, "OrcaSideBorder" }
+    rows[#rows + 1] = { text = t, hls = shifted, lane = lane, first = b.first }
+  end
+  rows[#rows + 1] = row({ { " ╰" .. string.rep("─", WIDTH - 4) .. "╯", "OrcaSideBorder" } }, lane)
+end
+
 -- Variant A: Orca literal -------------------------------------------------------------------------
 
 local A = { name = "Orca literal: recent order, primary first, branch on line 2" }
@@ -265,18 +286,7 @@ function A.rows()
       body[#body + 1] = row({ { "   " }, { glyph(l), hlname(l.state) }, { " " }, { abbr(l.agent) ~= "" and (abbr(l.agent) .. " - ") or "", "OrcaSideMuted" }, { trunc(l.detail, bw - 11), hlname(l.state) } }, l.name)
     end
     if sel then
-      -- rounded card around the selected row, as Orca draws the active worktree
-      rows[#rows + 1] = row({ { " ╭" .. string.rep("─", WIDTH - 4) .. "╮", "OrcaSideBorder" } }, l.name)
-      for _, b in ipairs(body) do
-        local inner = vim.fn.strcharpart(b.text, 1)
-        local t = " │" .. pad(inner, WIDTH - 4) .. "│"
-        local shifted = {}
-        for _, h in ipairs(b.hls) do shifted[#shifted + 1] = { h[1] - 1 + #" │", h[2] - 1 + #" │", h[3] } end
-        shifted[#shifted + 1] = { 0, #" │", "OrcaSideBorder" }
-        shifted[#shifted + 1] = { #t - #"│", #t, "OrcaSideBorder" }
-        rows[#rows + 1] = { text = t, hls = shifted, lane = l.name, first = b.first }
-      end
-      rows[#rows + 1] = row({ { " ╰" .. string.rep("─", WIDTH - 4) .. "╯", "OrcaSideBorder" } }, l.name)
+      boxed(rows, body, l.name, true)
     else
       vim.list_extend(rows, body)
     end
@@ -288,7 +298,8 @@ end
 
 local B = { name = "Attention: smart order in sections, detail on line 2" }
 
-function B.rows()
+-- `box`: draw the selected lane inside A's rounded card instead of a background wash (variant D)
+local function attention_rows(box)
   local rows = {
     row({ { " ▾ ", "OrcaSideMuted" }, { PRIMARY.name, "OrcaSideHeader" }, { "  " .. PRIMARY.branch, "OrcaSideMuted" } }, nil, { { "+", "OrcaSideMuted" }, { "…", "OrcaSideMuted" } }),
   }
@@ -301,20 +312,31 @@ function B.rows()
       rows[#rows + 1] = row({ { " " .. titles[gi]:upper(), "OrcaSideMuted" }, { " " .. #group, "OrcaSideMuted" } })
       for _, l in ipairs(group) do
         local sel = l.name == P.selected
+        local wash, w = sel and not box, (sel and box) and WIDTH - 4 or WIDTH
         local mark = unseen(l) and { "•", "OrcaSideUnseen" } or { " " }
         local line2 = l.detail
         if l.branch ~= l.name then line2 = "⎇ " .. l.branch .. " · " .. line2 end
-        rows[#rows + 1] = row({ mark, status_slot(l), { " " }, name_seg(l, WIDTH - 12) }, l.name,
-          { { abbr(l.agent), "OrcaSideMuted" }, { ago(l.act), "OrcaSideMuted" } }, { first = true, card = sel })
+        local body = {}
+        body[1] = row({ mark, status_slot(l), { " " }, name_seg(l, w - 12) }, l.name,
+          { { abbr(l.agent), "OrcaSideMuted" }, { ago(l.act), "OrcaSideMuted" } }, { first = true, card = wash, width = w })
         local ic = icons(l)
         local icw = 0
         for _, s in ipairs(ic) do icw = icw + dw(s[1]) + 1 end
-        rows[#rows + 1] = row({ { "   " }, { trunc(line2, WIDTH - 4 - icw), section(l) == 1 and hlname(l.state) or "OrcaSideMuted" } }, l.name, ic, { card = sel })
+        body[2] = row({ { "   " }, { trunc(line2, w - 4 - icw), section(l) == 1 and hlname(l.state) or "OrcaSideMuted" } }, l.name, ic, { card = wash, width = w })
+        if sel and box then boxed(rows, body, l.name, false) else vim.list_extend(rows, body) end
       end
     end
   end
   return rows
 end
+
+function B.rows() return attention_rows(false) end
+
+-- Variant D: B with A's rounded card --------------------------------------------------------------
+
+local D = { name = "Attention + card: B's sections and line 2, A's rounded selection" }
+
+function D.rows() return attention_rows(true) end
 
 -- Variant C: compact rows, selected expands -------------------------------------------------------
 
@@ -368,8 +390,8 @@ end
 
 -- Switcher bar, sidebar window, actions, lifecycle ------------------------------------------------
 
-local VARIANTS = { A, B, C }
-local KEYS = { "A", "B", "C" }
+local VARIANTS = { A, B, C, D }
+local KEYS = { "A", "B", "C", "D" }
 
 local function new_buf(name, ft)
   local b = api.nvim_create_buf(false, true)
