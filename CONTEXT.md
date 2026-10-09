@@ -29,13 +29,16 @@ _Avoid_: worker, bot, model, assistant
 
 **Session**:
 One agent's conversation, identified by that agent's own id for it. A lane holds at most one
-session, and holds it mutably: discarding a conversation starts a new session on the same lane.
+current session, and holds it mutably: discarding a conversation starts a new session on the same
+lane. A discarded session is not forgotten: the lane keeps its turns, and the person can make it
+the current session again, even after swapping agents.
 _Avoid_: run, thread, conversation, chat
 
 **Turn**:
 One cycle of prompt → response → diff inside a session, whether the core drives it or the person
 does under takeover. A turn is what a change's authorship is attributed to — never the lane, whose
-agent can change. Edits the person makes between turns belong to no turn.
+agent can change. Turns are numbered across the whole lane, never per session, so no two turns of
+a lane share a number. Edits the person makes between turns belong to no turn.
 _Avoid_: run, round, iteration, request
 
 **Unseen**:
