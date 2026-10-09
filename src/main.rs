@@ -10,9 +10,9 @@ mod contract;
 mod fleet;
 mod git;
 mod include;
-mod lane;
 mod output;
 mod state;
+mod worktree;
 
 fn main() -> ExitCode {
     let cli = cli::Cli::parse();

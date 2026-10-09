@@ -133,8 +133,9 @@ mod tests {
 
     #[test]
     fn reads_every_avoid_line() {
-        let g = "**Lane**:\nText.\n_Avoid_: unit, Task\n\n**Fleet**:\n_Avoid_: swarm, main lane\n";
-        assert_eq!(avoided_terms(g), vec!["main lane", "swarm", "task", "unit"]);
+        let g =
+            "**Worktree**:\nText.\n_Avoid_: unit, Task\n\n**Fleet**:\n_Avoid_: swarm, main tree\n";
+        assert_eq!(avoided_terms(g), vec!["main tree", "swarm", "task", "unit"]);
     }
 
     #[test]

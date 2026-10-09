@@ -33,27 +33,27 @@ introduces their behaviour. Decided in [the harness ticket](https://github.com/m
 | The glossary's *Avoid* synonyms never appear in code or docs, and the config file is only ever called `orca-term.yaml` | `cargo xtask vocab` (waivers in `docs/vocabulary-waivers.md`) | CI `meta` | #27 | active |
 | Coding agents never skip hooks or signing | `.claude/hooks/git-guard.sh`, tested by `just guard-test` | agent sessions, CI `meta` | #27 | active |
 | main takes changes only through a PR with `check` green and signed commits; no force-push or deletion; PRs land as merge commits, so each commit keeps its own signature and linted message | ruleset `main` on the default branch (maintainer may bypass), merge commits only | GitHub | #27 | active |
-| The fleet is `git worktree list` minus the primary checkout; a hand-made worktree is a lane | `tests/lane_ls.rs` | CI `rust` | #27 | active |
-| The primary checkout is never a lane | `tests/lane_ls.rs`, unit tests in the fleet module | CI `rust` | #27 | active |
-| Lanes sharing a basename are told apart by path | `tests/lane_ls.rs` | CI `rust` | #27 | active |
-| Every `--json` output carries `contract` and `version` | `tests/lane_ls.rs` | CI `rust` | #27 | active |
-| The core never writes on a read path | `tests/lane_ls.rs` (listing leaves status and refs untouched) | CI `rust` | #27 | active |
-| State files carry `schema`; an older core refuses to write a newer schema | unit tests in the state module (`refuses_to_write_over_a_newer_schema`, `reads_any_schema_and_ignores_unknown_fields`), `tests/lane_new.rs` (`the_lane_state_is_written_to_the_admin_dir_and_lists_as_no_agent`) | CI `rust` | [#28](https://github.com/marivaldo/orca-term/issues/28) | active |
-| Lanes never share dependency trees | `tests/lane_new.rs` (`the_copy_list_copies_ignored_files_and_never_shares_them`: plain byte copies, no shared inode, symlinks skipped) | CI `rust` | #28 | active |
-| Config precedence is printed; unknown keys refused | `tests/lane_new.rs`, unit tests in the config module | CI `rust` | #28 | active |
-| `lane rm` keeps an unmerged branch unless `--force`, and never deletes the default branch | `tests/lane_rm.rs` (`removing_a_lane_with_an_unmerged_commit_keeps_its_branch`, `removing_a_lane_with_no_new_commits_deletes_its_branch`, `force_deletes_an_unmerged_branch`, `the_default_branch_is_never_deleted_even_with_force`, `a_branch_checked_out_in_another_worktree_is_kept`) | CI `rust` | #28 | active |
-| Only `lane prune` cleans a broken lane; no command prunes implicitly | `tests/lane_rm.rs` (`a_broken_lane_is_refused_and_points_to_prune`, `prune_cleans_a_broken_lane_and_reports_it`, `no_other_command_prunes_a_broken_lane`), `tests/lane_ls.rs` (`a_lane_whose_directory_is_gone_lists_as_broken_and_is_not_pruned`) | CI `rust` | #28 | active |
-| A lane whose directory is gone, or whose state cannot be read, lists as broken without failing the fleet | `tests/lane_ls.rs` (`a_lane_whose_directory_is_gone_lists_as_broken_and_is_not_pruned`, `a_lane_whose_state_cannot_be_parsed_lists_as_broken_without_failing_the_fleet`) | CI `rust` | #28 | active |
-| Writes to a lane's state hold a per-lane lock | seam 1 concurrency test | CI `rust` | [#29](https://github.com/marivaldo/orca-term/issues/29) | planned |
+| The fleet is `git worktree list` minus the primary checkout; a hand-made git worktree is listed as a worktree | `tests/worktree_ls.rs` | CI `rust` | #27 | active |
+| The primary checkout is never a worktree | `tests/worktree_ls.rs`, unit tests in the fleet module | CI `rust` | #27 | active |
+| Worktrees sharing a basename are told apart by path | `tests/worktree_ls.rs` | CI `rust` | #27 | active |
+| Every `--json` output carries `contract` and `version` | `tests/worktree_ls.rs` | CI `rust` | #27 | active |
+| The core never writes on a read path | `tests/worktree_ls.rs` (listing leaves status and refs untouched) | CI `rust` | #27 | active |
+| State files carry `schema`; an older core refuses to write a newer schema | unit tests in the state module (`refuses_to_write_over_a_newer_schema`, `reads_any_schema_and_ignores_unknown_fields`), `tests/worktree_new.rs` (`the_worktree_state_is_written_to_the_admin_dir_and_lists_as_no_agent`) | CI `rust` | [#28](https://github.com/marivaldo/orca-term/issues/28) | active |
+| Worktrees never share dependency trees | `tests/worktree_new.rs` (`the_copy_list_copies_ignored_files_and_never_shares_them`: plain byte copies, no shared inode, symlinks skipped) | CI `rust` | #28 | active |
+| Config precedence is printed; unknown keys refused | `tests/worktree_new.rs`, unit tests in the config module | CI `rust` | #28 | active |
+| `worktree rm` keeps an unmerged branch unless `--force`, and never deletes the default branch | `tests/worktree_rm.rs` (`removing_a_worktree_with_an_unmerged_commit_keeps_its_branch`, `removing_a_worktree_with_no_new_commits_deletes_its_branch`, `force_deletes_an_unmerged_branch`, `the_default_branch_is_never_deleted_even_with_force`, `a_branch_checked_out_in_another_worktree_is_kept`) | CI `rust` | #28 | active |
+| Only `worktree prune` cleans a broken worktree; no command prunes implicitly | `tests/worktree_rm.rs` (`a_broken_worktree_is_refused_and_points_to_prune`, `prune_cleans_a_broken_worktree_and_reports_it`, `no_other_command_prunes_a_broken_worktree`), `tests/worktree_ls.rs` (`a_worktree_whose_directory_is_gone_lists_as_broken_and_is_not_pruned`) | CI `rust` | #28 | active |
+| A worktree whose directory is gone, or whose state cannot be read, lists as broken without failing the fleet | `tests/worktree_ls.rs` (`a_worktree_whose_directory_is_gone_lists_as_broken_and_is_not_pruned`, `a_worktree_whose_state_cannot_be_parsed_lists_as_broken_without_failing_the_fleet`) | CI `rust` | #28 | active |
+| Writes to a worktree's state hold a per-worktree lock | seam 1 concurrency test | CI `rust` | [#29](https://github.com/marivaldo/orca-term/issues/29) | planned |
 | Lua formatted, linted and type-checked | stylua, selene, LuaLS `--check` | pre-commit, CI | [#30](https://github.com/marivaldo/orca-term/issues/30) | planned |
 | The client refuses a core with another contract | seam 2 test | CI | #30 | planned |
 | Sidebar: golden render of every state and mark, no row wider than the sidebar, primary checkout never a row, glyphs link to `Diagnostic*` | seam 2 golden tests | CI | #30 | planned |
 | No global keymap is installed | seam 2 test | CI | #30 | planned |
-| Removal needs confirmation; lane state is independent of the tab layout | seam 2 tests | CI | [#31](https://github.com/marivaldo/orca-term/issues/31) | planned |
+| Removal needs confirmation; worktree state is independent of the tab layout | seam 2 tests | CI | [#31](https://github.com/marivaldo/orca-term/issues/31) | planned |
 | No launch carries `--dangerously-skip-permissions`, `bypassPermissions` or `--auto` | source scan and seam 1 test | CI | [#32](https://github.com/marivaldo/orca-term/issues/32) | planned |
 | The sandbox confines each agent's writes to its worktree and denies our state | boundary test per agent, real OS sandbox | CI (macOS, Linux) | #32, [#35](https://github.com/marivaldo/orca-term/issues/35) | planned |
 | The holder survives its client and replays the scrollback | seam 1 and seam 2 tests | CI | #32, [#33](https://github.com/marivaldo/orca-term/issues/33) | planned |
 | Nothing is written to an agent's global config | seam 1 test | CI | [#34](https://github.com/marivaldo/orca-term/issues/34) | planned |
-| Turns are numbered per lane and turn files are append-only; denials are never a state | seam 1 tests | CI | #34, [#42](https://github.com/marivaldo/orca-term/issues/42) | planned |
+| Turns are numbered per worktree and turn files are append-only; denials are never a state | seam 1 tests | CI | #34, [#42](https://github.com/marivaldo/orca-term/issues/42) | planned |
 | Release binaries match their checksums | release workflow check | CI | [#43](https://github.com/marivaldo/orca-term/issues/43) | planned |
 | Behaviour holds against the real agents | `just check-live` | maintainer, before each release | [#44](https://github.com/marivaldo/orca-term/issues/44) | planned |

@@ -1,6 +1,6 @@
-//! Creating a lane: a worktree under `<base>/<repo>/<name>`, on a new branch from the default
+//! Creating a worktree: git's worktree at `<base>/<repo>/<name>`, on a new branch from the default
 //! branch, with the copy list copied in and its state written to git's admin directory. Removing
-//! a lane, and pruning the lanes whose directory is gone.
+//! a worktree, and pruning the worktrees whose directory is gone.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, Env, Setting};
-use crate::fleet::{Fleet, Lane};
+use crate::fleet::{Fleet, Worktree};
 use crate::{fleet, git, include, state};
 
-/// What `lane new` made.
+/// What `worktree new` made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Created {
     pub name: String,
@@ -23,7 +23,7 @@ pub struct Created {
     pub base: Setting<PathBuf>,
 }
 
-/// Creates the lane `name` in the repository containing `dir`.
+/// Creates the worktree `name` in the repository containing `dir`.
 pub fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
     let primary = fleet::primary_checkout(dir)?.path;
     let primary = primary
@@ -45,7 +45,7 @@ pub fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
     let path = config.base.value.join(repo).join(name);
     if physical(&path).starts_with(&primary) {
         bail!(
-            "the lane would be at {}, inside the primary checkout; set `base` to a directory \
+            "the worktree would be at {}, inside the primary checkout; set `base` to a directory \
              outside it (base: {})",
             path.display(),
             config.base
@@ -75,7 +75,7 @@ pub fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
     // From here on the worktree exists, and nothing is undone: a failure leaves it in place.
     let copied = finish(&primary, &path).with_context(|| {
         format!(
-            "the worktree was created at {} and left in place, but setting up the lane failed",
+            "the worktree was created at {} and left in place, but setting it up failed",
             path.display()
         )
     })?;
@@ -89,32 +89,32 @@ pub fn create(dir: &Path, name: &str, env: &Env) -> Result<Created> {
     })
 }
 
-/// Copies the copy list and writes the lane's state. Returns how many files were copied.
-fn finish(primary: &Path, lane: &Path) -> Result<usize> {
-    let copied = include::copy(primary, lane, &include::list(primary)?)?;
-    state::write(&state::admin_dir(lane)?, &state::LaneFile::fresh())?;
+/// Copies the copy list and writes the worktree's state. Returns how many files were copied.
+fn finish(primary: &Path, worktree: &Path) -> Result<usize> {
+    let copied = include::copy(primary, worktree, &include::list(primary)?)?;
+    state::write(&state::admin_dir(worktree)?, &state::WorktreeFile::fresh())?;
     Ok(copied)
 }
 
-/// A lane name is a single path segment and a valid branch name.
+/// A worktree name is a single path segment and a valid branch name.
 fn validate_name(dir: &Path, name: &str) -> Result<()> {
     if name.is_empty() {
-        bail!("a lane name cannot be empty");
+        bail!("a worktree name cannot be empty");
     }
     if name.contains('/') {
-        bail!("invalid lane name `{name}`: it cannot contain `/`");
+        bail!("invalid worktree name `{name}`: it cannot contain `/`");
     }
     if name.starts_with('-') {
-        bail!("invalid lane name `{name}`: it cannot start with `-`");
+        bail!("invalid worktree name `{name}`: it cannot start with `-`");
     }
     let normalized = git::probe(dir, &["check-ref-format", "--branch", name])?;
     if normalized.as_deref().map(<[u8]>::trim_ascii_end) != Some(name.as_bytes()) {
-        bail!("invalid lane name `{name}`: it is not a valid branch name");
+        bail!("invalid worktree name `{name}`: it is not a valid branch name");
     }
     Ok(())
 }
 
-/// The commit-ish a lane branches from: the repository's default branch, preferring the local
+/// The commit-ish a worktree branches from: the repository's default branch, preferring the local
 /// branch over `origin/`.
 fn start_point(primary: &Path) -> Result<String> {
     let default = default_branch(primary)?;
@@ -161,7 +161,7 @@ fn has_ref(dir: &Path, full_ref: &str) -> Result<bool> {
     Ok(git::probe(dir, &["show-ref", "--verify", "--quiet", full_ref])?.is_some())
 }
 
-/// What `lane rm` did.
+/// What `worktree rm` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removed {
     pub name: String,
@@ -169,7 +169,7 @@ pub struct Removed {
     pub branch: BranchOutcome,
 }
 
-/// What `lane rm` did with the lane's branch.
+/// What `worktree rm` did with the worktree's branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchOutcome {
     /// Deleted because it is merged into `into`.
@@ -178,21 +178,24 @@ pub enum BranchOutcome {
     DeletedForced { branch: String },
     /// Kept, for `reason`.
     Kept { branch: String, reason: String },
-    /// The lane was detached: there was no branch.
+    /// The worktree was detached: there was no branch.
     Detached,
 }
 
-/// Removes the lane named or located by `target` in the repository containing `dir`. Its branch
+/// Removes the worktree named or located by `target` in the repository containing `dir`. Its branch
 /// is deleted only when merged into the default branch, or when `force` is set.
 pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     let fleet = Fleet::discover(dir)?;
-    let lane = resolve(&fleet, dir, target)?;
-    if lane.gone {
+    let worktree = resolve(&fleet, dir, target)?;
+    if worktree.gone {
         bail!(
-            "lane {} at {} is broken ({}); only `orca-term lane prune` cleans a broken lane",
-            lane.name,
-            lane.path.display(),
-            lane.detail.as_deref().unwrap_or("its worktree is gone")
+            "worktree {} at {} is broken ({}); only `orca-term worktree prune` cleans a broken worktree",
+            worktree.name,
+            worktree.path.display(),
+            worktree
+                .detail
+                .as_deref()
+                .unwrap_or("its directory is gone")
         );
     }
     let primary = &fleet.primary.path;
@@ -201,7 +204,7 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     // The default branch is never deleted, not even with `--force`: it is trivially merged into
     // itself.
     let default = default_branch(primary).ok();
-    let merged = match (&lane.branch, force) {
+    let merged = match (&worktree.branch, force) {
         (Some(branch), _) if default.as_deref() == Some(branch.as_str()) => {
             Some(Err("it is the default branch".to_owned()))
         }
@@ -213,17 +216,20 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
     if force {
         args.push(OsStr::new("--force"));
     }
-    args.push(lane.path.as_os_str());
+    args.push(worktree.path.as_os_str());
     git::output(primary, &args).with_context(|| {
         let hint = if force {
             String::new()
         } else {
             "; pass --force to remove it anyway, discarding its changes".to_owned()
         };
-        format!("could not remove lane {}{hint}", lane.path.display())
+        format!(
+            "could not remove worktree {}{hint}",
+            worktree.path.display()
+        )
     })?;
 
-    let branch = match (&lane.branch, merged) {
+    let branch = match (&worktree.branch, merged) {
         (None, _) => BranchOutcome::Detached,
         (Some(branch), None) => delete_branch(
             primary,
@@ -246,28 +252,33 @@ pub fn remove(dir: &Path, target: &str, force: bool) -> Result<Removed> {
         },
     };
     Ok(Removed {
-        name: lane.name.clone(),
-        path: lane.path.clone(),
+        name: worktree.name.clone(),
+        path: worktree.path.clone(),
         branch,
     })
 }
 
-/// Runs `git worktree prune` from the primary checkout and returns the paths of the lanes it
-/// cleaned. Only ever invoked by the person, through `lane prune`.
+/// Runs `git worktree prune` from the primary checkout and returns the paths of the worktrees it
+/// cleaned. Only ever invoked by the person, through `worktree prune`.
 pub fn prune(dir: &Path) -> Result<Vec<PathBuf>> {
     let before = Fleet::discover(dir)?;
     git::output(&before.primary.path, &["worktree", "prune"])?;
     let after = Fleet::discover(&before.primary.path)?;
     Ok(before
-        .gone_lanes()
-        .filter(|gone| !after.lanes.iter().any(|lane| lane.path == gone.path))
-        .map(|lane| lane.path.clone())
+        .gone_worktrees()
+        .filter(|gone| {
+            !after
+                .worktrees
+                .iter()
+                .any(|worktree| worktree.path == gone.path)
+        })
+        .map(|worktree| worktree.path.clone())
         .collect())
 }
 
-/// The lane `target` names (a basename) or locates (a path, when it contains `/` or is `.` or
-/// `..`). Refuses the primary checkout, an unknown lane and a name shared by several lanes.
-fn resolve<'f>(fleet: &'f Fleet, dir: &Path, target: &str) -> Result<&'f Lane> {
+/// The worktree `target` names (a basename) or locates (a path, when it contains `/` or is `.` or
+/// `..`). Refuses the primary checkout, an unknown worktree and a name shared by several worktrees.
+fn resolve<'f>(fleet: &'f Fleet, dir: &Path, target: &str) -> Result<&'f Worktree> {
     let primary = &fleet.primary.path;
     if target.contains('/') || target == "." || target == ".." {
         let wanted = dir.join(target);
@@ -280,30 +291,34 @@ fn resolve<'f>(fleet: &'f Fleet, dir: &Path, target: &str) -> Result<&'f Lane> {
         };
         if same(primary) {
             bail!(
-                "{} is the primary checkout, which is never a lane",
+                "{} is the primary checkout, which is never a worktree",
                 primary.display()
             );
         }
-        return match fleet.lanes.iter().find(|lane| same(&lane.path)) {
-            Some(lane) => Ok(lane),
-            None => bail!("{} is not a lane of this repository", wanted.display()),
+        return match fleet.worktrees.iter().find(|worktree| same(&worktree.path)) {
+            Some(worktree) => Ok(worktree),
+            None => bail!("{} is not a worktree of this repository", wanted.display()),
         };
     }
-    let matches: Vec<&Lane> = fleet.lanes.iter().filter(|l| l.name == target).collect();
+    let matches: Vec<&Worktree> = fleet
+        .worktrees
+        .iter()
+        .filter(|l| l.name == target)
+        .collect();
     match matches.as_slice() {
-        [lane] => Ok(lane),
+        [worktree] => Ok(worktree),
         [] if primary.file_name() == Some(OsStr::new(target)) => bail!(
-            "{} is the primary checkout, which is never a lane",
+            "{} is the primary checkout, which is never a worktree",
             primary.display()
         ),
-        [] => bail!("no lane named `{target}`; `orca-term lane ls` lists the fleet"),
+        [] => bail!("no worktree named `{target}`; `orca-term worktree ls` lists the fleet"),
         several => {
             let paths: Vec<String> = several
                 .iter()
-                .map(|lane| format!("  {}", lane.path.display()))
+                .map(|worktree| format!("  {}", worktree.path.display()))
                 .collect();
             bail!(
-                "`{target}` names {} lanes; pass the path of the one to remove:\n{}",
+                "`{target}` names {} worktrees; pass the path of the one to remove:\n{}",
                 several.len(),
                 paths.join("\n")
             )

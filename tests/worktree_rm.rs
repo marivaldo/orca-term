@@ -1,4 +1,4 @@
-//! `orca-term lane rm` and `orca-term lane prune`, driven as a black box.
+//! `orca-term worktree rm` and `orca-term worktree prune`, driven as a black box.
 
 #![expect(
     clippy::unwrap_used,
@@ -28,32 +28,32 @@ fn registered(repo: &Repo, path: &Path) -> bool {
         .any(|l| l == format!("worktree {}", path.display()))
 }
 
-fn lane(repo: &Repo, rel: &str, branch: &str) -> PathBuf {
+fn worktree(repo: &Repo, rel: &str, branch: &str) -> PathBuf {
     repo.add_worktree(&repo.tmp.path().join(rel), branch)
 }
 
-/// Commits a file inside `lane`, so its branch is not merged into `main`.
-fn commit_in(repo: &Repo, lane: &Path) {
-    std::fs::write(lane.join("work.txt"), "work\n").unwrap();
-    git_in(repo, lane, &["add", "work.txt"]);
-    git_in(repo, lane, &["commit", "--quiet", "-m", "work"]);
+/// Commits a file inside `worktree`, so its branch is not merged into `main`.
+fn commit_in(repo: &Repo, worktree: &Path) {
+    std::fs::write(worktree.join("work.txt"), "work\n").unwrap();
+    git_in(repo, worktree, &["add", "work.txt"]);
+    git_in(repo, worktree, &["commit", "--quiet", "-m", "work"]);
 }
 
 fn rm(repo: &Repo, args: &[&str]) -> assert_cmd::assert::Assert {
-    let mut full = vec!["lane", "rm"];
+    let mut full = vec!["worktree", "rm"];
     full.extend_from_slice(args);
     repo.orca_term(&repo.root).args(full).assert()
 }
 
 #[test]
-fn removing_a_lane_with_an_unmerged_commit_keeps_its_branch() {
+fn removing_a_worktree_with_an_unmerged_commit_keeps_its_branch() {
     let repo = Repo::new();
-    let fix = lane(&repo, "lanes/fix", "fix");
+    let fix = worktree(&repo, "worktrees/fix", "fix");
     commit_in(&repo, &fix);
 
     rm(&repo, &["fix"])
         .success()
-        .stdout(predicate::str::contains("removed lane fix"))
+        .stdout(predicate::str::contains("removed worktree fix"))
         .stdout(predicate::str::contains(
             "kept branch fix: not merged into main",
         ));
@@ -63,9 +63,9 @@ fn removing_a_lane_with_an_unmerged_commit_keeps_its_branch() {
 }
 
 #[test]
-fn removing_a_lane_with_no_new_commits_deletes_its_branch() {
+fn removing_a_worktree_with_no_new_commits_deletes_its_branch() {
     let repo = Repo::new();
-    let docs = lane(&repo, "lanes/docs", "docs");
+    let docs = worktree(&repo, "worktrees/docs", "docs");
 
     rm(&repo, &["docs"])
         .success()
@@ -79,7 +79,7 @@ fn removing_a_lane_with_no_new_commits_deletes_its_branch() {
 #[test]
 fn a_branch_merged_into_main_is_deleted() {
     let repo = Repo::new();
-    let fix = lane(&repo, "lanes/fix", "fix");
+    let fix = worktree(&repo, "worktrees/fix", "fix");
     commit_in(&repo, &fix);
     repo.git(&["merge", "--quiet", "--ff-only", "fix"]);
 
@@ -92,9 +92,9 @@ fn a_branch_merged_into_main_is_deleted() {
 }
 
 #[test]
-fn a_dirty_lane_needs_force() {
+fn a_dirty_worktree_needs_force() {
     let repo = Repo::new();
-    let wip = lane(&repo, "lanes/wip", "wip");
+    let wip = worktree(&repo, "worktrees/wip", "wip");
     std::fs::write(wip.join("scratch.txt"), "unsaved\n").unwrap();
 
     rm(&repo, &["wip"])
@@ -112,7 +112,7 @@ fn a_dirty_lane_needs_force() {
 #[test]
 fn force_deletes_an_unmerged_branch() {
     let repo = Repo::new();
-    let fix = lane(&repo, "lanes/fix", "fix");
+    let fix = worktree(&repo, "worktrees/fix", "fix");
     commit_in(&repo, &fix);
 
     rm(&repo, &["--force", "fix"])
@@ -122,9 +122,9 @@ fn force_deletes_an_unmerged_branch() {
 }
 
 #[test]
-fn a_detached_lane_has_no_branch_to_delete() {
+fn a_detached_worktree_has_no_branch_to_delete() {
     let repo = Repo::new();
-    let look = repo.tmp.path().join("lanes/look");
+    let look = repo.tmp.path().join("worktrees/look");
     repo.git(&[
         "worktree",
         "add",
@@ -140,17 +140,17 @@ fn a_detached_lane_has_no_branch_to_delete() {
 }
 
 #[test]
-fn a_broken_lane_is_refused_and_points_to_prune() {
+fn a_broken_worktree_is_refused_and_points_to_prune() {
     let repo = Repo::new();
-    let gone = lane(&repo, "lanes/gone", "gone");
+    let gone = worktree(&repo, "worktrees/gone", "gone");
     std::fs::remove_dir_all(&gone).unwrap();
 
     rm(&repo, &["gone"])
         .failure()
-        .stderr(predicate::str::contains("orca-term lane prune"));
+        .stderr(predicate::str::contains("orca-term worktree prune"));
     rm(&repo, &["--force", "gone"])
         .failure()
-        .stderr(predicate::str::contains("orca-term lane prune"));
+        .stderr(predicate::str::contains("orca-term worktree prune"));
     assert!(registered(&repo, &gone));
     assert!(has_branch(&repo, "gone"));
 }
@@ -171,24 +171,24 @@ fn the_primary_checkout_is_refused() {
 }
 
 #[test]
-fn an_unknown_lane_is_refused() {
+fn an_unknown_worktree_is_refused() {
     let repo = Repo::new();
     let elsewhere = repo.tmp.path().join("plain");
     std::fs::create_dir(&elsewhere).unwrap();
     rm(&repo, &["nope"])
         .failure()
-        .stderr(predicate::str::contains("no lane named `nope`"));
+        .stderr(predicate::str::contains("no worktree named `nope`"));
     rm(&repo, &[elsewhere.to_str().unwrap()])
         .failure()
-        .stderr(predicate::str::contains("is not a lane"));
+        .stderr(predicate::str::contains("is not a worktree"));
     assert!(elsewhere.exists());
 }
 
 #[test]
 fn an_ambiguous_name_is_refused_and_a_path_disambiguates() {
     let repo = Repo::new();
-    let a = lane(&repo, "a/api", "api-a");
-    let b = lane(&repo, "b/api", "api-b");
+    let a = worktree(&repo, "a/api", "api-a");
+    let b = worktree(&repo, "b/api", "api-b");
 
     rm(&repo, &["api"])
         .failure()
@@ -202,14 +202,14 @@ fn an_ambiguous_name_is_refused_and_a_path_disambiguates() {
 }
 
 #[test]
-fn prune_cleans_a_broken_lane_and_reports_it() {
+fn prune_cleans_a_broken_worktree_and_reports_it() {
     let repo = Repo::new();
-    let gone = lane(&repo, "lanes/gone", "gone");
-    let kept = lane(&repo, "lanes/kept", "kept");
+    let gone = worktree(&repo, "worktrees/gone", "gone");
+    let kept = worktree(&repo, "worktrees/kept", "kept");
     std::fs::remove_dir_all(&gone).unwrap();
 
     repo.orca_term(&repo.root)
-        .args(["lane", "prune"])
+        .args(["worktree", "prune"])
         .assert()
         .success()
         .stdout(predicate::str::diff(format!("pruned {}\n", gone.display())));
@@ -221,31 +221,31 @@ fn prune_cleans_a_broken_lane_and_reports_it() {
 #[test]
 fn prune_with_nothing_broken_says_so() {
     let repo = Repo::new();
-    lane(&repo, "lanes/kept", "kept");
+    worktree(&repo, "worktrees/kept", "kept");
     repo.orca_term(&repo.root)
-        .args(["lane", "prune"])
+        .args(["worktree", "prune"])
         .assert()
         .success()
         .stdout(predicate::str::diff("nothing to prune\n"));
 }
 
 #[test]
-fn no_other_command_prunes_a_broken_lane() {
+fn no_other_command_prunes_a_broken_worktree() {
     let repo = Repo::new();
-    let gone = lane(&repo, "lanes/gone", "gone");
-    let other = lane(&repo, "lanes/other", "other");
+    let gone = worktree(&repo, "worktrees/gone", "gone");
+    let other = worktree(&repo, "worktrees/other", "other");
     std::fs::remove_dir_all(&gone).unwrap();
 
     repo.orca_term(&repo.root)
-        .args(["lane", "ls"])
+        .args(["worktree", "ls"])
         .assert()
         .success();
     repo.orca_term(&repo.root)
-        .args(["lane", "ls", "--json"])
+        .args(["worktree", "ls", "--json"])
         .assert()
         .success();
     repo.orca_term(&repo.root)
-        .args(["lane", "new", "fresh"])
+        .args(["worktree", "new", "fresh"])
         .assert()
         .success();
     rm(&repo, &["other"]).success();
@@ -253,15 +253,15 @@ fn no_other_command_prunes_a_broken_lane() {
 
     assert!(
         registered(&repo, &gone),
-        "only `lane prune` cleans a broken lane"
+        "only `worktree prune` cleans a broken worktree"
     );
 }
 
 #[test]
-fn a_lane_whose_state_is_unreadable_can_still_be_removed() {
+fn a_worktree_whose_state_is_unreadable_can_still_be_removed() {
     let repo = Repo::new();
-    let docs = lane(&repo, "lanes/docs", "docs");
-    repo.write(".git/worktrees/docs/orca-term/lane.json", "{not json");
+    let docs = worktree(&repo, "worktrees/docs", "docs");
+    repo.write(".git/worktrees/docs/orca-term/worktree.json", "{not json");
     repo.write("unrelated.txt", "main moves on\n");
     repo.commit_all("unrelated");
 
@@ -275,7 +275,7 @@ fn the_default_branch_is_never_deleted_even_with_force() {
     for force in [false, true] {
         let repo = Repo::new();
         repo.git(&["switch", "--quiet", "-c", "side"]);
-        let trunk = repo.tmp.path().join("lanes/trunk");
+        let trunk = repo.tmp.path().join("worktrees/trunk");
         repo.git(&[
             "worktree",
             "add",
@@ -300,8 +300,8 @@ fn the_default_branch_is_never_deleted_even_with_force() {
 #[test]
 fn a_branch_checked_out_in_another_worktree_is_kept() {
     let repo = Repo::new();
-    let one = lane(&repo, "lanes/one", "shared");
-    let two = repo.tmp.path().join("lanes/two");
+    let one = worktree(&repo, "worktrees/one", "shared");
+    let two = repo.tmp.path().join("worktrees/two");
     repo.git(&[
         "worktree",
         "add",

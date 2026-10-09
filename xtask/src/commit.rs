@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn accepts_a_conventional_single_line() {
-        assert!(lint("feat: list lanes with orca-term lane ls\n").is_empty());
+        assert!(lint("feat: list worktrees with orca-term worktree ls\n").is_empty());
         assert!(lint("fix(fleet): keep prunable worktrees").is_empty());
         assert!(lint("refactor!: rename the contract module").is_empty());
         assert!(lint("chore: commit .claude/settings.json guards").is_empty());
@@ -102,9 +102,9 @@ mod tests {
 
     #[test]
     fn rejects_a_missing_or_unknown_type() {
-        assert_eq!(lint("list lanes").len(), 1);
-        assert_eq!(lint("feature: list lanes").len(), 1);
-        assert_eq!(lint("feat:list lanes").len(), 1);
+        assert_eq!(lint("list worktrees").len(), 1);
+        assert_eq!(lint("feature: list worktrees").len(), 1);
+        assert_eq!(lint("feat:list worktrees").len(), 1);
         assert_eq!(lint("feat: ").len(), 1);
     }
 
