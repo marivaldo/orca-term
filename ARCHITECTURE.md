@@ -197,7 +197,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   each domain and edge module. Adapters keep the few tests that need a real directory.
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
   headless Neovim against the binary `cargo build` makes, in throwaway git repositories built by
-  `spec/support.lua`. See "Neovim client" below.
+  `spec/support.lua`. The sidebar's text and highlights are compared with
+  `spec/golden/sidebar.txt` (`UPDATE_GOLDEN=1 just lua-test` rewrites it). See "Neovim client"
+  below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -208,7 +210,7 @@ Neovim 0.11 or later. The client is thin: it runs the core's commands with `--js
 what they print.
 
 - `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command, with completion of the
-  subcommands, and nothing else.
+  subcommands, and the `<Plug>(OrcaTermSidebar)` map, and nothing else.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
@@ -217,13 +219,32 @@ what they print.
   `--json`, waits for it, decodes the JSON and refuses a document whose `contract` differs from
   the client's own `CONTRACT`. It returns the document, or `nil` and an error `{ kind, message }`
   whose message names the fix; it never throws.
-- `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`, a stub until issue #30 builds the sidebar.
+- `lua/orca-term/fleet.lua`: the attention order, pure: each worktree's rank (1 waiting to 8 no
+  agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank then
+  name (recency joins when the core prints it).
+- `lua/orca-term/render.lua`: the sidebar's look, pure: turns the fleet (or an error), the
+  selected worktree's path and a width (36) into lines, highlight spans and the worktree each line
+  belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
+  glyph and a second line per worktree, the rounded card around the selected one. No line reaches
+  past the width.
+- `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
+  `OrcaTermBorder`, `OrcaTermError` and one `OrcaTermState*` per state), defined as default links
+  to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` so a person's own definition wins.
+- `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
+  shown in a 36-column left split of every tab while open (and of every tab made later). It reads
+  the fleet through `core.lua` on open and on `FocusGained`, paints what `render.lua` returns, and
+  keeps the selection (a worktree's path) across refreshes. Its only keys, `j` and `k`, are local
+  to its buffer.
 
 Its rules:
 
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
+- **Only `sidebar.lua` touches windows and buffers; `fleet.lua` and `render.lua` are pure.**
+  The order and the look are plain functions of the fleet, tested without a window; the sidebar
+  only paints them. `cargo xtask client-boundary` refuses a window or buffer call anywhere else,
+  and any `vim.api` or `vim.cmd` in the pure modules.
 - **The client never computes state.** The fleet, each worktree's state and every decision come
   from the core's JSON; the client renders them. No logic is bound to the Neovim process.
 - **No global keymap.** Every key the client adds is local to one of its buffers;
