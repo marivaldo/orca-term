@@ -103,7 +103,8 @@ the adapters, and returns a domain value that `output` prints.
   reaps the agent, the reader pumps the PTY into the scrollback (8 MiB) and to every client's
   bounded queue, the acceptor starts a client thread per connection, each client has a writer
   (replay first, then the queue), and a stop spawns the escalation (hang up, terminate after 3 s,
-  kill after 3 more). A client's first size is "jiggled" (one column narrower, then back, again
+  kill after 3 more); a write to a client that blocks for 3 s drops that client as stuck, and
+  the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
   a second later) so the agent redraws for the new terminal. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
 - `adapters/terminal.rs`: the terminal of `agent attach`: raw mode (restored on the way out,
