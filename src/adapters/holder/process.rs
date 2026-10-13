@@ -60,6 +60,13 @@ const JIGGLE_REPEAT: Duration = Duration::from_secs(1);
 /// Between the hang-up, the terminate and the kill of an agent that does not end.
 const ESCALATION_STEP: Duration = Duration::from_secs(3);
 
+/// How long a write to a client may block before the client counts as stuck (an attach suspended
+/// in its shell, a peer that never reads) and is dropped.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long the holder waits for its writers once the agent exited, before leaving without them.
+const WRITERS_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Runs the holder: reports on stdout, then serves until the agent exits.
 pub(crate) fn serve(args: &HolderArgs) -> Result<()> {
     match prepare(args) {
@@ -234,12 +241,25 @@ fn run(holder: &Arc<Holder>, listener: UnixListener) -> Result<()> {
         shared.clients.clear();
         std::mem::take(&mut shared.writers)
     };
-    for writer in writers {
-        let _ = writer.join();
-    }
+    join_within(writers, WRITERS_DEADLINE);
     fs::remove_if_exists(&holder.admin.agent_socket())?;
     fs::remove_if_exists(&holder.admin.agent_record())?;
     Ok(())
+}
+
+/// Joins the writers that end within `deadline`; one still stuck in a write past it is left behind,
+/// since the process is about to exit anyway.
+fn join_within(mut writers: Vec<JoinHandle<()>>, deadline: Duration) {
+    let end = Instant::now() + deadline;
+    while !writers.is_empty() && Instant::now() < end {
+        let (done, pending): (Vec<_>, Vec<_>) =
+            writers.into_iter().partition(JoinHandle::is_finished);
+        for writer in done {
+            let _ = writer.join();
+        }
+        writers = pending;
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Starts the reader: PTY output into the scrollback and to every client's queue.
@@ -304,14 +324,23 @@ fn serve_client(holder: &Arc<Holder>, connection: UnixStream) {
 }
 
 /// One client's writer: the replay, then the agent's end if it already ended, else every frame
-/// queued for the client until its queue is dropped, then the socket is closed.
+/// queued for the client until its queue is dropped, then the socket is closed. A write that
+/// blocks for [`CLIENT_WRITE_TIMEOUT`] ends the writer: the client stopped reading.
 fn write_client(
     mut stream: UnixStream,
     replay: Vec<u8>,
     exit: Option<String>,
     frames: &mpsc::Receiver<Vec<u8>>,
 ) {
-    let _ = stream.write_all(&Frame::Output(replay).encode());
+    if stream
+        .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
+        .is_err()
+    {
+        return;
+    }
+    if stream.write_all(&Frame::Output(replay).encode()).is_err() {
+        return;
+    }
     match exit {
         Some(text) => {
             let _ = stream.write_all(&Frame::Exit(text).encode());
