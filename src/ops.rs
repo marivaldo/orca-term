@@ -19,7 +19,7 @@ use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::TypedError;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
-use crate::domain::state::{self, AdminDir, BrokenReason, State, WorktreeFile};
+use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
 use crate::domain::worktree::{self, Target};
 
 /// Reads the fleet of the repository containing `dir`, with each worktree's state. Never writes.
@@ -57,16 +57,31 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> State {
 /// volatile facts behind it. Only reads: the lock is probed only for a setup recorded as running,
 /// and the setup log is read only for a failed one.
 fn derive_state(admin: &AdminDir) -> Result<State> {
-    let path = admin.state_file();
-    let recorded = state::read(&path, fs::read_optional(&path)?.as_deref())?;
-    Ok(match recorded.setup {
-        Some(SetupRecord::Running) => state::setup_running(fs::lock_status(admin)?),
+    let mut setup = read_setup(admin)?;
+    if setup == Some(SetupRecord::Running) {
+        if fs::lock_status(admin)? == LockStatus::Held {
+            return Ok(state::setup_running(LockStatus::Held));
+        }
+        // The lock is free, but the setup may have ended between the read and the probe: it
+        // records its end before it releases the lock, so reading the file once more tells a
+        // finished setup from a dead one. Still only a read.
+        setup = read_setup(admin)?;
+    }
+    match setup {
+        // Still recorded as running, with its lock seen free: the process died.
+        Some(SetupRecord::Running) => Ok(state::setup_running(LockStatus::Free)),
         Some(SetupRecord::Failed(exit)) => {
             let log = fs::read_optional(&admin.setup_log())?.unwrap_or_default();
-            state::setup_failed(exit, &log)
+            Ok(state::setup_failed(exit, &log))
         }
-        Some(SetupRecord::Succeeded) | None => State::NoAgent,
-    })
+        Some(SetupRecord::Succeeded) | None => Ok(State::NoAgent),
+    }
+}
+
+/// What the state file in `admin` records about the worktree's setup.
+fn read_setup(admin: &AdminDir) -> Result<Option<SetupRecord>> {
+    let path = admin.state_file();
+    Ok(state::read(&path, fs::read_optional(&path)?.as_deref())?.setup)
 }
 
 /// The worktree `target` names (a basename) or locates (a path, relative to `dir`).
