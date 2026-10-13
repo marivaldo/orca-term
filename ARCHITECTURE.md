@@ -41,8 +41,10 @@ the adapters, and returns a domain value that `output` prints.
   of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm` and `prune`, and errors (as text on stderr, or as JSON on stdout
-  with `--json`). `Format` is text or JSON, and `live_echo` is the writer a setup's output is
-  echoed to while it runs (stderr, or nowhere with `--json`), handed by `cli` to the ops module.
+  with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
+  has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
+  writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
+  handed by `cli` to the ops module.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`
   and errors), built as views from domain values, with the `contract` and `version` envelope.
 
@@ -152,7 +154,9 @@ validate"):
   never rewrites an interrupted setup (ADR 0003: volatile facts are checked on read).
 - **Writes to a worktree's state hold its lock.** The function that writes `worktree.json`
   (`ops::write_state`) takes a `&WorktreeLock`, so a write without the lock does not compile.
-  `worktree new` takes the lock as soon as git's worktree exists and holds it until the setup
+  `worktree ls` reads a setup recorded as running once more when its lock is free, since the
+  setup records its end before releasing the lock. `worktree new` takes the lock as soon as
+  git's worktree exists and holds it until the setup
   ends; `worktree setup` and `worktree rm` take it without waiting and fail as `busy` when it is
   held.
 - **A failed setup undoes nothing**: the worktree, its branch and its log stay, and the worktree
