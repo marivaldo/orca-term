@@ -5,3 +5,6 @@
 
 # build output
 /target/
+
+# Lua rocks (busted, nlua) installed by `just lua-rocks`
+/.rocks/

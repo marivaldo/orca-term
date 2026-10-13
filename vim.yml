@@ -1,0 +1,28 @@
+# selene's `vim` standard library (see selene.toml): Lua 5.1, the language LuaJIT runs, plus
+# Neovim's `vim` and `jit` globals and the globals busted gives the specs in spec/. Adapted from
+# lazy.nvim's https://github.com/folke/lazy.nvim/blob/306a05526ada86a7b30af95c5cc81ffba93fef97/vim.yml
+base: lua51
+
+globals:
+  vim:
+    any: true
+  jit:
+    any: true
+  describe:
+    any: true
+  it:
+    any: true
+  pending:
+    any: true
+  before_each:
+    any: true
+  after_each:
+    any: true
+  finally:
+    any: true
+  setup:
+    any: true
+  teardown:
+    any: true
+  assert:
+    any: true

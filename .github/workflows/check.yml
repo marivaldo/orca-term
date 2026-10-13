@@ -107,17 +107,91 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
 
+  # The Neovim client: stylua, selene, the LuaLS check and the specs against the freshly built
+  # core, on the oldest Neovim it supports and on the current stable release (pinned, bumped by
+  # hand). Every download is checked against the sha256 its release published.
+  lua:
+    name: lua (nvim ${{ matrix.nvim.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        nvim:
+          - name: "0.11"
+            version: 0.11.7
+            sha256: 38a7c6317f94503841096c00e8fde05ef04b9472fc9d7d62b6e033cecd6f7991
+          - name: stable
+            version: 0.12.6
+            sha256: 474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - name: Install Neovim
+        env:
+          VERSION: ${{ matrix.nvim.version }}
+          SHA256: ${{ matrix.nvim.sha256 }}
+        run: |
+          archive="nvim-linux-x86_64.tar.gz"
+          curl -fsSLO "https://github.com/neovim/neovim/releases/download/v${VERSION}/${archive}"
+          echo "${SHA256}  ${archive}" | sha256sum --check
+          tar -xzf "${archive}" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Install stylua, selene and lua-language-server
+        env:
+          STYLUA_VERSION: 2.6.0
+          STYLUA_SHA256: a485f72bbfa22e4642e77a84b5edc2611a5cab7477b34e2e709dd8f78e919895
+          SELENE_VERSION: 0.32.0
+          SELENE_SHA256: ee5b3050dfff782f5c624b5f5eec9f205098333e1f8f55b7977ef75e5c594b1a
+          LUALS_VERSION: 3.19.2
+          LUALS_SHA256: 93ad326b10f6c00911dd8c450fa098332dbd8f9f45d1052f5636a2d54479b947
+        run: |
+          stylua="stylua-linux-x86_64.zip"
+          curl -fsSLO "https://github.com/JohnnyMorganz/StyLua/releases/download/v${STYLUA_VERSION}/${stylua}"
+          echo "${STYLUA_SHA256}  ${stylua}" | sha256sum --check
+          unzip -q "${stylua}" stylua
+          sudo install stylua /usr/local/bin/stylua
+
+          selene="selene-light-${SELENE_VERSION}-linux.zip"
+          curl -fsSLO "https://github.com/Kampfkarren/selene/releases/download/${SELENE_VERSION}/${selene}"
+          echo "${SELENE_SHA256}  ${selene}" | sha256sum --check
+          unzip -q "${selene}" selene
+          sudo install selene /usr/local/bin/selene
+
+          luals="lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz"
+          curl -fsSLO "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/${luals}"
+          echo "${LUALS_SHA256}  ${luals}" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/luals"
+          tar -xzf "${luals}" -C "$RUNNER_TEMP/luals"
+          echo "$RUNNER_TEMP/luals/bin" >> "$GITHUB_PATH"
+      # LuaRocks and the Lua 5.1 headers busted's C modules build against, from Ubuntu's signed
+      # archive.
+      - name: Install LuaRocks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends luarocks liblua5.1-0-dev
+      - run: just lua-rocks
+      - run: just lua
+
   # The one status the ruleset on main requires. `pr-title` only runs on pull requests, so a
   # skipped `pr-title` passes; every other job must succeed.
   check:
     if: always()
-    needs: [rust, deny, meta, pr-title]
+    needs: [rust, deny, meta, lua, pr-title]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
       - name: Every job passed
         env:
-          RESULTS: ${{ needs.rust.result }} ${{ needs.deny.result }} ${{ needs.meta.result }}
+          RESULTS: >-
+            ${{ needs.rust.result }} ${{ needs.deny.result }} ${{ needs.meta.result }}
+            ${{ needs.lua.result }}
           PR_TITLE_RESULT: ${{ needs.pr-title.result }}
         run: |
           for r in $RESULTS; do

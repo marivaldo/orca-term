@@ -3,7 +3,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Every check, as CI runs it.
-check: rust deny meta
+check: rust deny meta lua
 
 # Rust: format, lint and test.
 rust: fmt-check clippy test
@@ -20,12 +20,56 @@ clippy:
 test:
     cargo test --workspace --locked
 
+# The Neovim client: format, lint and type-check the Lua, then run its specs against the core.
+lua: lua-fmt-check lua-lint lua-types lua-test
+
+lua-fmt:
+    stylua lua plugin spec
+
+lua-fmt-check:
+    stylua --check lua plugin spec
+
+lua-lint:
+    selene lua plugin spec
+
+# LuaLS's type check, against the Lua API of the nvim on PATH; any warning fails it.
+lua-types:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # .luarc.json reads Neovim's Lua API from $VIMRUNTIME, the runtime of the nvim on PATH.
+    VIMRUNTIME="$(nvim --clean --headless --cmd 'lua io.stdout:write(os.getenv("VIMRUNTIME"))' --cmd 'qa!')"
+    export VIMRUNTIME
+    logs="$(mktemp -d)"
+    trap 'rm -rf "$logs"' EXIT
+    lua-language-server --check . --checklevel=Warning --logpath "$logs"
+
+# The specs: busted inside headless Neovim (through nlua), against the binary `cargo build` makes.
+lua-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rocks="$PWD/.rocks"
+    if [ ! -x "$rocks/bin/busted" ]; then
+        echo "lua-test: busted is not installed; run \`just lua-rocks\` once" >&2
+        exit 1
+    fi
+    cargo build --locked
+    export PATH="$rocks/bin:$PATH"
+    export LUA_PATH="$rocks/share/lua/5.1/?.lua;$rocks/share/lua/5.1/?/init.lua;;"
+    export LUA_CPATH="$rocks/lib/lua/5.1/?.so;;"
+    # nlua reads Lua from stdin when stdin is not a terminal: /dev/null keeps it from waiting.
+    busted </dev/null
+
+# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`. Run it once.
+lua-rocks:
+    luarocks --lua-version=5.1 --tree .rocks install busted 2.3.0-1
+    luarocks --lua-version=5.1 --tree .rocks install nlua 0.3.2-1
+
 # Advisories, bans, licenses and sources.
 deny:
     cargo deny check
 
-# Spelling, workflows, vocabulary, layers, commit messages and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab layers (commit-lint range) guard-test
+# Spelling, workflows, vocabulary, layers, the client boundary, commit messages and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers client-boundary (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree.
 typos *files:
@@ -41,6 +85,11 @@ vocab:
 # The core's layers: imports point down, each file names its layer, I/O opt-outs only in adapters.
 layers:
     cargo xtask layers
+
+# The Neovim client: only core.lua starts processes, only sidebar.lua touches windows and buffers,
+# fleet.lua and render.lua are pure.
+client-boundary:
+    cargo xtask client-boundary
 
 # Lints every commit in the range; skipped when its base does not exist (no remote yet).
 commit-lint range="origin/main..HEAD":

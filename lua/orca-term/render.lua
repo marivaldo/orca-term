@@ -1,0 +1,399 @@
+-- orca-term's sidebar: what it shows, as lines of text and the colours on them.
+--
+-- Pure: it takes the fleet (or an error) and returns lines, highlight spans and which worktree
+-- each line belongs to. It never touches a buffer or a window; `sidebar.lua` paints the result.
+-- The only Neovim calls measure text in screen cells (`vim.fn.strdisplaywidth`,
+-- `vim.fn.strcharpart`, `vim.fn.strchars`) or are pure helpers (`vim.fs.basename`,
+-- `vim.list_extend`).
+--
+-- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
+-- spec/golden/sidebar.txt, with `fix-login` selected:
+--
+--   ▾ repo  main
+--
+--   NEEDS YOU 2
+--   ╭────────────────────────────────╮
+--   │ △ fix-login                    │
+--   │   setup failed (exit 1): npm … │
+--   ╰────────────────────────────────╯
+--   ! old-spike
+--     directory missing; run orca-ter…
+--
+--   RUNNING 1
+--   ◌ install-deps
+--
+--   QUIET 2
+--   · docs
+--   · spike
+--     ⎇ other-branch
+--
+-- Nothing reaches the last column: rows end one cell before `width`, where the card's right
+-- border ends.
+
+local fleet_order = require('orca-term.fleet')
+local highlights = require('orca-term.highlights')
+
+local M = {}
+
+---The sidebar's width in screen cells, unless the caller says otherwise.
+M.WIDTH = 36
+
+---Each state's glyph, from the spec. A state this client does not know yet shows `·`.
+---Working spins in the spec; it is static until the core reports agents.
+---@type table<string, string>
+M.GLYPHS = {
+  working = '◐',
+  waiting = '?',
+  finished = '●',
+  failed = '●',
+  interrupted = '●',
+  idle = '○',
+  no_agent = '·',
+  not_ready = '△',
+  setting_up = '◌',
+  broken = '!',
+}
+
+---A highlight on one line: `group` from byte `first` up to (not including) byte `last`.
+---@class orca_term.Span
+---@field line integer 1-based, an index into `lines`
+---@field first integer 0-based byte column
+---@field last integer 0-based byte column, exclusive
+---@field group string
+
+---What the sidebar shows.
+---@class orca_term.Rendered
+---@field lines string[]
+---@field spans orca_term.Span[]
+---@field paths table<integer, string> each line that belongs to a worktree, and that worktree's path
+---@field firsts table<string, integer> each worktree's path, and the line holding its name
+---@field order string[] the worktrees' paths, top to bottom
+---@field selected? string the selected worktree's path; `nil` when there is no worktree
+
+---A line being built: its text so far, its spans, and how many cells it may take.
+---@class orca_term.Line
+---@field text string
+---@field spans { first: integer, last: integer, group: string }[]
+---@field budget integer
+---@field path? string
+---@field first? boolean whether this line holds the worktree's name
+
+---The width of `text` in screen cells.
+---@param text string
+---@return integer
+local function cells(text)
+  return vim.fn.strdisplaywidth(text)
+end
+
+---The longest start of `text` that fits in `width` cells, and what is left after it.
+---@param text string
+---@param width integer
+---@return string head
+---@return string rest
+local function split_at(text, width)
+  local head = ''
+  local count = vim.fn.strchars(text)
+  for index = 0, count - 1 do
+    local char = vim.fn.strcharpart(text, index, 1)
+    if cells(head .. char) > width then
+      return head, vim.fn.strcharpart(text, index)
+    end
+    head = head .. char
+  end
+  return head, ''
+end
+
+---`text` cut to `width` cells, ending in `…` when it was cut.
+---@param text string
+---@param width integer
+---@return string
+local function truncate(text, width)
+  if width <= 0 then
+    return ''
+  end
+  if cells(text) <= width then
+    return text
+  end
+  local head = split_at(text, width - 1)
+  return head .. '…'
+end
+
+---`text` on one line: tabs, newlines and other control characters become spaces.
+---@param text string
+---@return string
+local function one_line(text)
+  return (text:gsub('%c', ' '))
+end
+
+---`text` broken into lines of at most `width` cells, at spaces where it can.
+---@param text string
+---@param width integer
+---@return string[]
+local function wrap(text, width)
+  local lines = {}
+  local current = ''
+  for word in one_line(text):gmatch('%S+') do
+    -- A word longer than a whole line (a path, say) is cut wherever the line ends.
+    while cells(word) > width do
+      if current ~= '' then
+        table.insert(lines, current)
+        current = ''
+      end
+      local head, rest = split_at(word, width)
+      table.insert(lines, head)
+      word = rest
+    end
+    if current == '' then
+      current = word
+    elseif cells(current) + 1 + cells(word) <= width then
+      current = current .. ' ' .. word
+    else
+      table.insert(lines, current)
+      current = word
+    end
+  end
+  if current ~= '' then
+    table.insert(lines, current)
+  end
+  return lines
+end
+
+---A new, empty line that may take `budget` cells.
+---@param budget integer
+---@param path? string
+---@return orca_term.Line
+local function new_line(budget, path)
+  return { text = '', spans = {}, budget = budget, path = path }
+end
+
+---Adds `text` to the end of `line`, in `group` when given. Text that does not fit the line's
+---budget is cut with `…`, so a line never grows past it.
+---@param line orca_term.Line
+---@param text string
+---@param group? string
+local function add(line, text, group)
+  local room = line.budget - cells(line.text)
+  local fitted = truncate(text, room)
+  if fitted == '' then
+    return
+  end
+  local first = #line.text
+  line.text = line.text .. fitted
+  if group then
+    table.insert(line.spans, { first = first, last = #line.text, group = group })
+  end
+end
+
+---The header: ` ▾ <repository>  <branch of the primary checkout>`. The primary checkout is only
+---ever shown here, never as a row.
+---@param repo string
+---@param branch? string
+---@param width integer
+---@return orca_term.Line
+local function header(repo, branch, width)
+  local line = new_line(width - 1)
+  add(line, ' ')
+  add(line, '▾', 'OrcaTermMuted')
+  add(line, ' ')
+  add(line, repo, 'OrcaTermHeader')
+  if branch then
+    add(line, '  ')
+    add(line, branch, 'OrcaTermMuted')
+  end
+  return line
+end
+
+---What a worktree's second line says: its detail, after its branch when the branch is not named
+---like the worktree. An empty string means the worktree has no second line.
+---@param worktree orca_term.Worktree
+---@return string
+local function second_line_text(worktree)
+  local text = worktree.detail and one_line(worktree.detail) or ''
+  if worktree.branch ~= worktree.name then
+    local branch = '⎇ ' .. (worktree.branch or 'detached')
+    if text == '' then
+      text = branch
+    else
+      text = branch .. ' · ' .. text
+    end
+  end
+  return text
+end
+
+---The lines of one worktree: its name line and, when it has something to say, its second line.
+---@param worktree orca_term.RankedWorktree
+---@param needs_you boolean whether it is under "Needs you", which colours its second line
+---@param budget integer the cells its lines may take
+---@return orca_term.Line[]
+local function worktree_lines(worktree, needs_you, budget)
+  local state_group = highlights.state_group(worktree.state)
+
+  local name_line = new_line(budget, worktree.path)
+  name_line.first = true
+  -- The unseen mark goes in this first cell once the core prints it.
+  add(name_line, ' ')
+  add(name_line, M.GLYPHS[worktree.state] or '·', state_group)
+  add(name_line, ' ')
+  add(name_line, worktree.name)
+  -- The agent and the age of the last activity will sit at the right of this line.
+  local lines = { name_line }
+
+  local text = second_line_text(worktree)
+  if text ~= '' then
+    local detail_line = new_line(budget, worktree.path)
+    add(detail_line, '   ')
+    add(detail_line, text, needs_you and state_group or 'OrcaTermMuted')
+    table.insert(lines, detail_line)
+  end
+  return lines
+end
+
+---`body` inside the rounded card that marks the selected worktree, added to `out`.
+---@param out orca_term.Line[]
+---@param body orca_term.Line[]
+---@param path string
+---@param width integer
+local function add_card(out, body, path, width)
+  local inner = width - 4
+
+  local top = new_line(width - 1, path)
+  add(top, ' ')
+  add(top, '╭' .. string.rep('─', inner) .. '╮', 'OrcaTermBorder')
+  table.insert(out, top)
+
+  for _, line in ipairs(body) do
+    local boxed = new_line(width - 1, path)
+    boxed.first = line.first
+    add(boxed, ' ')
+    add(boxed, '│', 'OrcaTermBorder')
+    local shift = #boxed.text
+    boxed.text = boxed.text .. line.text .. string.rep(' ', inner - cells(line.text))
+    for _, span in ipairs(line.spans) do
+      table.insert(boxed.spans, {
+        first = span.first + shift,
+        last = span.last + shift,
+        group = span.group,
+      })
+    end
+    add(boxed, '│', 'OrcaTermBorder')
+    table.insert(out, boxed)
+  end
+
+  local bottom = new_line(width - 1, path)
+  add(bottom, ' ')
+  add(bottom, '╰' .. string.rep('─', inner) .. '╯', 'OrcaTermBorder')
+  table.insert(out, bottom)
+end
+
+---Turns the lines built into what the sidebar shows.
+---@param built orca_term.Line[]
+---@param order string[]
+---@param selected? string
+---@return orca_term.Rendered
+local function finish(built, order, selected)
+  local rendered = {
+    lines = {},
+    spans = {},
+    paths = {},
+    firsts = {},
+    order = order,
+    selected = selected,
+  }
+  for index, line in ipairs(built) do
+    rendered.lines[index] = line.text
+    for _, span in ipairs(line.spans) do
+      table.insert(rendered.spans, {
+        line = index,
+        first = span.first,
+        last = span.last,
+        group = span.group,
+      })
+    end
+    if line.path then
+      rendered.paths[index] = line.path
+      if line.first then
+        rendered.firsts[line.path] = index
+      end
+    end
+  end
+  return rendered
+end
+
+---The sidebar for `fleet`, with the worktree at path `selected` in the card. When no worktree
+---has that path (it is `nil`, or the worktree is gone), the first worktree shown is selected.
+---@param fleet orca_term.Fleet
+---@param selected? string
+---@param width? integer
+---@return orca_term.Rendered
+function M.fleet(fleet, selected, width)
+  width = width or M.WIDTH
+  local sections = fleet_order.sections(fleet.worktrees)
+
+  local order = {}
+  local known = false
+  for _, section in ipairs(sections) do
+    for _, worktree in ipairs(section.worktrees) do
+      table.insert(order, worktree.path)
+      if worktree.path == selected then
+        known = true
+      end
+    end
+  end
+  if not known then
+    selected = order[1]
+  end
+
+  local repo = vim.fs.basename(fleet.primary.path)
+  local built = { header(repo, fleet.primary.branch or 'detached', width) }
+
+  if #sections == 0 then
+    table.insert(built, new_line(width - 1))
+    for _, text in ipairs({ 'no worktrees yet', 'orca-term worktree new <name>' }) do
+      local line = new_line(width - 1)
+      add(line, ' ')
+      add(line, text, 'OrcaTermMuted')
+      table.insert(built, line)
+    end
+    return finish(built, order, selected)
+  end
+
+  for _, section in ipairs(sections) do
+    table.insert(built, new_line(width - 1))
+    local heading = new_line(width - 1)
+    add(heading, ' ')
+    add(heading, section.title:upper() .. ' ' .. #section.worktrees, 'OrcaTermMuted')
+    table.insert(built, heading)
+
+    local needs_you = section.title == fleet_order.TITLES[1]
+    for _, worktree in ipairs(section.worktrees) do
+      if worktree.path == selected then
+        -- Inside the card, a row has 4 cells fewer: ` │` on its left and `│` on its right.
+        local body = worktree_lines(worktree, needs_you, width - 5)
+        add_card(built, body, worktree.path, width)
+      else
+        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1))
+      end
+    end
+  end
+  return finish(built, order, selected)
+end
+
+---The sidebar when the fleet could not be read: why, wrapped to the width, so the person sees the
+---message and its fix where the fleet would be.
+---@param message string
+---@param width? integer
+---@return orca_term.Rendered
+function M.error(message, width)
+  width = width or M.WIDTH
+  local built = { header('orca-term', nil, width), new_line(width - 1) }
+  -- One cell on the left, as every row, and one on the right.
+  for _, text in ipairs(wrap(message, width - 2)) do
+    local line = new_line(width - 1)
+    add(line, ' ')
+    add(line, text, 'OrcaTermError')
+    table.insert(built, line)
+  end
+  return finish(built, {}, nil)
+end
+
+return M

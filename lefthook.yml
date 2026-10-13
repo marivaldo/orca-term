@@ -10,6 +10,9 @@ pre-commit:
     - name: rustfmt
       glob: "*.rs"
       run: just fmt-check
+    - name: stylua
+      glob: "*.lua"
+      run: just lua-fmt-check
     - name: typos
       run: just typos {staged_files}
 
