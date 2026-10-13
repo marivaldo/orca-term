@@ -8,7 +8,8 @@
 //!
 //! Which checkout supplies the committed file depends on the key, as in Orca: `base` comes from
 //! the primary checkout, since it decides where a worktree goes before the worktree exists, and
-//! `scripts.setup` comes from the worktree itself, from the revision checked out there.
+//! `scripts.setup` and `sandbox.writable` come from the worktree itself, from the revision
+//! checked out there.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -23,7 +24,7 @@ use crate::domain::fleet::PrimaryCheckout;
 pub(crate) const FILE_NAME: &str = "orca-term.yaml";
 
 /// Every top-level key this version understands.
-const KEYS: &[&str] = &["base", "scripts"];
+const KEYS: &[&str] = &["base", "scripts", "sandbox"];
 
 /// The built-in default for `base`, the directory worktrees live under.
 const DEFAULT_BASE: &str = "~/orca-term/worktrees";
@@ -99,6 +100,7 @@ pub(crate) struct Layer {
 struct Raw {
     base: Option<String>,
     scripts: Option<Scripts>,
+    sandbox: Option<Sandbox>,
 }
 
 /// The `scripts` mapping, the same shape as Orca's.
@@ -106,6 +108,14 @@ struct Raw {
 #[serde(deny_unknown_fields)]
 struct Scripts {
     setup: Option<String>,
+}
+
+/// The `sandbox` mapping: the only configurable part of the sandbox policy (ADR 0007), the extra
+/// paths the agent may write to, such as package-manager caches.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sandbox {
+    writable: Option<Vec<String>>,
 }
 
 /// Every config file of the repository whose primary checkout is `primary` and whose git common
@@ -198,6 +208,35 @@ pub(crate) fn resolve_setup(layers: &[Layer]) -> Option<Setting<String>> {
     })
 }
 
+/// The extra writable paths of the sandbox: `sandbox.writable` resolved from `layers`, highest
+/// precedence first, each path expanded (`~`, relative to the file) and made absolute. The highest
+/// layer that sets the list replaces the lower ones, it never merges with them. Empty, from the
+/// built-in default, when no layer sets it.
+pub(crate) fn resolve_writable(layers: &[Layer], env: &Env) -> Result<Setting<Vec<PathBuf>>> {
+    let home = env.home.as_deref();
+    let mut setters = layers.iter().filter_map(|l| {
+        let paths = l.raw.sandbox.as_ref()?.writable.as_deref()?;
+        Some((l, paths))
+    });
+    let Some((winner, paths)) = setters.next() else {
+        return Ok(Setting {
+            value: Vec::new(),
+            source: None,
+            overridden: Vec::new(),
+        });
+    };
+    let value = paths
+        .iter()
+        .map(|raw| expand(raw, &winner.anchor, home))
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("{}: invalid `sandbox.writable`", winner.label))?;
+    Ok(Setting {
+        value,
+        source: Some(winner.label.clone()),
+        overridden: setters.map(|(l, _)| l.label.clone()).collect(),
+    })
+}
+
 fn parse(text: &str) -> Result<Raw> {
     let value: Value = serde_norway::from_str(text).context("not valid YAML")?;
     let map = match value {
@@ -266,6 +305,7 @@ mod tests {
             raw: Raw {
                 base: base.map(str::to_owned),
                 scripts: None,
+                sandbox: None,
             },
         }
     }
@@ -278,6 +318,21 @@ mod tests {
                 base: None,
                 scripts: Some(Scripts {
                     setup: setup.map(str::to_owned),
+                }),
+                sandbox: None,
+            },
+        }
+    }
+
+    fn writable_layer(label: &str, anchor: &str, writable: &[&str]) -> Layer {
+        Layer {
+            label: label.to_owned(),
+            anchor: PathBuf::from(anchor),
+            raw: Raw {
+                base: None,
+                scripts: None,
+                sandbox: Some(Sandbox {
+                    writable: Some(writable.iter().map(|p| (*p).to_owned()).collect()),
                 }),
             },
         }
@@ -407,7 +462,7 @@ mod tests {
         assert_eq!(
             format!("{err:#}"),
             "invalid config file /repo/orca-term.yaml: unknown key `bogus` (known keys: base, \
-             scripts)"
+             scripts, sandbox)"
         );
     }
 
@@ -485,6 +540,62 @@ mod tests {
             ])
             .map(|s| s.value),
             Some("make".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_writable_paths_are_parsed_from_the_sandbox_mapping() {
+        let raw = parse("sandbox:\n  writable:\n    - ~/.cache/pnpm\n    - ../shared\n").unwrap();
+        assert_eq!(
+            raw.sandbox.unwrap().writable.unwrap(),
+            ["~/.cache/pnpm", "../shared"]
+        );
+        assert!(parse("sandbox:\n").unwrap().sandbox.is_none());
+        let err = parse("sandbox:\n  enabled: false\n").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown field `enabled`"),
+            "{err:#}"
+        );
+        assert!(parse("sandbox:\n  writable: /a\n").is_err());
+    }
+
+    #[test]
+    fn the_highest_layer_setting_writable_paths_replaces_the_lower_ones() {
+        let writable = resolve_writable(
+            &[
+                writable_layer(".git/orca-term.yaml", "/repo", &["~/.cache/pnpm"]),
+                writable_layer("orca-term.yaml", "/w/repo/fix", &["../shared", "/opt/x"]),
+            ],
+            &env(),
+        )
+        .unwrap();
+        assert_eq!(writable.value, [PathBuf::from("/home/me/.cache/pnpm")]);
+        assert_eq!(
+            writable.origin(),
+            "from .git/orca-term.yaml, overriding orca-term.yaml"
+        );
+        let writable = resolve_writable(
+            &[writable_layer(
+                "orca-term.yaml",
+                "/w/repo/fix",
+                &["../shared", "/opt/x"],
+            )],
+            &env(),
+        )
+        .unwrap();
+        assert_eq!(
+            writable.value,
+            [PathBuf::from("/w/repo/shared"), PathBuf::from("/opt/x")]
+        );
+        assert_eq!(writable.origin(), "from orca-term.yaml");
+        let none = resolve_writable(&[layer("orca-term.yaml", "/r", None)], &env()).unwrap();
+        assert!(none.value.is_empty());
+        assert_eq!(none.origin(), "built-in default");
+        let err = resolve_writable(&[writable_layer("orca-term.yaml", "/r", &[" "])], &env())
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("orca-term.yaml: invalid `sandbox.writable`"),
+            "{err:#}"
         );
     }
 

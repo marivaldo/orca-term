@@ -1,7 +1,11 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
-//! a worktree, writing its state and running its setup.
+//! a worktree, writing its state, probing its holder and running its setup.
 
+pub(crate) mod agent_attach;
+pub(crate) mod agent_holder;
+pub(crate) mod agent_start;
+pub(crate) mod agent_stop;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
@@ -15,8 +19,9 @@ use anyhow::{Result, bail};
 
 use crate::adapters::fs::{self, WorktreeLock};
 use crate::adapters::{env, git, script};
+use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::config::{self, Env, Layer};
-use crate::domain::error::TypedError;
+use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
@@ -32,56 +37,116 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         .collect();
     let mut fleet = Fleet::from_entries(entries)?;
     for (worktree, prunable) in fleet.worktrees.iter_mut().zip(prunable) {
-        worktree.state = read_state(&worktree.path, prunable);
+        let derived = read_state(&worktree.path, prunable);
+        worktree.state = derived.state;
+        worktree.agent = derived.agent;
+        worktree.holder = derived.holder;
     }
     Ok(fleet)
+}
+
+/// A worktree's state and the facts beside it, derived on read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Derived {
+    pub(crate) state: State,
+    /// The agent recorded in `worktree.json`, by name.
+    pub(crate) agent: Option<String>,
+    /// Whether a holder is alive right now.
+    pub(crate) holder: HolderStatus,
+}
+
+impl Derived {
+    fn broken(reason: BrokenReason) -> Self {
+        Self {
+            state: State::Broken(reason),
+            agent: None,
+            holder: HolderStatus::Gone,
+        }
+    }
 }
 
 /// The state of the worktree at `worktree`, which git may mark `prunable`. A worktree whose
 /// directory is gone, or whose state cannot be read, is broken: reading one worktree never fails
 /// the fleet.
-fn read_state(worktree: &Path, prunable: Option<String>) -> State {
+fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
     if !fs::is_dir(worktree) {
-        return State::Broken(BrokenReason::DirectoryMissing);
+        return Derived::broken(BrokenReason::DirectoryMissing);
     }
     if let Some(reason) = prunable {
-        return State::Broken(BrokenReason::Prunable(reason));
+        return Derived::broken(BrokenReason::Prunable(reason));
     }
     match git::admin_dir(worktree).and_then(|admin| derive_state(&admin)) {
-        Ok(state) => state,
-        Err(err) => State::Broken(BrokenReason::StateUnreadable(format!("{err:#}"))),
+        Ok(derived) => derived,
+        Err(err) => Derived::broken(BrokenReason::StateUnreadable(format!("{err:#}"))),
     }
 }
 
 /// The state of the worktree whose admin directory is `admin`, from its state file and the
-/// volatile facts behind it. Only reads: the lock is probed only for a setup recorded as running,
-/// and the setup log is read only for a failed one.
-fn derive_state(admin: &AdminDir) -> Result<State> {
-    let mut setup = read_setup(admin)?;
-    if setup == Some(SetupRecord::Running) {
+/// volatile facts behind it. Only reads: the worktree's lock is probed only for a setup recorded
+/// as running, the holder's lock is probed and released at once, and the setup log is read only
+/// for a failed setup.
+pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
+    let mut recorded = read_recorded(admin)?;
+    if recorded.setup == Some(SetupRecord::Running) {
         if fs::lock_status(admin)? == LockStatus::Held {
-            return Ok(state::setup_running(LockStatus::Held));
+            return Ok(Derived {
+                state: state::setup_running(LockStatus::Held),
+                agent: recorded.agent,
+                holder: HolderStatus::Gone,
+            });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
         // records its end before it releases the lock, so reading the file once more tells a
         // finished setup from a dead one. Still only a read.
-        setup = read_setup(admin)?;
+        recorded = read_recorded(admin)?;
     }
-    match setup {
+    let holder = HolderStatus::from_lock(fs::lock_status_at(&admin.agent_lock())?);
+    let state = match recorded.setup {
         // Still recorded as running, with its lock seen free: the process died.
-        Some(SetupRecord::Running) => Ok(state::setup_running(LockStatus::Free)),
+        Some(SetupRecord::Running) => state::setup_running(LockStatus::Free),
         Some(SetupRecord::Failed(exit)) => {
             let log = fs::read_optional(&admin.setup_log())?.unwrap_or_default();
-            Ok(state::setup_failed(exit, &log))
+            state::setup_failed(exit, &log)
         }
-        Some(SetupRecord::Succeeded) | None => Ok(State::NoAgent),
-    }
+        Some(SetupRecord::Succeeded) | None => state::ready(recorded.agent.as_deref()),
+    };
+    Ok(Derived {
+        state,
+        agent: recorded.agent,
+        holder,
+    })
 }
 
-/// What the state file in `admin` records about the worktree's setup.
-fn read_setup(admin: &AdminDir) -> Result<Option<SetupRecord>> {
+/// What the state file in `admin` records.
+fn read_recorded(admin: &AdminDir) -> Result<state::Recorded> {
     let path = admin.state_file();
-    Ok(state::read(&path, fs::read_optional(&path)?.as_deref())?.setup)
+    state::read(&path, fs::read_optional(&path)?.as_deref())
+}
+
+/// The worktree `target` names, with its admin directory, for a command that must not change the
+/// fleet: the agent commands.
+pub(crate) fn find_target_admin<'f>(
+    fleet: &'f Fleet,
+    dir: &Path,
+    target: &Target,
+) -> Result<(&'f Worktree, AdminDir)> {
+    let worktree = find_target(fleet, dir, target)?;
+    let admin = git::admin_dir(&worktree.path)?;
+    Ok((worktree, admin))
+}
+
+/// Refuses to change a worktree whose holder is alive: git must not touch the admin directory
+/// under it, and its state is the agent's. The typed error `busy`, naming `agent stop`.
+pub(crate) fn check_no_holder(worktree: &Worktree) -> Result<()> {
+    if worktree.holder.is_alive() {
+        return Err(TypedError::Busy {
+            name: worktree.name.clone(),
+            path: worktree.path.clone(),
+            reason: BusyReason::AgentRunning,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// The worktree `target` names (a basename) or locates (a path, relative to `dir`).
@@ -125,17 +190,30 @@ pub(crate) fn lock_worktree(name: &str, path: &Path) -> Result<WorktreeLock> {
         None => Err(TypedError::Busy {
             name: name.to_owned(),
             path: path.to_owned(),
+            reason: BusyReason::Locked,
         }
         .into()),
     }
 }
 
-/// Writes the worktree's `worktree.json` with its setup recorded as `setup`, refusing to
-/// overwrite a newer schema. Taking `lock` proves the worktree's lock is held.
+/// Writes the worktree's `worktree.json` with its setup recorded as `setup`, keeping the agent it
+/// records, and refusing to overwrite a newer schema. Taking `lock` proves the worktree's lock is
+/// held.
 pub(crate) fn write_state(lock: &WorktreeLock, setup: Option<SetupRecord>) -> Result<()> {
+    let agent = read_recorded(lock.admin())?.agent;
+    write_file(lock, agent.as_deref(), setup)
+}
+
+/// Writes the worktree's `worktree.json` with `agent` as its agent, keeping the setup it records.
+pub(crate) fn write_agent(lock: &WorktreeLock, agent: Agent) -> Result<()> {
+    let setup = read_recorded(lock.admin())?.setup;
+    write_file(lock, Some(agent.name()), setup)
+}
+
+fn write_file(lock: &WorktreeLock, agent: Option<&str>, setup: Option<SetupRecord>) -> Result<()> {
     let path = lock.admin().state_file();
     state::check_overwrite(&path, fs::read_optional(&path)?.as_deref())?;
-    fs::write_atomically(&path, &WorktreeFile::with_setup(setup).to_bytes()?)
+    fs::write_atomically(&path, &WorktreeFile::new(agent, setup).to_bytes()?)
 }
 
 /// Reads every config file that exists, highest precedence first, with the committed file taken
@@ -169,11 +247,13 @@ pub(crate) fn set_up(
     let layers = config_layers(primary, worktree, &env::config_env())?;
     let Some(script) = config::resolve_setup(&layers) else {
         write_state(lock, None)?;
+        let derived = derive_state(lock.admin())?;
         return Ok(SetupReport {
             outcome: SetupOutcome::NoScript,
             script: None,
             log: None,
-            state: State::NoAgent,
+            state: derived.state,
+            agent: derived.agent,
         });
     };
     write_state(lock, Some(SetupRecord::Running))?;
@@ -182,10 +262,12 @@ pub(crate) fn set_up(
     let vars = setup::environment(&primary.path, worktree);
     let outcome = script::run_setup(&script.value, worktree, &vars, &mut log, echo)?;
     write_state(lock, outcome.record())?;
+    let derived = derive_state(lock.admin())?;
     Ok(SetupReport {
         outcome,
         script: Some(script),
         log: Some(log_path),
-        state: derive_state(lock.admin())?,
+        state: derived.state,
+        agent: derived.agent,
     })
 }

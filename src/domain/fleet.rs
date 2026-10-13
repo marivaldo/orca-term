@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+use crate::domain::agent::HolderStatus;
 use crate::domain::branch::Branch;
 use crate::domain::state::State;
 
@@ -46,6 +47,10 @@ pub(crate) struct Worktree {
     pub(crate) path: PathBuf,
     pub(crate) branch: Option<Branch>,
     pub(crate) state: State,
+    /// The agent recorded for the worktree, by name (`claude-code`), or `None`.
+    pub(crate) agent: Option<String>,
+    /// Whether the worktree's holder is alive right now.
+    pub(crate) holder: HolderStatus,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -69,6 +74,8 @@ impl Fleet {
                 path: wt.path,
                 branch: wt.branch,
                 state: State::NoAgent,
+                agent: None,
+                holder: HolderStatus::Gone,
             })
             .collect();
         Ok(Self {
@@ -88,7 +95,7 @@ impl Worktree {
     pub(crate) fn is_gone(&self) -> bool {
         match &self.state {
             State::Broken(reason) => reason.is_gone(),
-            State::NoAgent | State::SettingUp | State::NotReady(_) => false,
+            State::NoAgent | State::Idle | State::SettingUp | State::NotReady(_) => false,
         }
     }
 }

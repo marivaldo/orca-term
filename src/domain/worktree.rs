@@ -241,6 +241,22 @@ pub(crate) fn check_can_set_up(worktree: &Worktree) -> Result<()> {
     Ok(())
 }
 
+/// Refuses to start an agent in a worktree that is not ready: broken, setting up or not ready
+/// (its setup failed or was interrupted). The agent would run in a worktree that is not usable.
+pub(crate) fn check_can_run_agent(worktree: &Worktree) -> Result<()> {
+    let reason = match &worktree.state {
+        State::NoAgent | State::Idle => return Ok(()),
+        State::SettingUp => "its setup is running".to_owned(),
+        State::NotReady(reason) => format!("it is not ready ({reason})"),
+        State::Broken(reason) => format!("it is broken ({reason})"),
+    };
+    bail!(
+        "cannot start an agent in worktree {} at {}: {reason}",
+        worktree.name,
+        worktree.path.display(),
+    )
+}
+
 /// Refuses to remove a worktree whose directory is gone: only `worktree prune` cleans it.
 pub(crate) fn check_removable(worktree: &Worktree) -> Result<()> {
     if let State::Broken(reason) = &worktree.state
@@ -353,6 +369,35 @@ mod tests {
         assert_eq!(target(".."), Target::Path(PathBuf::from("..")));
         assert_eq!(target("fix").to_string(), "fix");
         assert_eq!(target("a/fix").to_string(), "a/fix");
+    }
+
+    #[test]
+    fn an_agent_starts_only_in_a_ready_worktree() {
+        use crate::domain::agent::HolderStatus;
+        use crate::domain::state::{BrokenReason, NotReadyReason};
+        let with = |state| Worktree {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            branch: None,
+            state,
+            agent: None,
+            holder: HolderStatus::Gone,
+        };
+        check_can_run_agent(&with(State::NoAgent)).unwrap();
+        check_can_run_agent(&with(State::Idle)).unwrap();
+        let err = check_can_run_agent(&with(State::SettingUp)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot start an agent in worktree fix at /l/fix: its setup is running"
+        );
+        let err =
+            check_can_run_agent(&with(State::NotReady(NotReadyReason::Interrupted))).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("it is not ready (setup interrupted)"),
+            "{err}"
+        );
+        assert!(check_can_run_agent(&with(State::Broken(BrokenReason::DirectoryMissing))).is_err());
     }
 
     #[test]

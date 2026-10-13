@@ -13,8 +13,9 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped};
 use crate::domain::error;
-use crate::domain::fleet::Fleet;
+use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
@@ -96,20 +97,40 @@ fn render_fleet_table(fleet: &Fleet) -> String {
             ]
         })
         .collect();
-    // The detail column appears only when some worktree has something to say.
-    let details: Vec<String> = fleet
-        .worktrees
-        .iter()
-        .map(|worktree| worktree.state.detail().unwrap_or_default())
-        .collect();
     let mut lines: Vec<Vec<String>> = [header].into_iter().chain(rows).map(Vec::from).collect();
-    if details.iter().any(|detail| !detail.is_empty()) {
-        lines[0].push("DETAIL".to_owned());
-        for (line, detail) in lines[1..].iter_mut().zip(details) {
-            line.push(detail);
+    // The agent and detail columns appear only when some worktree has something in them.
+    for (title, cells) in [
+        (
+            "AGENT",
+            fleet.worktrees.iter().map(agent_cell).collect::<Vec<_>>(),
+        ),
+        (
+            "DETAIL",
+            fleet
+                .worktrees
+                .iter()
+                .map(|worktree| worktree.state.detail().unwrap_or_default())
+                .collect(),
+        ),
+    ] {
+        if cells.iter().any(|cell| !cell.is_empty()) {
+            lines[0].push(title.to_owned());
+            for (line, cell) in lines[1..].iter_mut().zip(cells) {
+                line.push(cell);
+            }
         }
     }
     render_columns(&lines)
+}
+
+/// The worktree's agent and whether it runs, as the table shows it: `claude-code (running)`,
+/// `claude-code (stopped)`, or nothing.
+fn agent_cell(worktree: &Worktree) -> String {
+    match (&worktree.agent, worktree.holder.is_alive()) {
+        (None, _) => String::new(),
+        (Some(agent), true) => format!("{agent} (running)"),
+        (Some(agent), false) => format!("{agent} (stopped)"),
+    }
 }
 
 /// Lays `lines` out in columns two spaces apart. The last column is not padded.
@@ -255,6 +276,91 @@ fn render_worktrees_pruned(pruned: &[PathBuf]) -> String {
         .join("\n")
 }
 
+/// Prints what `agent start` did and, in text, says on stderr which extra paths the sandbox may
+/// write to and which config file set them.
+pub(crate) fn agent_started(started: &Started, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => {
+            if let Some(writable) = &started.writable {
+                progress(&render_writable(writable), format);
+            }
+            out(&render_agent_started(started));
+        }
+        Format::Json => out(&json::started(started)?),
+    }
+    Ok(())
+}
+
+fn render_writable(writable: &crate::domain::config::Setting<Vec<PathBuf>>) -> String {
+    if writable.value.is_empty() {
+        return format!("sandbox: no extra writable paths ({})", writable.origin());
+    }
+    let paths: Vec<String> = writable
+        .value
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    format!(
+        "sandbox: extra writable paths {} ({})",
+        paths.join(", "),
+        writable.origin()
+    )
+}
+
+fn render_agent_started(started: &Started) -> String {
+    let worktree = &started.worktree;
+    let (headline, pid) = match started.outcome {
+        StartOutcome::Started { pid } => (
+            format!(
+                "started agent {} in worktree {}",
+                started.agent, worktree.name
+            ),
+            format!("pid {pid}"),
+        ),
+        StartOutcome::AlreadyRunning { pid } => (
+            format!(
+                "agent {} is already running in worktree {}",
+                started.agent, worktree.name
+            ),
+            pid.map_or_else(|| "pid unknown".to_owned(), |pid| format!("pid {pid}")),
+        ),
+    };
+    format!(
+        "{headline}\n\
+         path:   {}\n\
+         holder: {pid}\n\
+         attach: orca-term agent attach {}",
+        worktree.path.display(),
+        worktree.name,
+    )
+}
+
+/// Prints what `agent stop` did.
+pub(crate) fn agent_stopped(stopped: &Stopped, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_agent_stopped(stopped)),
+        Format::Json => out(&json::stopped(stopped)?),
+    }
+    Ok(())
+}
+
+fn render_agent_stopped(stopped: &Stopped) -> String {
+    let name = &stopped.worktree.name;
+    match stopped.outcome {
+        StopOutcome::Stopped => format!("stopped the agent of worktree {name}"),
+        StopOutcome::NotRunning => format!("no agent is running in worktree {name}"),
+    }
+}
+
+/// Says on stderr how `agent attach` ended, once the terminal is the person's again.
+pub(crate) fn attach_ended(end: &AttachEnd) {
+    let line = match end {
+        AttachEnd::Detached => "[detached]".to_owned(),
+        AttachEnd::AgentEnded(text) => format!("[agent ended: {text}]"),
+    };
+    progress(&line, Format::Text);
+}
+
 /// Prints an error, with its causes: to stderr as text, or to stdout as a JSON document carrying
 /// its `kind`. Returns the exit code the error maps to: its own for a typed error, 1 otherwise.
 pub fn error(err: &anyhow::Error, format: Format) -> ExitCode {
@@ -284,9 +390,10 @@ fn out(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::agent::{Agent, HolderStatus};
     use crate::domain::branch::{Branch, StartPoint};
     use crate::domain::config::Setting;
-    use crate::domain::fleet::{PrimaryCheckout, Worktree};
+    use crate::domain::fleet::PrimaryCheckout;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason, State};
     use crate::domain::worktree::KeptReason;
@@ -297,6 +404,18 @@ mod tests {
             script: None,
             log: None,
             state: State::NoAgent,
+            agent: None,
+        }
+    }
+
+    fn worktree(name: &str, state: State) -> Worktree {
+        Worktree {
+            name: name.to_owned(),
+            path: PathBuf::from(format!("/l/{name}")),
+            branch: Some(Branch::new(name)),
+            state,
+            agent: None,
+            holder: HolderStatus::Gone,
         }
     }
 
@@ -313,6 +432,7 @@ mod tests {
                 exit: Exit::Code(1),
                 last_line: Some("boom".to_owned()),
             }),
+            agent: None,
         }
     }
 
@@ -333,12 +453,6 @@ mod tests {
 
     #[test]
     fn the_detail_column_appears_only_when_a_worktree_has_one() {
-        let worktree = |name: &str, state| Worktree {
-            name: name.to_owned(),
-            path: PathBuf::from(format!("/l/{name}")),
-            branch: Some(Branch::new(name)),
-            state,
-        };
         assert_eq!(
             render_fleet_table(&fleet(vec![worktree("a", State::NoAgent)])),
             "NAME  BRANCH  STATE     PATH\n\
@@ -356,19 +470,41 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_column_says_which_agent_and_whether_it_runs() {
+        let mut running = worktree("a", State::Idle);
+        running.agent = Some("claude-code".to_owned());
+        running.holder = HolderStatus::Alive;
+        let mut stopped = worktree("b", State::Idle);
+        stopped.agent = Some("claude-code".to_owned());
+        assert_eq!(
+            render_fleet_table(&fleet(vec![
+                running,
+                stopped,
+                worktree("c", State::NoAgent)
+            ])),
+            "NAME  BRANCH  STATE     PATH  AGENT\n\
+             a     a       idle      /l/a  claude-code (running)\n\
+             b     b       idle      /l/b  claude-code (stopped)\n\
+             c     c       no agent  /l/c"
+        );
+    }
+
+    #[test]
     fn columns_align() {
+        let table = render_fleet_table(&fleet(vec![Worktree {
+            branch: None,
+            ..worktree("docs", State::Broken(BrokenReason::DirectoryMissing))
+        }]));
+        assert_eq!(
+            table,
+            "NAME  BRANCH      STATE   PATH     DETAIL\n\
+             docs  (detached)  broken  /l/docs  directory missing; run orca-term worktree prune"
+        );
         let table = render_fleet_table(&fleet(vec![
+            worktree("fix-login", State::NoAgent),
             Worktree {
-                name: "fix-login".to_owned(),
-                path: PathBuf::from("/l/fix-login"),
-                branch: Some(Branch::new("fix-login")),
-                state: State::NoAgent,
-            },
-            Worktree {
-                name: "docs".to_owned(),
-                path: PathBuf::from("/l/docs"),
                 branch: None,
-                state: State::Broken(BrokenReason::DirectoryMissing),
+                ..worktree("docs", State::Broken(BrokenReason::DirectoryMissing))
             },
         ]));
         assert_eq!(
@@ -441,11 +577,75 @@ mod tests {
     }
 
     #[test]
+    fn agent_start_says_what_it_started_and_how_to_attach() {
+        let mut fix = worktree("fix", State::Idle);
+        fix.agent = Some("claude-code".to_owned());
+        fix.holder = HolderStatus::Alive;
+        let started = Started {
+            worktree: fix,
+            agent: Agent::ClaudeCode,
+            outcome: StartOutcome::Started { pid: 4242 },
+            writable: Some(Setting {
+                value: vec![PathBuf::from("/home/me/.cache/pnpm")],
+                source: Some(".git/orca-term.yaml".to_owned()),
+                overridden: vec!["orca-term.yaml".to_owned()],
+            }),
+        };
+        assert_eq!(
+            render_agent_started(&started),
+            "started agent claude-code in worktree fix\n\
+             path:   /l/fix\n\
+             holder: pid 4242\n\
+             attach: orca-term agent attach fix"
+        );
+        assert_eq!(
+            render_writable(started.writable.as_ref().unwrap()),
+            "sandbox: extra writable paths /home/me/.cache/pnpm (from .git/orca-term.yaml, \
+             overriding orca-term.yaml)"
+        );
+        assert_eq!(
+            render_writable(&Setting {
+                value: Vec::new(),
+                source: None,
+                overridden: Vec::new()
+            }),
+            "sandbox: no extra writable paths (built-in default)"
+        );
+        let again = Started {
+            outcome: StartOutcome::AlreadyRunning { pid: None },
+            writable: None,
+            ..started
+        };
+        assert!(
+            render_agent_started(&again)
+                .starts_with("agent claude-code is already running in worktree fix\n")
+        );
+        assert!(render_agent_started(&again).contains("holder: pid unknown\n"));
+    }
+
+    #[test]
+    fn agent_stop_says_whether_there_was_anything_to_stop() {
+        let stopped = |outcome| Stopped {
+            worktree: worktree("fix", State::Idle),
+            outcome,
+        };
+        assert_eq!(
+            render_agent_stopped(&stopped(StopOutcome::Stopped)),
+            "stopped the agent of worktree fix"
+        );
+        assert_eq!(
+            render_agent_stopped(&stopped(StopOutcome::NotRunning)),
+            "no agent is running in worktree fix"
+        );
+    }
+
+    #[test]
     fn an_error_maps_to_its_exit_code() {
-        use crate::domain::error::TypedError;
+        use crate::domain::error::{BusyReason, TypedError};
         let busy = anyhow::Error::new(TypedError::Busy {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/fix"),
+            reason: BusyReason::Locked,
         });
         assert_eq!(error(&busy, Format::Json), ExitCode::from(3));
         assert_eq!(

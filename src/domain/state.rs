@@ -30,6 +30,20 @@ const LOCK_FILE: &str = "lock";
 /// The directory, inside git's per-worktree admin directory, that holds the worktree's state.
 pub(crate) const ADMIN_DIR_NAME: &str = "orca-term";
 
+/// The lock the holder keeps for its whole life: held means the agent runs (ADR 0009).
+const AGENT_LOCK_FILE: &str = "agent.lock";
+
+/// The holder's pid and socket, written by the holder; trusted only while `agent.lock` is held.
+const AGENT_RECORD_FILE: &str = "agent.json";
+
+/// The unix socket clients attach through. The holder binds it, and clients connect to it, by
+/// this bare name from inside the admin directory, since the absolute path can exceed what a unix
+/// socket address holds.
+pub(crate) const AGENT_SOCKET_FILE: &str = "agent.sock";
+
+/// The settings claude is launched with, rebuilt on every start.
+const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
+
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
@@ -59,6 +73,26 @@ impl AdminDir {
     pub(crate) fn lock_file(&self) -> PathBuf {
         self.0.join(LOCK_FILE)
     }
+
+    /// The holder's lock, `agent.lock`.
+    pub(crate) fn agent_lock(&self) -> PathBuf {
+        self.0.join(AGENT_LOCK_FILE)
+    }
+
+    /// The holder's record, `agent.json`.
+    pub(crate) fn agent_record(&self) -> PathBuf {
+        self.0.join(AGENT_RECORD_FILE)
+    }
+
+    /// The holder's socket, `agent.sock`, for display and removal.
+    pub(crate) fn agent_socket(&self) -> PathBuf {
+        self.0.join(AGENT_SOCKET_FILE)
+    }
+
+    /// claude's settings file, `claude-settings.json`.
+    pub(crate) fn claude_settings(&self) -> PathBuf {
+        self.0.join(CLAUDE_SETTINGS_FILE)
+    }
 }
 
 /// Whether a worktree's lock is held right now, by this or another process.
@@ -73,6 +107,9 @@ pub(crate) enum LockStatus {
 pub(crate) enum State {
     /// The worktree is ready, and no agent is attached to it.
     NoAgent,
+    /// The worktree is ready and has an agent, which is not in a turn. Until hooks report turns,
+    /// every worktree with an agent is idle, whether or not its holder is alive.
+    Idle,
     /// The worktree's setup is running.
     SettingUp,
     /// The worktree exists but its setup did not finish, for the reason given; it stays so until
@@ -87,6 +124,7 @@ impl State {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::NoAgent => "no agent",
+            Self::Idle => "idle",
             Self::SettingUp => "setting up",
             Self::NotReady(_) => "not ready",
             Self::Broken(_) => "broken",
@@ -96,7 +134,7 @@ impl State {
     /// Why the worktree is in its state, when there is something to say.
     pub(crate) fn detail(&self) -> Option<String> {
         match self {
-            Self::NoAgent | Self::SettingUp => None,
+            Self::NoAgent | Self::Idle | Self::SettingUp => None,
             Self::NotReady(reason) => Some(reason.to_string()),
             Self::Broken(reason) => Some(reason.to_string()),
         }
@@ -139,6 +177,14 @@ pub(crate) fn setup_running(lock: LockStatus) -> State {
     match lock {
         LockStatus::Held => State::SettingUp,
         LockStatus::Free => State::NotReady(NotReadyReason::Interrupted),
+    }
+}
+
+/// The state of a ready worktree: idle when an agent is recorded, no agent otherwise.
+pub(crate) fn ready(agent: Option<&str>) -> State {
+    match agent {
+        Some(_) => State::Idle,
+        None => State::NoAgent,
     }
 }
 
@@ -190,7 +236,7 @@ impl fmt::Display for BrokenReason {
 /// `worktree.json` as this core writes it.
 ///
 /// `setup` joined schema 1 before any release, so it stays schema 1: a file without it reads as a
-/// worktree with no setup recorded.
+/// worktree with no setup recorded. `agent` is the recorded agent's name (`claude-code`) or null.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct WorktreeFile {
     schema: u64,
@@ -199,11 +245,12 @@ pub(crate) struct WorktreeFile {
 }
 
 impl WorktreeFile {
-    /// The state of a worktree with no agent, whose setup is recorded as `setup`.
-    pub(crate) fn with_setup(setup: Option<SetupRecord>) -> Self {
+    /// The state of a worktree whose agent is `agent` and whose setup is recorded as `setup`.
+    /// Every write passes both, so neither is lost when the other changes.
+    pub(crate) fn new(agent: Option<&str>, setup: Option<SetupRecord>) -> Self {
         Self {
             schema: SUPPORTED_SCHEMA,
-            agent: None,
+            agent: agent.map(str::to_owned),
             setup: setup.map(SetupFile::from_record),
         }
     }
@@ -267,11 +314,7 @@ struct Seen {
     #[serde(default)]
     schema: Option<u64>,
     #[serde(default)]
-    #[expect(
-        dead_code,
-        reason = "no agent can be attached yet; a recorded agent gains its states in a later slice"
-    )]
-    agent: serde_json::Value,
+    agent: Option<String>,
     #[serde(default)]
     setup: Option<SetupFile>,
 }
@@ -279,6 +322,8 @@ struct Seen {
 /// What a worktree's state file records that its state is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Recorded {
+    /// The worktree's agent, by name, or `None` when it has none.
+    pub(crate) agent: Option<String>,
     /// The worktree's latest setup, or `None` when no setup script ran.
     pub(crate) setup: Option<SetupRecord>,
 }
@@ -287,7 +332,10 @@ pub(crate) struct Recorded {
 /// records nothing: a worktree with no agent and no setup.
 pub(crate) fn read(path: &Path, bytes: Option<&[u8]>) -> Result<Recorded> {
     let Some(bytes) = bytes else {
-        return Ok(Recorded { setup: None });
+        return Ok(Recorded {
+            agent: None,
+            setup: None,
+        });
     };
     let seen = parse(path, bytes)?;
     let setup = match seen.setup {
@@ -297,7 +345,10 @@ pub(crate) fn read(path: &Path, bytes: Option<&[u8]>) -> Result<Recorded> {
         ),
         None => None,
     };
-    Ok(Recorded { setup })
+    Ok(Recorded {
+        agent: seen.agent,
+        setup,
+    })
 }
 
 /// Refuses to overwrite the state file at `path`, whose content is `existing` (`None` when it does
@@ -334,9 +385,31 @@ mod tests {
 
     #[test]
     fn writes_schema_1_with_no_agent_and_no_setup() {
-        let bytes = WorktreeFile::with_setup(None).to_bytes().unwrap();
+        let bytes = WorktreeFile::new(None, None).to_bytes().unwrap();
         assert_eq!(bytes, br#"{"schema":1,"agent":null,"setup":null}"#);
         assert_eq!(recorded(&bytes), None);
+    }
+
+    #[test]
+    fn the_agent_is_written_by_name_and_read_back() {
+        let bytes = WorktreeFile::new(Some("claude-code"), Some(SetupRecord::Succeeded))
+            .to_bytes()
+            .unwrap();
+        assert_eq!(
+            bytes,
+            br#"{"schema":1,"agent":"claude-code","setup":{"status":"succeeded"}}"#
+        );
+        let seen = read(Path::new(PATH), Some(&bytes)).unwrap();
+        assert_eq!(seen.agent.as_deref(), Some("claude-code"));
+        assert_eq!(seen.setup, Some(SetupRecord::Succeeded));
+    }
+
+    #[test]
+    fn a_ready_worktree_is_idle_only_with_an_agent() {
+        assert_eq!(ready(Some("claude-code")), State::Idle);
+        assert_eq!(ready(None), State::NoAgent);
+        assert_eq!(State::Idle.label(), "idle");
+        assert_eq!(State::Idle.detail(), None);
     }
 
     #[test]
@@ -353,7 +426,7 @@ mod tests {
                 r#""setup":{"status":"failed","signal":9}"#,
             ),
         ] {
-            let bytes = WorktreeFile::with_setup(Some(record)).to_bytes().unwrap();
+            let bytes = WorktreeFile::new(None, Some(record)).to_bytes().unwrap();
             let text = String::from_utf8(bytes.clone()).unwrap();
             assert!(text.contains(json), "{text}");
             assert_eq!(recorded(&bytes), Some(record));
@@ -437,7 +510,10 @@ mod tests {
     fn a_missing_file_records_no_setup() {
         assert_eq!(
             read(Path::new(PATH), None).unwrap(),
-            Recorded { setup: None }
+            Recorded {
+                agent: None,
+                setup: None
+            }
         );
     }
 
@@ -455,6 +531,23 @@ mod tests {
         assert_eq!(
             admin.lock_file(),
             PathBuf::from("/repo/.git/worktrees/fix/orca-term/lock")
+        );
+        assert_eq!(
+            admin.agent_lock(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/agent.lock")
+        );
+        assert_eq!(
+            admin.agent_record(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/agent.json")
+        );
+        assert_eq!(
+            admin.agent_socket(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/agent.sock")
+        );
+        assert_eq!(AGENT_SOCKET_FILE, "agent.sock");
+        assert_eq!(
+            admin.claude_settings(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/claude-settings.json")
         );
     }
 

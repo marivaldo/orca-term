@@ -1,6 +1,6 @@
 //! Ops: `worktree rm`, which removes a worktree. Its branch goes too only when merged into the
 //! default branch, or with `--force`. A worktree whose lock is held (its setup or another
-//! orca-term command is running on it) is refused, even with `--force`.
+//! orca-term command is running on it) or whose agent is running is refused, even with `--force`.
 
 use anyhow::{Context, Result};
 
@@ -10,7 +10,7 @@ use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
-use crate::ops::{find_target, lock_worktree, read_fleet};
+use crate::ops::{check_no_holder, find_target, lock_worktree, read_fleet};
 
 /// Removes the worktree `target` names or locates in the repository containing the current
 /// directory.
@@ -19,6 +19,7 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     let fleet = read_fleet(&cwd)?;
     let worktree = find_target(&fleet, &cwd, target)?;
     worktree::check_removable(worktree)?;
+    check_no_holder(worktree)?;
     // Held until the worktree is gone, so no setup can start in it meanwhile.
     let _lock = lock_worktree(&worktree.name, &worktree.path)?;
     let primary = &fleet.primary;

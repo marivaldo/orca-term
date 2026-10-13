@@ -35,7 +35,7 @@ describe('core', function()
     assert.are.equal(core.CONTRACT, fleet.contract)
     assert.are.same({ path = repo.root, branch = 'main' }, fleet.primary)
     assert.are.same(
-      { { name = 'fix', path = path, branch = 'fix', state = 'no_agent' } },
+      { { name = 'fix', path = path, branch = 'fix', state = 'no_agent', holder = false } },
       fleet.worktrees
     )
   end)
