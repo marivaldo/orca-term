@@ -13,6 +13,13 @@ identified by its path, and its name is that directory's basename. A worktree wi
 attached is still a worktree. The primary checkout is never one.
 _Avoid_: lane, unit, task, workspace, slot, station, tab, orca worktree, clone
 
+**Setup**:
+The repository's script, `scripts.setup` in `orca-term.yaml`, run in a new worktree before anything
+else may use it, typically to install dependencies. While it runs the worktree is *setting up*; if
+it fails the worktree is *not ready*, keeps the script's log, and stays so until the person runs
+setup again. Nothing is undone on failure. A worktree with no setup script is ready at once.
+_Avoid_: bootstrap, provision, init script, post-create hook
+
 **Fleet**:
 Every worktree of one repository. No fleet spans repositories.
 _Avoid_: swarm, pool, roster
