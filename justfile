@@ -86,7 +86,8 @@ vocab:
 layers:
     cargo xtask layers
 
-# The Neovim client: only lua/orca-term/core.lua starts processes.
+# The Neovim client: only core.lua starts processes, only sidebar.lua touches windows and buffers,
+# fleet.lua and render.lua are pure.
 client-boundary:
     cargo xtask client-boundary
 

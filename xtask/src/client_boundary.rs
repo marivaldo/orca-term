@@ -1,9 +1,12 @@
-//! Client boundary lint: in the Neovim client, only `lua/orca-term/core.lua` starts processes
-//! (`ARCHITECTURE.md`, "Neovim client"). Every other Lua file under `lua/` and `plugin/` reaches
-//! the core through that module.
+//! Client boundary lint: the Neovim client keeps each kind of work in one place
+//! (`ARCHITECTURE.md`, "Neovim client"):
 //!
-//! The check is textual, like the layers lint: `--` comments are skipped, and each line is
-//! searched for the calls in [`PROCESS_CALLS`].
+//! - only `lua/orca-term/core.lua` starts processes; every other file reaches the core through it;
+//! - only `lua/orca-term/sidebar.lua` touches windows and buffers;
+//! - `lua/orca-term/fleet.lua` and `lua/orca-term/render.lua` are pure: no `vim.api`, no `vim.cmd`.
+//!
+//! The check is textual, like the layers lint: `--` comments are skipped, and each line of each Lua
+//! file under `lua/` and `plugin/` is searched for the calls in the lists below.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +30,28 @@ const PROCESS_CALLS: &[&str] = &[
     "io.popen",
     "os.execute",
 ];
+
+/// The one file allowed to touch windows and buffers.
+const SIDEBAR_MODULE: &str = "lua/orca-term/sidebar.lua";
+
+/// Calls that open, change or read windows, tabs and buffers. A prefix such as `nvim_win_` stands
+/// for every API function that starts with it. A `vim.cmd` that splits is caught apart, by
+/// [`splits_with_vim_cmd`].
+const WINDOW_CALLS: &[&str] = &[
+    "nvim_open_win",
+    "nvim_win_",
+    "nvim_buf_",
+    "nvim_create_buf",
+    "nvim_tabpage_",
+    "vim.bo",
+    "vim.wo",
+];
+
+/// The files that must stay pure: data in, data out.
+const PURE_MODULES: &[&str] = &["lua/orca-term/fleet.lua", "lua/orca-term/render.lua"];
+
+/// What a pure file may not use: the Neovim API and Ex commands.
+const IMPURE_CALLS: &[&str] = &["vim.api", "vim.cmd"];
 
 pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
@@ -63,20 +88,44 @@ fn collect_lua_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 /// The findings for the file at `path` (such as `lua/orca-term/sidebar.lua`) holding `text`, each
 /// as `path:line: message`.
 fn check_file(path: &str, text: &str) -> Vec<String> {
-    if path == CORE_MODULE {
-        return Vec::new();
-    }
     let mut problems = Vec::new();
     for (n, line) in text.lines().enumerate() {
+        let at = format!("{path}:{}", n + 1);
         let code = line.find("--").map_or(line, |at| &line[..at]);
-        for call in PROCESS_CALLS.iter().filter(|call| calls(code, call)) {
-            problems.push(format!(
-                "{path}:{}: `{call}` starts a process; only {CORE_MODULE} may start one",
-                n + 1
-            ));
+        if path != CORE_MODULE {
+            for call in PROCESS_CALLS.iter().filter(|call| calls(code, call)) {
+                problems.push(format!(
+                    "{at}: `{call}` starts a process; only {CORE_MODULE} may start one"
+                ));
+            }
+        }
+        if path != SIDEBAR_MODULE {
+            for call in WINDOW_CALLS.iter().filter(|call| calls(code, call)) {
+                problems.push(format!(
+                    "{at}: `{call}` touches windows or buffers; only {SIDEBAR_MODULE} may"
+                ));
+            }
+            if splits_with_vim_cmd(code) {
+                problems.push(format!(
+                    "{at}: `vim.cmd` opens a split; only {SIDEBAR_MODULE} may open windows"
+                ));
+            }
+        }
+        if PURE_MODULES.contains(&path) {
+            for call in IMPURE_CALLS.iter().filter(|call| calls(code, call)) {
+                problems.push(format!(
+                    "{at}: `{call}` is not allowed in a pure module; move it to {SIDEBAR_MODULE}"
+                ));
+            }
         }
     }
     problems
+}
+
+/// Whether `code` runs an Ex command that splits a window through `vim.cmd`, such as
+/// `vim.cmd('topleft vsplit')` or `vim.cmd.vsplit()`.
+fn splits_with_vim_cmd(code: &str) -> bool {
+    calls(code, "vim.cmd") && code.contains("split")
 }
 
 /// Whether `code` holds `call` as a name of its own, not the tail of a longer one
@@ -138,5 +187,56 @@ mod tests {
         let text =
             "-- only core.lua calls vim.system\nlocal x = myos.execute\nlocal y = 1 -- io.popen\n";
         assert!(check_file("lua/orca-term/init.lua", text).is_empty());
+    }
+
+    #[test]
+    fn the_sidebar_module_may_touch_windows_and_buffers() {
+        let text = "local win = vim.api.nvim_open_win(buf, false, {})\n\
+                    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})\n\
+                    vim.wo[win].number = false\nvim.cmd('topleft vsplit')\n";
+        assert!(check_file("lua/orca-term/sidebar.lua", text).is_empty());
+    }
+
+    #[test]
+    fn any_other_client_file_touching_windows_or_buffers_is_refused() {
+        let text = "vim.api.nvim_open_win(0, true, {})\nvim.api.nvim_win_close(0, true)\n\
+                    vim.api.nvim_buf_set_lines(0, 0, -1, false, {})\nvim.api.nvim_create_buf(false, true)\n\
+                    vim.api.nvim_tabpage_list_wins(0)\nvim.bo.modifiable = true\nvim.wo.wrap = false\n\
+                    vim.cmd('topleft vsplit')\nvim.cmd.split()\n";
+        let problems = check_file("plugin/orca-term.lua", text);
+        assert_eq!(problems.len(), 9, "{problems:#?}");
+        assert_eq!(
+            problems[0],
+            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua may"
+        );
+        assert_eq!(
+            problems[7],
+            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua may open windows"
+        );
+    }
+
+    #[test]
+    fn a_pure_module_may_not_use_the_neovim_api_or_ex_commands() {
+        let text = "local width = vim.fn.strdisplaywidth('x')\n\
+                    vim.api.nvim_set_hl(0, 'X', {})\nvim.cmd('redraw')\n";
+        for path in PURE_MODULES {
+            assert_eq!(
+                check_file(path, text),
+                [
+                    format!(
+                        "{path}:2: `vim.api` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua"
+                    ),
+                    format!(
+                        "{path}:3: `vim.cmd` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua"
+                    ),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn other_modules_may_use_the_neovim_api() {
+        let text = "vim.api.nvim_set_hl(0, 'X', { link = 'Title' })\nvim.cmd('redraw')\n";
+        assert!(check_file("lua/orca-term/highlights.lua", text).is_empty());
     }
 }
