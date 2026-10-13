@@ -234,7 +234,9 @@ what they print.
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
   the fleet through `core.lua` on open and on `FocusGained`, paints what `render.lua` returns, and
   keeps the selection (a worktree's path) across refreshes. Its only keys, `j` and `k`, are local
-  to its buffer.
+  to its buffer. A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
+  other window it closes the tab's sidebar first, and on `WinClosed` it closes a tab left with
+  only the sidebar (unless it is the last tab).
 
 Its rules:
 
