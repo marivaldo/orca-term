@@ -1,12 +1,15 @@
 //! Edge: the command-line surface. It parses the arguments, hands each command to its ops module
 //! and gives the result to `output`.
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
-use crate::ops::{worktree_ls, worktree_new, worktree_prune, worktree_rm};
-use crate::output;
+use crate::ops::{worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_setup};
+use crate::output::{self, Format};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -44,6 +47,17 @@ enum WorktreeCommand {
         // here, before anything runs.
         #[arg(allow_hyphen_values = true)]
         name: WorktreeName,
+        /// Print JSON carrying the contract integer instead of text, and no setup output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a worktree's setup script again; a success makes the worktree ready.
+    Setup {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text, and no setup output.
+        #[arg(long)]
+        json: bool,
     },
     /// Remove a worktree; its branch goes too only when merged into the default branch.
     Rm {
@@ -57,16 +71,41 @@ enum WorktreeCommand {
     Prune,
 }
 
-/// Runs the command `cli` names.
-pub fn run(cli: &Cli) -> Result<()> {
-    match &cli.command {
-        Command::Worktree { command } => run_worktree(command),
+impl Cli {
+    /// How the command asked for its output, which is also how its error is printed.
+    pub fn format(&self) -> Format {
+        let json = match &self.command {
+            Command::Worktree { command } => match command {
+                WorktreeCommand::Ls { json }
+                | WorktreeCommand::New { json, .. }
+                | WorktreeCommand::Setup { json, .. } => *json,
+                WorktreeCommand::Rm { .. } | WorktreeCommand::Prune => false,
+            },
+        };
+        Format::from_json_flag(json)
     }
 }
 
-fn run_worktree(command: &WorktreeCommand) -> Result<()> {
+/// Runs the command `cli` names and returns the process's exit code: 1 when a setup failed,
+/// although the command itself did its job.
+pub fn run(cli: &Cli) -> Result<ExitCode> {
+    match &cli.command {
+        Command::Worktree { command } => run_worktree(command, cli.format()),
+    }
+}
+
+fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
     match command {
-        WorktreeCommand::New { name } => output::worktree_created(&worktree_new::run(name)?),
+        WorktreeCommand::New { name, .. } => {
+            let created = worktree_new::run(name, &mut *output::live_echo(format))?;
+            output::worktree_created(&created, format)?;
+            Ok(exit_code(&created.setup))
+        }
+        WorktreeCommand::Setup { worktree, .. } => {
+            let done = worktree_setup::run(worktree, &mut *output::live_echo(format))?;
+            output::worktree_set_up(&done, format)?;
+            Ok(exit_code(&done.setup))
+        }
         WorktreeCommand::Rm { worktree, force } => {
             let removal = if *force {
                 Removal::Forced
@@ -74,10 +113,28 @@ fn run_worktree(command: &WorktreeCommand) -> Result<()> {
                 Removal::Safe
             };
             output::worktree_removed(&worktree_rm::run(worktree, removal)?);
+            Ok(ExitCode::SUCCESS)
         }
-        WorktreeCommand::Prune => output::worktrees_pruned(&worktree_prune::run()?),
-        WorktreeCommand::Ls { json: true } => output::fleet_json(&worktree_ls::run()?)?,
-        WorktreeCommand::Ls { json: false } => output::fleet_table(&worktree_ls::run()?),
+        WorktreeCommand::Prune => {
+            output::worktrees_pruned(&worktree_prune::run()?);
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Ls { json: true } => {
+            output::fleet_json(&worktree_ls::run()?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Ls { json: false } => {
+            output::fleet_table(&worktree_ls::run()?);
+            Ok(ExitCode::SUCCESS)
+        }
     }
-    Ok(())
+}
+
+/// A failed setup leaves the worktree not ready and the command exits 1.
+fn exit_code(setup: &SetupReport) -> ExitCode {
+    if setup.outcome.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }

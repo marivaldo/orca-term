@@ -1,19 +1,23 @@
 //! Ops: `worktree new`, which creates git's worktree at `<base>/<repo>/<name>` on a new branch
-//! from the default branch, copies the copy list in and writes the worktree's state.
+//! from the default branch, copies the copy list in and runs the worktree's setup.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::adapters::{env, fs, git};
-use crate::domain::config::{self, Config, Env, Layer};
+use crate::domain::config;
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::include;
-use crate::domain::state::{self, WorktreeFile};
+use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{self, Created, WorktreeName};
+use crate::ops::{config_layers, lock_worktree, set_up};
 
-/// Creates the worktree `name` in the repository containing the current directory.
-pub(crate) fn run(name: &WorktreeName) -> Result<Created> {
+/// Creates the worktree `name` in the repository containing the current directory, echoing its
+/// setup's output to `echo`. A failed setup is not an error: the report says the worktree is not
+/// ready.
+pub(crate) fn run(name: &WorktreeName, echo: &mut dyn Write) -> Result<Created> {
     let cwd = env::current_dir()?;
     let env = env::config_env();
     let listed = git::primary_checkout(&cwd)?;
@@ -27,14 +31,14 @@ pub(crate) fn run(name: &WorktreeName) -> Result<Created> {
         bail!("invalid worktree name `{name}`: it is not a valid branch name");
     }
 
-    let config = load_config(&primary, &git::common_dir(&primary)?, &env)?;
-    let path = worktree::path_for(&config.base.value, &primary, name)?;
+    let base = config::resolve_base(&config_layers(&primary, &primary.path, &env)?, &env)?;
+    let path = worktree::path_for(&base.value, &primary, name)?;
     if fs::physical(&path).starts_with(&primary.path) {
         bail!(
             "the worktree would be at {}, inside the primary checkout; set `base` to a directory \
              outside it (base: {})",
             path.display(),
-            config.base
+            base
         );
     }
     if fs::exists(&path) {
@@ -47,9 +51,9 @@ pub(crate) fn run(name: &WorktreeName) -> Result<Created> {
     git::worktree_add(&primary, &branch, &path, &start)?;
 
     // From here on the worktree exists, and nothing is undone: a failure leaves it in place.
-    let copied = finish(&primary, &path).with_context(|| {
+    let (copied, setup) = finish(name, &primary, &path, echo).with_context(|| {
         format!(
-            "the worktree was created at {} and left in place, but setting it up failed",
+            "the worktree was created at {} and left in place, but finishing it failed",
             path.display()
         )
     })?;
@@ -59,26 +63,24 @@ pub(crate) fn run(name: &WorktreeName) -> Result<Created> {
         branch,
         start,
         copied,
-        base: config.base,
+        base,
+        setup,
     })
 }
 
-/// Reads every config file that exists, highest precedence first, and resolves them.
-fn load_config(primary: &PrimaryCheckout, common_dir: &Path, env: &Env) -> Result<Config> {
-    let mut layers = Vec::new();
-    for source in config::sources(primary, common_dir, env) {
-        if let Some(text) = fs::read_text_optional(&source.path)? {
-            layers.push(Layer::parse(source, &text)?);
-        }
-    }
-    config::resolve(&layers, env)
-}
-
-/// Copies the copy list and writes the worktree's state. Returns how many files were copied.
-fn finish(primary: &PrimaryCheckout, worktree: &Path) -> Result<usize> {
+/// Locks the new worktree, copies the copy list and runs the setup. Returns how many files were
+/// copied and what the setup did. The lock is taken before anything else touches the worktree and
+/// held until its setup ends, so nothing else may use the worktree before it is ready.
+fn finish(
+    name: &WorktreeName,
+    primary: &PrimaryCheckout,
+    worktree: &Path,
+    echo: &mut dyn Write,
+) -> Result<(usize, SetupReport)> {
+    let lock = lock_worktree(name.as_str(), worktree)?;
     let copied = copy_include_list(primary, worktree, &include_list(primary)?)?;
-    write_fresh_state(worktree)?;
-    Ok(copied)
+    let setup = set_up(&lock, primary, worktree, echo)?;
+    Ok((copied, setup))
 }
 
 /// The repository-relative paths to copy from `primary`. Empty when there is no
@@ -128,13 +130,4 @@ fn copy_include_list(
         copied += 1;
     }
     Ok(copied)
-}
-
-/// Writes the state of a worktree just created, refusing to overwrite a newer schema.
-fn write_fresh_state(worktree: &Path) -> Result<()> {
-    let admin = git::admin_dir(worktree)?;
-    let path = admin.state_file();
-    state::check_overwrite(&path, fs::read_optional(&path)?.as_deref())?;
-    fs::create_dir_all(admin.path())?;
-    fs::write_atomically(&path, &WorktreeFile::fresh().to_bytes()?)
 }

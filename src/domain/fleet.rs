@@ -88,7 +88,7 @@ impl Worktree {
     pub(crate) fn is_gone(&self) -> bool {
         match &self.state {
             State::Broken(reason) => reason.is_gone(),
-            State::NoAgent => false,
+            State::NoAgent | State::SettingUp | State::NotReady(_) => false,
         }
     }
 }

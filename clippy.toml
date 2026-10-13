@@ -9,7 +9,7 @@ excessive-nesting-threshold = 4
 # module-level `#![expect(clippy::disallowed_methods, reason = "...")]`. `cargo xtask layers`
 # rejects the opt-out anywhere else. See ARCHITECTURE.md.
 disallowed-types = [
-    { path = "std::process::Command", reason = "only the git adapter (src/adapters/git.rs) starts processes" },
+    { path = "std::process::Command", reason = "only the git adapter (src/adapters/git.rs) and the script adapter (src/adapters/script.rs) start processes" },
     { path = "std::fs::File", reason = "only the fs adapter (src/adapters/fs.rs) opens files" },
 ]
 disallowed-methods = [

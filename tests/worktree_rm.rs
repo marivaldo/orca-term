@@ -10,6 +10,10 @@
     reason = "a black-box test builds real repositories and files around the binary it drives"
 )]
 
+#[expect(
+    dead_code,
+    reason = "the fixture is shared between suites, and this one leaves part of it unused"
+)]
 mod support;
 
 use std::path::{Path, PathBuf};

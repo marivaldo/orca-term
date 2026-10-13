@@ -4,8 +4,10 @@
 pub(crate) mod branch;
 pub(crate) mod config;
 pub(crate) mod contract;
+pub(crate) mod error;
 pub(crate) mod fleet;
 pub(crate) mod include;
 pub(crate) mod porcelain;
+pub(crate) mod setup;
 pub(crate) mod state;
 pub(crate) mod worktree;

@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 use crate::domain::branch::{self, Branch, BranchNameError, StartPoint};
 use crate::domain::config::Setting;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::setup::SetupReport;
 use crate::domain::state::State;
 
 /// A valid name for a new worktree: one path segment, not read as an option, and a valid branch
@@ -114,6 +115,8 @@ pub(crate) struct Created {
     pub(crate) start: StartPoint,
     pub(crate) copied: usize,
     pub(crate) base: Setting<PathBuf>,
+    /// What its setup did, and the state it left the worktree in.
+    pub(crate) setup: SetupReport,
 }
 
 /// What `worktree rm` did.
@@ -212,6 +215,20 @@ pub(crate) fn find_by_name<'f>(fleet: &'f Fleet, name: &str) -> Result<&'f Workt
             )
         }
     }
+}
+
+/// Refuses to set up a worktree whose directory is gone: there is nothing to run the script in.
+pub(crate) fn check_can_set_up(worktree: &Worktree) -> Result<()> {
+    if let State::Broken(reason) = &worktree.state
+        && reason.is_gone()
+    {
+        bail!(
+            "worktree {} at {} is broken ({reason}); it cannot be set up",
+            worktree.name,
+            worktree.path.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Refuses to remove a worktree whose directory is gone: only `worktree prune` cleans it.

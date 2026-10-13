@@ -1,25 +1,26 @@
 //! Ops: `worktree rm`, which removes a worktree. Its branch goes too only when merged into the
-//! default branch, or with `--force`.
+//! default branch, or with `--force`. A worktree whose lock is held (its setup or another
+//! orca-term command is running on it) is refused, even with `--force`.
 
-use std::path::Path;
+use anyhow::{Context, Result};
 
-use anyhow::{Context, Result, bail};
-
-use crate::adapters::{env, fs, git};
+use crate::adapters::{env, git};
 use crate::domain::branch::Branch;
-use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
-use crate::ops::read_fleet;
+use crate::ops::{find_target, lock_worktree, read_fleet};
 
 /// Removes the worktree `target` names or locates in the repository containing the current
 /// directory.
 pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
-    let worktree = resolve(&fleet, &cwd, target)?;
+    let worktree = find_target(&fleet, &cwd, target)?;
     worktree::check_removable(worktree)?;
+    // Held until the worktree is gone, so no setup can start in it meanwhile.
+    let _lock = lock_worktree(&worktree.name, &worktree.path)?;
     let primary = &fleet.primary;
 
     // Decided before the worktree goes, so a failure here leaves everything in place.
@@ -44,34 +45,6 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
         path: worktree.path.clone(),
         branch: delete_branch(primary, planned),
     })
-}
-
-/// The worktree `target` names (a basename) or locates (a path, relative to `dir`).
-fn resolve<'f>(fleet: &'f Fleet, dir: &Path, target: &Target) -> Result<&'f Worktree> {
-    match target {
-        Target::Name(name) => worktree::find_by_name(fleet, name),
-        Target::Path(path) => find_by_path(fleet, &dir.join(path)),
-    }
-}
-
-/// The worktree at `wanted`, compared through symlinks. Refuses the primary checkout and a path
-/// that is no worktree of the fleet.
-fn find_by_path<'f>(fleet: &'f Fleet, wanted: &Path) -> Result<&'f Worktree> {
-    let primary = &fleet.primary.path;
-    if fs::same_path(primary, wanted) {
-        bail!(
-            "{} is the primary checkout, which is never a worktree",
-            primary.display()
-        );
-    }
-    match fleet
-        .worktrees
-        .iter()
-        .find(|worktree| fs::same_path(&worktree.path, wanted))
-    {
-        Some(worktree) => Ok(worktree),
-        None => bail!("{} is not a worktree of this repository", wanted.display()),
-    }
 }
 
 /// What happens to `branch` when it goes only if merged: git says whether it is merged into the
