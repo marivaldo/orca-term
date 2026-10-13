@@ -241,6 +241,34 @@ fn an_agent_that_exits_on_its_own_ends_the_holder_and_tells_the_attached_client(
 }
 
 #[test]
+fn a_client_that_stops_reading_does_not_keep_the_holder_alive_after_the_agent_exits() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+
+    let mut attach = fx.attach("fix");
+    attach.wait_for("fake claude ready");
+    let stuck = fx.stuck_attach("fix");
+    attach.send("flood\n");
+    attach.wait_for("flooded");
+    attach.send("exit 7\n");
+    let ended = attach.wait_ended();
+
+    assert_eq!(ended.stderr, "[agent ended: exit 7]\n");
+    let started = Instant::now();
+    wait_until("the holder ending despite the stuck client", || {
+        !holder_alive(&admin)
+    });
+    assert!(started.elapsed().as_secs() < 12, "{:?}", started.elapsed());
+    wait_until("the socket and record going", || {
+        !admin.join("agent.sock").exists() && !admin.join("agent.json").exists()
+    });
+    drop(stuck);
+    assert_eq!(fx.listed("fix")["holder"], false);
+}
+
+#[test]
 fn stop_ends_the_agent_and_is_idempotent() {
     let fx = AgentRepo::new();
     let worktree = fx.new_worktree("fix");

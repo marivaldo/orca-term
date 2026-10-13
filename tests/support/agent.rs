@@ -29,9 +29,9 @@ const WAIT: Duration = Duration::from_secs(15);
 const SANDBOX_TOOLS: &[&str] = &["sandbox-exec", "bwrap", "socat"];
 
 /// The fake `claude`: answers `--version`, records its arguments, directory and environment
-/// variable names (never values), runs a test's prelude, echoes every line typed, exits with the
-/// code typed after `exit`, and ends on `SIGHUP` as claude does (unless the prelude says
-/// otherwise). The idle timeout ends a leaked one on its own.
+/// variable names (never values), runs a test's prelude, echoes every line typed, prints 4 MiB on
+/// `flood`, exits with the code typed after `exit`, and ends on `SIGHUP` as claude does (unless
+/// the prelude says otherwise). The idle timeout ends a leaked one on its own.
 const FAKE_CLAUDE: &str = r#"#!/bin/bash
 if [ "$1" = "--version" ]; then echo "VERSION"; exit 0; fi
 log="$ORCA_TERM_FAKE_CLAUDE_LOG"
@@ -45,8 +45,10 @@ PRELUDE
 echo "fake claude ready"
 while IFS= read -r -t 120 line; do
   case "$line" in
-    exit*) echo "bye"; exit "${line#exit }" ;;
-    *)     echo "you said: $line" ;;
+    exit*)  echo "bye"; exit "${line#exit }" ;;
+    flood*) x=x; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do x="$x$x"; done
+            for i in $(eval echo {1..1024}); do echo "$x"; done; echo "flooded" ;;
+    *)      echo "you said: $line" ;;
   esac
 done
 exit 0
@@ -190,14 +192,23 @@ impl AgentRepo {
 
     /// Starts `agent attach` on `name` over pipes.
     pub(crate) fn attach(&self, name: &str) -> Attach {
-        let child = self
-            .command(&["agent", "attach", name])
+        Attach::new(self.spawn_attach(name))
+    }
+
+    /// Starts `agent attach` on `name` over pipes that nobody reads: once its stdout pipe is
+    /// full it stops reading from the holder, like an attach suspended in its shell. Killed when
+    /// dropped.
+    pub(crate) fn stuck_attach(&self, name: &str) -> StuckAttach {
+        StuckAttach(self.spawn_attach(name))
+    }
+
+    fn spawn_attach(&self, name: &str) -> Child {
+        self.command(&["agent", "attach", name])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap();
-        Attach::new(child)
+            .unwrap()
     }
 
     /// Attaches until the fake claude has printed `marker`, then detaches: how a test waits for the
@@ -233,6 +244,17 @@ impl Drop for AgentRepo {
                     .map(|pid| rustix::process::kill_process(pid, Signal::KILL));
             }
         }
+    }
+}
+
+/// An `agent attach` whose output nobody reads.
+#[derive(Debug)]
+pub(crate) struct StuckAttach(Child);
+
+impl Drop for StuckAttach {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
