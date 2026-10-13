@@ -112,6 +112,61 @@ describe('the sidebar', function()
     assert.are.same({}, sidebar_windows(vim.api.nvim_get_current_tabpage()))
   end)
 
+  it(
+    ':q on the last other window of a tab closes the tab, and the sidebar stays elsewhere',
+    function()
+      repo_with({ 'fix' })
+      vim.cmd.tabnew()
+      vim.cmd('OrcaTerm sidebar')
+      local first = vim.api.nvim_list_tabpages()[1]
+
+      vim.cmd('quit')
+
+      assert.are.same({ first }, vim.api.nvim_list_tabpages())
+      assert.are.equal(1, #sidebar_windows(first))
+      assert.is_true(sidebar.is_open())
+    end
+  )
+
+  it(':close on the last other window of a tab closes the tab too', function()
+    repo_with({ 'fix' })
+    vim.cmd.tabnew()
+    vim.cmd('OrcaTerm sidebar')
+    local first = vim.api.nvim_list_tabpages()[1]
+
+    vim.cmd('close')
+    -- The tab is closed once the window is gone, on the next turn of the event loop.
+    vim.wait(1000, function()
+      return #vim.api.nvim_list_tabpages() == 1
+    end)
+
+    assert.are.same({ first }, vim.api.nvim_list_tabpages())
+    assert.are.equal(1, #sidebar_windows(first))
+  end)
+
+  it('lets :q quit Neovim from the last tab, as it would without the sidebar', function()
+    local repo = repo_with({ 'fix' })
+    -- A child Neovim with only this client loaded; it must exit on its own.
+    local child = vim
+      .system({
+        'nvim',
+        '--clean',
+        '--headless',
+        '--cmd',
+        'set runtimepath^=' .. vim.fn.fnameescape(support.root),
+        '-c',
+        "lua require('orca-term').setup({ binary = '" .. support.binary .. "' })",
+        '-c',
+        'OrcaTerm sidebar',
+        '-c',
+        "lua assert(require('orca-term.sidebar').is_open())",
+        '-c',
+        'quit',
+      }, { cwd = repo.root, text = true, timeout = 10000 })
+      :wait()
+    assert.are.equal(0, child.code, child.stderr)
+  end)
+
   it('moves the card with j and k without changing the tab', function()
     repo_with({ 'alpha', 'beta', 'gamma' })
     vim.cmd.tabnew()
