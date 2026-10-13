@@ -11,9 +11,11 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 
-use crate::domain::fleet::WorktreeEntry;
+use crate::domain::branch::{Branch, StartPoint};
+use crate::domain::fleet::{PrimaryCheckout, WorktreeEntry};
 use crate::domain::porcelain;
-use crate::domain::state::ADMIN_DIR_NAME;
+use crate::domain::state::{ADMIN_DIR_NAME, AdminDir};
+use crate::domain::worktree::Removal;
 
 /// Every worktree of the repository containing `dir`, primary checkout first. Never writes.
 pub(crate) fn worktree_list(dir: &Path) -> Result<Vec<WorktreeEntry>> {
@@ -22,17 +24,17 @@ pub(crate) fn worktree_list(dir: &Path) -> Result<Vec<WorktreeEntry>> {
 }
 
 /// The primary checkout of the repository containing `dir`. Never writes.
-pub(crate) fn primary_checkout(dir: &Path) -> Result<WorktreeEntry> {
+pub(crate) fn primary_checkout(dir: &Path) -> Result<PrimaryCheckout> {
     match worktree_list(dir)?.into_iter().next() {
-        Some(primary) => Ok(primary),
+        Some(primary) => Ok(PrimaryCheckout::from_entry(primary)),
         None => bail!("git listed no worktrees"),
     }
 }
 
 /// The repository's common git directory, absolute.
-pub(crate) fn common_dir(primary: &Path) -> Result<PathBuf> {
+pub(crate) fn common_dir(primary: &PrimaryCheckout) -> Result<PathBuf> {
     let dir = text(
-        primary,
+        &primary.path,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
     Ok(PathBuf::from(dir))
@@ -40,7 +42,7 @@ pub(crate) fn common_dir(primary: &Path) -> Result<PathBuf> {
 
 /// The directory holding the state of the worktree at `worktree`, inside git's per-worktree admin
 /// directory.
-pub(crate) fn admin_dir(worktree: &Path) -> Result<PathBuf> {
+pub(crate) fn admin_dir(worktree: &Path) -> Result<AdminDir> {
     let dir = text(
         worktree,
         &[
@@ -50,7 +52,7 @@ pub(crate) fn admin_dir(worktree: &Path) -> Result<PathBuf> {
             ADMIN_DIR_NAME,
         ],
     )?;
-    Ok(PathBuf::from(dir))
+    Ok(AdminDir::new(PathBuf::from(dir)))
 }
 
 /// Whether git accepts `name` as a branch name exactly as written.
@@ -61,9 +63,9 @@ pub(crate) fn is_valid_branch_name(dir: &Path, name: &str) -> Result<bool> {
 
 /// The repository's default branch: `origin/HEAD` when set, else a local `main`, else a local
 /// `master`.
-pub(crate) fn default_branch(primary: &Path) -> Result<String> {
+pub(crate) fn default_branch(primary: &PrimaryCheckout) -> Result<Branch> {
     let origin_head = probe(
-        primary,
+        &primary.path,
         &[
             "symbolic-ref",
             "--quiet",
@@ -76,12 +78,12 @@ pub(crate) fn default_branch(primary: &Path) -> Result<String> {
         if let Some(branch) = head.trim().strip_prefix("origin/")
             && !branch.is_empty()
         {
-            return Ok(branch.to_owned());
+            return Ok(Branch::new(branch));
         }
     }
     for candidate in ["main", "master"] {
-        if has_ref(primary, &format!("refs/heads/{candidate}"))? {
-            return Ok(candidate.to_owned());
+        if has_ref(&primary.path, &format!("refs/heads/{candidate}"))? {
+            return Ok(Branch::new(candidate));
         }
     }
     bail!(
@@ -92,28 +94,34 @@ pub(crate) fn default_branch(primary: &Path) -> Result<String> {
 
 /// The commit-ish a worktree branches from: the repository's default branch, preferring the local
 /// branch over `origin/`.
-pub(crate) fn start_point(primary: &Path) -> Result<String> {
+pub(crate) fn start_point(primary: &PrimaryCheckout) -> Result<StartPoint> {
     let default = default_branch(primary)?;
-    if has_ref(primary, &format!("refs/heads/{default}"))? {
-        Ok(default)
-    } else if has_ref(primary, &format!("refs/remotes/origin/{default}"))? {
-        Ok(format!("origin/{default}"))
+    if has_ref(&primary.path, &format!("refs/heads/{default}"))? {
+        Ok(StartPoint::Local(default))
+    } else if has_ref(&primary.path, &format!("refs/remotes/origin/{default}"))? {
+        Ok(StartPoint::Remote(default))
     } else {
         bail!("the default branch `{default}` exists neither locally nor as origin/{default}")
     }
 }
 
 /// Whether `branch` is merged into `into` (`git merge-base --is-ancestor`).
-pub(crate) fn is_merged(primary: &Path, branch: &str, into: &str) -> Result<bool> {
-    Ok(probe(primary, &["merge-base", "--is-ancestor", branch, into])?.is_some())
+pub(crate) fn is_merged(
+    primary: &PrimaryCheckout,
+    branch: &Branch,
+    into: &StartPoint,
+) -> Result<bool> {
+    let into = into.to_string();
+    let args = ["merge-base", "--is-ancestor", branch.as_str(), &into];
+    Ok(probe(&primary.path, &args)?.is_some())
 }
 
 /// The untracked files the gitignore patterns in `patterns` match, NUL-separated.
-pub(crate) fn untracked_matching(primary: &Path, patterns: &Path) -> Result<Vec<u8>> {
+pub(crate) fn untracked_matching(primary: &PrimaryCheckout, patterns: &Path) -> Result<Vec<u8>> {
     let mut exclude_from = OsString::from("--exclude-from=");
     exclude_from.push(patterns);
     output(
-        primary,
+        &primary.path,
         &[
             OsStr::new("ls-files"),
             OsStr::new("-z"),
@@ -125,9 +133,9 @@ pub(crate) fn untracked_matching(primary: &Path, patterns: &Path) -> Result<Vec<
 }
 
 /// The untracked files the repository's own excludes ignore, NUL-separated.
-pub(crate) fn untracked_ignored(primary: &Path) -> Result<Vec<u8>> {
+pub(crate) fn untracked_ignored(primary: &PrimaryCheckout) -> Result<Vec<u8>> {
     output(
-        primary,
+        &primary.path,
         &[
             "ls-files",
             "-z",
@@ -139,42 +147,52 @@ pub(crate) fn untracked_ignored(primary: &Path) -> Result<Vec<u8>> {
 }
 
 /// `git worktree add`: creates the worktree at `path` on the new branch `branch`, from `start`.
-pub(crate) fn worktree_add(primary: &Path, branch: &str, path: &Path, start: &str) -> Result<()> {
+pub(crate) fn worktree_add(
+    primary: &PrimaryCheckout,
+    branch: &Branch,
+    path: &Path,
+    start: &StartPoint,
+) -> Result<()> {
+    let start = start.to_string();
     output(
-        primary,
+        &primary.path,
         &[
             OsStr::new("worktree"),
             OsStr::new("add"),
             OsStr::new("--quiet"),
             OsStr::new("-b"),
-            OsStr::new(branch),
+            OsStr::new(branch.as_str()),
             path.as_os_str(),
-            OsStr::new(start),
+            OsStr::new(&start),
         ],
     )?;
     Ok(())
 }
 
-/// `git worktree remove`, with `--force` when `force` is set.
-pub(crate) fn worktree_remove(primary: &Path, path: &Path, force: bool) -> Result<()> {
+/// `git worktree remove`, with `--force` when the removal is forced.
+pub(crate) fn worktree_remove(
+    primary: &PrimaryCheckout,
+    path: &Path,
+    removal: Removal,
+) -> Result<()> {
     let mut args = vec![OsStr::new("worktree"), OsStr::new("remove")];
-    if force {
+    if removal == Removal::Forced {
         args.push(OsStr::new("--force"));
     }
     args.push(path.as_os_str());
-    output(primary, &args)?;
+    output(&primary.path, &args)?;
     Ok(())
 }
 
 /// `git worktree prune`: forgets the worktrees whose directory is gone.
-pub(crate) fn worktree_prune(primary: &Path) -> Result<()> {
-    output(primary, &["worktree", "prune"])?;
+pub(crate) fn worktree_prune(primary: &PrimaryCheckout) -> Result<()> {
+    output(&primary.path, &["worktree", "prune"])?;
     Ok(())
 }
 
 /// `git branch -D`: deletes `branch`, merged or not.
-pub(crate) fn delete_branch(primary: &Path, branch: &str) -> Result<()> {
-    output(primary, &["branch", "-D", branch])?;
+pub(crate) fn delete_branch(primary: &PrimaryCheckout, branch: &Branch) -> Result<()> {
+    output(&primary.path, &["branch", "-D", branch.as_str()])?;
     Ok(())
 }
 

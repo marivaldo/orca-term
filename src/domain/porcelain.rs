@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use crate::domain::branch::Branch;
 use crate::domain::fleet::WorktreeEntry;
 
 /// Parses `git worktree list --porcelain -z`: attribute lines end in NUL, and an empty attribute
@@ -24,7 +25,7 @@ pub(crate) fn parse(raw: &[u8]) -> Vec<WorktreeEntry> {
         } else if let (Some(branch), Some(wt)) = (field.strip_prefix(b"branch "), current.as_mut())
         {
             let branch = branch.strip_prefix(b"refs/heads/").unwrap_or(branch);
-            wt.branch = Some(String::from_utf8_lossy(branch).into_owned());
+            wt.branch = Some(Branch::new(&String::from_utf8_lossy(branch)));
         } else if let (Some(rest), Some(wt)) = (field.strip_prefix(b"prunable"), current.as_mut()) {
             let reason = rest.strip_prefix(b" ").unwrap_or(rest);
             wt.prunable = Some(String::from_utf8_lossy(reason).into_owned());
@@ -41,7 +42,7 @@ mod tests {
     fn wt(path: &str, branch: Option<&str>) -> WorktreeEntry {
         WorktreeEntry {
             path: PathBuf::from(path),
-            branch: branch.map(str::to_owned),
+            branch: branch.map(Branch::new),
             prunable: None,
         }
     }
@@ -69,7 +70,7 @@ worktree /held\0HEAD 456\0branch refs/heads/held\0locked\0\0";
         let parsed = parse(raw);
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1].path, PathBuf::from("/gone"));
-        assert_eq!(parsed[1].branch.as_deref(), Some("gone"));
+        assert_eq!(parsed[1].branch, Some(Branch::new("gone")));
         assert_eq!(
             parsed[1].prunable.as_deref(),
             Some("gitdir file points to non-existent location")

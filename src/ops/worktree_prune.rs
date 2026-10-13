@@ -14,7 +14,7 @@ use crate::ops::read_fleet;
 pub(crate) fn run() -> Result<Vec<PathBuf>> {
     let cwd = env::current_dir()?;
     let before = read_fleet(&cwd)?;
-    git::worktree_prune(&before.primary.path)?;
+    git::worktree_prune(&before.primary)?;
     let after = read_fleet(&before.primary.path)?;
     Ok(fleet::pruned(&before, &after))
 }

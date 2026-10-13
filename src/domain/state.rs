@@ -5,7 +5,8 @@
 //! ignoring the rest; writing refuses a file whose schema is newer than this core supports, so an
 //! older core never clobbers what a newer one wrote.
 
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -14,26 +15,84 @@ use serde::{Deserialize, Serialize};
 pub(crate) const SUPPORTED_SCHEMA: u64 = 1;
 
 /// The worktree's state file, inside its admin directory.
-pub(crate) const WORKTREE_FILE: &str = "worktree.json";
+const WORKTREE_FILE: &str = "worktree.json";
 
 /// The directory, inside git's per-worktree admin directory, that holds the worktree's state.
 pub(crate) const ADMIN_DIR_NAME: &str = "orca-term";
 
+/// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdminDir(PathBuf);
+
+impl AdminDir {
+    /// The admin directory git reported at `path`.
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    /// Where the directory is.
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The worktree's state file, `worktree.json`, inside this directory.
+    pub(crate) fn state_file(&self) -> PathBuf {
+        self.0.join(WORKTREE_FILE)
+    }
+}
+
 /// What a worktree is doing, as the fleet shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum State {
     /// No agent is attached to the worktree.
     NoAgent,
-    /// The worktree's directory is gone, or its state cannot be read.
-    Broken,
+    /// The worktree cannot be used, for the reason given.
+    Broken(BrokenReason),
 }
 
 impl State {
     /// How a table shows the state.
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::NoAgent => "no agent",
-            Self::Broken => "broken",
+            Self::Broken(_) => "broken",
+        }
+    }
+}
+
+/// Why a worktree is broken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BrokenReason {
+    /// Its directory is missing.
+    DirectoryMissing,
+    /// Git marks it prunable, for the reason git gives (its `.git` file is gone, say).
+    Prunable(String),
+    /// Its state file cannot be read, for the reason given.
+    StateUnreadable(String),
+}
+
+impl BrokenReason {
+    /// Whether the worktree is gone from disk, so that only `worktree prune` can clean it.
+    pub(crate) fn is_gone(&self) -> bool {
+        match self {
+            Self::DirectoryMissing | Self::Prunable(_) => true,
+            Self::StateUnreadable(_) => false,
+        }
+    }
+}
+
+/// The reason as the fleet shows it, in the table's detail and in the JSON `detail`.
+impl fmt::Display for BrokenReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DirectoryMissing => {
+                write!(f, "directory missing; run orca-term worktree prune")
+            }
+            Self::Prunable(reason) => write!(
+                f,
+                "git marks it prunable ({reason}); run orca-term worktree prune"
+            ),
+            Self::StateUnreadable(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -140,6 +199,40 @@ mod tests {
     #[test]
     fn a_missing_file_is_a_worktree_with_no_agent() {
         assert_eq!(read(Path::new(PATH), None).unwrap(), State::NoAgent);
+    }
+
+    #[test]
+    fn the_state_file_lives_in_the_admin_dir() {
+        let admin = AdminDir::new(PathBuf::from("/repo/.git/worktrees/fix/orca-term"));
+        assert_eq!(
+            admin.state_file(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/worktree.json")
+        );
+    }
+
+    #[test]
+    fn a_broken_reason_says_what_to_do() {
+        assert_eq!(
+            BrokenReason::DirectoryMissing.to_string(),
+            "directory missing; run orca-term worktree prune"
+        );
+        assert_eq!(
+            BrokenReason::Prunable("gitdir file points to non-existent location".to_owned())
+                .to_string(),
+            "git marks it prunable (gitdir file points to non-existent location); run orca-term \
+             worktree prune"
+        );
+        assert_eq!(
+            BrokenReason::StateUnreadable("could not parse x".to_owned()).to_string(),
+            "could not parse x"
+        );
+    }
+
+    #[test]
+    fn only_a_worktree_gone_from_disk_is_left_to_prune() {
+        assert!(BrokenReason::DirectoryMissing.is_gone());
+        assert!(BrokenReason::Prunable("gone".to_owned()).is_gone());
+        assert!(!BrokenReason::StateUnreadable("corrupt".to_owned()).is_gone());
     }
 
     #[test]

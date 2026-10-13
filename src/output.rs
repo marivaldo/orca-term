@@ -34,8 +34,8 @@ fn render_fleet_table(fleet: &Fleet) -> String {
                 worktree.name.clone(),
                 worktree
                     .branch
-                    .clone()
-                    .unwrap_or_else(|| "(detached)".to_owned()),
+                    .as_ref()
+                    .map_or_else(|| "(detached)".to_owned(), ToString::to_string),
                 worktree.state.label().to_owned(),
                 worktree.path.display().to_string(),
             ]
@@ -141,16 +141,17 @@ fn out(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::branch::{Branch, StartPoint};
     use crate::domain::config::Setting;
-    use crate::domain::fleet::{Worktree, WorktreeEntry};
-    use crate::domain::state::State;
+    use crate::domain::fleet::{PrimaryCheckout, Worktree};
+    use crate::domain::state::{BrokenReason, State};
+    use crate::domain::worktree::KeptReason;
 
     fn fleet(worktrees: Vec<Worktree>) -> Fleet {
         Fleet {
-            primary: WorktreeEntry {
+            primary: PrimaryCheckout {
                 path: PathBuf::from("/repo"),
-                branch: Some("main".to_owned()),
-                prunable: None,
+                branch: Some(Branch::new("main")),
             },
             worktrees,
         }
@@ -167,18 +168,14 @@ mod tests {
             Worktree {
                 name: "fix-login".to_owned(),
                 path: PathBuf::from("/l/fix-login"),
-                branch: Some("fix-login".to_owned()),
+                branch: Some(Branch::new("fix-login")),
                 state: State::NoAgent,
-                detail: None,
-                gone: false,
             },
             Worktree {
                 name: "docs".to_owned(),
                 path: PathBuf::from("/l/docs"),
                 branch: None,
-                state: State::Broken,
-                detail: Some("directory missing; run orca-term worktree prune".to_owned()),
-                gone: true,
+                state: State::Broken(BrokenReason::DirectoryMissing),
             },
         ]));
         assert_eq!(
@@ -192,10 +189,10 @@ mod tests {
     #[test]
     fn worktree_new_names_the_base_and_its_source() {
         let text = render_worktree_created(&Created {
-            name: "fix".to_owned(),
+            name: "fix".parse().unwrap(),
             path: PathBuf::from("/l/repo/fix"),
-            branch: "fix".to_owned(),
-            start: "main".to_owned(),
+            branch: Branch::new("fix"),
+            start: StartPoint::Local(Branch::new("main")),
             copied: 1,
             base: Setting {
                 value: PathBuf::from("/l"),
@@ -222,15 +219,17 @@ mod tests {
         };
         assert_eq!(
             render_worktree_removed(&removed(BranchOutcome::Kept {
-                branch: "fix".to_owned(),
-                reason: "not merged into main".to_owned(),
+                branch: Branch::new("fix"),
+                reason: KeptReason::NotMerged {
+                    into: StartPoint::Local(Branch::new("main")),
+                },
             })),
             "removed worktree fix\npath:   /l/repo/fix\nkept branch fix: not merged into main"
         );
         assert_eq!(
             render_worktree_removed(&removed(BranchOutcome::DeletedMerged {
-                branch: "fix".to_owned(),
-                into: "main".to_owned(),
+                branch: Branch::new("fix"),
+                into: StartPoint::Local(Branch::new("main")),
             })),
             "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
         );

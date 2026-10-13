@@ -13,6 +13,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_norway::Value;
 
+use crate::domain::fleet::PrimaryCheckout;
+
 /// The config file's name, both committed and in the git common dir.
 pub(crate) const FILE_NAME: &str = "orca-term.yaml";
 
@@ -100,18 +102,19 @@ struct Raw {
 
 /// Every config file of the repository whose primary checkout is `primary` and whose git common
 /// dir is `common_dir`, highest precedence first. Some of them may not exist.
-pub(crate) fn sources(primary: &Path, common_dir: &Path, env: &Env) -> Vec<Source> {
+pub(crate) fn sources(primary: &PrimaryCheckout, common_dir: &Path, env: &Env) -> Vec<Source> {
+    let root = &primary.path;
     let local = common_dir.join(FILE_NAME);
     let mut sources = vec![
         Source {
-            label: label_within(&local, primary),
+            label: label_within(&local, root),
             path: local,
-            anchor: primary.to_owned(),
+            anchor: root.clone(),
         },
         Source {
-            path: primary.join(FILE_NAME),
+            path: root.join(FILE_NAME),
             label: FILE_NAME.to_owned(),
-            anchor: primary.to_owned(),
+            anchor: root.clone(),
         },
     ];
     if let Some(global) = env.global_file() {
@@ -233,6 +236,13 @@ mod tests {
         }
     }
 
+    fn primary() -> PrimaryCheckout {
+        PrimaryCheckout {
+            path: PathBuf::from("/repo"),
+            branch: None,
+        }
+    }
+
     fn env() -> Env {
         Env {
             home: Some(PathBuf::from("/home/me")),
@@ -320,7 +330,7 @@ mod tests {
 
     #[test]
     fn the_sources_go_local_then_committed_then_global() {
-        let sources = sources(Path::new("/repo"), Path::new("/repo/.git"), &env());
+        let sources = sources(&primary(), Path::new("/repo/.git"), &env());
         let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -338,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_malformed_file_is_named_in_the_error() {
-        let source = sources(Path::new("/repo"), Path::new("/repo/.git"), &env()).remove(1);
+        let source = sources(&primary(), Path::new("/repo/.git"), &env()).remove(1);
         let err = Layer::parse(source, "bogus: 1\n").unwrap_err();
         assert_eq!(
             format!("{err:#}"),

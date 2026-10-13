@@ -8,16 +8,35 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+use crate::domain::branch::Branch;
 use crate::domain::state::State;
 
 /// A worktree as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorktreeEntry {
     pub(crate) path: PathBuf,
-    /// The checked-out branch, without `refs/heads/`. `None` when detached or bare.
-    pub(crate) branch: Option<String>,
+    /// The checked-out branch. `None` when detached or bare.
+    pub(crate) branch: Option<Branch>,
     /// Why git marks the worktree prunable, when it does: its directory or `.git` file is gone.
     pub(crate) prunable: Option<String>,
+}
+
+/// The repository's primary checkout: the working tree git lists first, never a worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrimaryCheckout {
+    pub(crate) path: PathBuf,
+    /// The checked-out branch. `None` when detached or bare.
+    pub(crate) branch: Option<Branch>,
+}
+
+impl PrimaryCheckout {
+    /// The primary checkout git listed as `entry`.
+    pub(crate) fn from_entry(entry: WorktreeEntry) -> Self {
+        Self {
+            path: entry.path,
+            branch: entry.branch,
+        }
+    }
 }
 
 /// One worktree of the fleet.
@@ -25,18 +44,14 @@ pub(crate) struct WorktreeEntry {
 pub(crate) struct Worktree {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
-    pub(crate) branch: Option<String>,
+    pub(crate) branch: Option<Branch>,
     pub(crate) state: State,
-    /// Why the worktree is in its state, when there is something to say.
-    pub(crate) detail: Option<String>,
-    /// Whether the worktree's directory is gone, so only `worktree prune` can clean it.
-    pub(crate) gone: bool,
 }
 
 /// The primary checkout and every worktree of its repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fleet {
-    pub(crate) primary: WorktreeEntry,
+    pub(crate) primary: PrimaryCheckout,
     pub(crate) worktrees: Vec<Worktree>,
 }
 
@@ -54,41 +69,28 @@ impl Fleet {
                 path: wt.path,
                 branch: wt.branch,
                 state: State::NoAgent,
-                detail: None,
-                gone: false,
             })
             .collect();
-        Ok(Self { primary, worktrees })
+        Ok(Self {
+            primary: PrimaryCheckout::from_entry(primary),
+            worktrees,
+        })
     }
 
     /// The worktrees whose directory is gone: the ones `worktree prune` would clean.
     pub(crate) fn gone_worktrees(&self) -> impl Iterator<Item = &Worktree> {
-        self.worktrees.iter().filter(|worktree| worktree.gone)
+        self.worktrees.iter().filter(|worktree| worktree.is_gone())
     }
 }
 
 impl Worktree {
-    /// Marks the worktree broken because its directory is gone, for `detail`.
-    pub(crate) fn mark_gone(&mut self, detail: String) {
-        self.state = State::Broken;
-        self.gone = true;
-        self.detail = Some(detail);
+    /// Whether the worktree is gone from disk, so that only `worktree prune` can clean it.
+    pub(crate) fn is_gone(&self) -> bool {
+        match &self.state {
+            State::Broken(reason) => reason.is_gone(),
+            State::NoAgent => false,
+        }
     }
-
-    /// Marks the worktree broken because its state cannot be read, for `detail`.
-    pub(crate) fn mark_unreadable(&mut self, detail: String) {
-        self.state = State::Broken;
-        self.detail = Some(detail);
-    }
-}
-
-/// Why a worktree counts as gone, or `None` when it is there: its directory is missing, or git
-/// marks it prunable (`prunable` holds git's reason).
-pub(crate) fn gone_detail(dir_exists: bool, prunable: Option<&str>) -> Option<String> {
-    if !dir_exists {
-        return Some("directory missing; run orca-term worktree prune".to_owned());
-    }
-    prunable.map(|reason| format!("git marks it prunable ({reason}); run orca-term worktree prune"))
 }
 
 /// The paths of the worktrees gone in `before` and no longer listed in `after`: what a prune
@@ -115,11 +117,12 @@ fn worktree_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::state::BrokenReason;
 
     fn wt(path: &str, branch: Option<&str>) -> WorktreeEntry {
         WorktreeEntry {
             path: PathBuf::from(path),
-            branch: branch.map(str::to_owned),
+            branch: branch.map(Branch::new),
             prunable: None,
         }
     }
@@ -131,7 +134,8 @@ mod tests {
             wt("/worktrees/repo/fix", Some("fix")),
         ])
         .unwrap();
-        assert_eq!(fleet.primary, wt("/repo", Some("main")));
+        assert_eq!(fleet.primary.path, PathBuf::from("/repo"));
+        assert_eq!(fleet.primary.branch, Some(Branch::new("main")));
         assert_eq!(fleet.worktrees.len(), 1);
         assert_eq!(fleet.worktrees[0].name, "fix");
     }
@@ -149,27 +153,20 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_directory_or_a_prunable_mark_is_gone() {
-        assert_eq!(gone_detail(true, None), None);
-        assert_eq!(
-            gone_detail(false, Some("x")).as_deref(),
-            Some("directory missing; run orca-term worktree prune")
-        );
-        assert_eq!(
-            gone_detail(true, Some("gitdir file points to non-existent location")).as_deref(),
-            Some(
-                "git marks it prunable (gitdir file points to non-existent location); run \
-                 orca-term worktree prune"
-            )
-        );
+    fn an_unreadable_state_is_broken_but_not_gone() {
+        let mut fleet = Fleet::from_entries(vec![wt("/repo", None), wt("/a", None)]).unwrap();
+        fleet.worktrees[0].state =
+            State::Broken(BrokenReason::StateUnreadable("corrupt".to_owned()));
+        assert!(!fleet.worktrees[0].is_gone());
+        assert_eq!(fleet.gone_worktrees().count(), 0);
     }
 
     #[test]
     fn pruned_lists_the_gone_worktrees_that_left_the_fleet() {
         let mut before =
             Fleet::from_entries(vec![wt("/repo", None), wt("/a", None), wt("/b", None)]).unwrap();
-        before.worktrees[0].mark_gone("gone".to_owned());
-        before.worktrees[1].mark_gone("gone".to_owned());
+        before.worktrees[0].state = State::Broken(BrokenReason::DirectoryMissing);
+        before.worktrees[1].state = State::Broken(BrokenReason::DirectoryMissing);
         let after = Fleet::from_entries(vec![wt("/repo", None), wt("/b", None)]).unwrap();
         assert_eq!(pruned(&before, &after), vec![PathBuf::from("/a")]);
     }
