@@ -18,6 +18,8 @@ globals:
     any: true
   after_each:
     any: true
+  finally:
+    any: true
   setup:
     any: true
   teardown:

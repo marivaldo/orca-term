@@ -20,6 +20,9 @@ assert(
 
 ---@type table<string, { value: string? }>
 local saved_env = {}
+---The directory Neovim was in before `cd()`, put back by `cleanup()`.
+---@type string?
+local saved_cwd = nil
 ---@type string[]
 local temp_dirs = {}
 
@@ -125,8 +128,98 @@ function M.add_worktree(repo, path, branch)
   return assert(vim.uv.fs_realpath(path))
 end
 
----Puts the environment and the client's settings back, and removes every temporary directory.
+---Runs the core binary with `args` in the repository's primary checkout, without checking how it
+---exits, and returns what `vim.system` reports.
+---@param repo spec.Repo
+---@param args string[]
+---@return vim.SystemCompleted
+function M.core(repo, args)
+  return vim.system(vim.list_extend({ M.binary }, args), { cwd = repo.root, text = true }):wait()
+end
+
+---Writes the repository's uncommitted config override, `.git/orca-term.yaml`, with `lines` as its
+---setup script; no lines removes it.
+---@param repo spec.Repo
+---@param lines string[]
+function M.set_setup(repo, lines)
+  local path = repo.root .. '/.git/orca-term.yaml'
+  if #lines == 0 then
+    vim.fn.delete(path)
+    return
+  end
+  local yaml = { 'scripts:', '  setup: |' }
+  for _, line in ipairs(lines) do
+    table.insert(yaml, '    ' .. line)
+  end
+  vim.fn.writefile(yaml, path)
+end
+
+---The path of the worktree named `name`, as `worktree ls --json` prints it.
+---@param repo spec.Repo
+---@param name string
+---@return string
+function M.worktree_path(repo, name)
+  local fleet = vim.json.decode(M.run({ M.binary, 'worktree', 'ls', '--json' }, repo.root))
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.name == name then
+      return worktree.path
+    end
+  end
+  error('no worktree named ' .. name)
+end
+
+---Makes `dir` Neovim's current directory until `cleanup()`.
+---@param dir string
+function M.cd(dir)
+  saved_cwd = saved_cwd or vim.fn.getcwd()
+  vim.cmd.cd(vim.fn.fnameescape(dir))
+end
+
+---Loads the client the way Neovim does at startup, then calls setup() with the binary `cargo
+---build` made, so a stale release build is never picked up.
+function M.load_client()
+  vim.opt.runtimepath:prepend(M.root)
+  vim.cmd.runtime('plugin/orca-term.lua')
+  require('orca-term').setup({ binary = M.binary })
+end
+
+---Closes the sidebar if it is open, then every tab and window but one, so the next spec starts
+---from a single empty window.
+function M.reset_editor()
+  local sidebar = require('orca-term.sidebar')
+  if sidebar.is_open() then
+    sidebar.close()
+  end
+  vim.cmd('silent! tabonly!')
+  vim.cmd('silent! only!')
+  vim.cmd('enew!')
+end
+
+local MODES = { 'n', 'v', 'x', 's', 'o', 'i', 'c', 't' }
+
+---Every global keymap, as `<mode> <lhs>`, sorted. `<Plug>` maps are left out: nobody can type
+---them, they only exist for a person to bind a key of their own to.
+---@return string[]
+function M.global_keymaps()
+  local found = {}
+  for _, mode in ipairs(MODES) do
+    for _, keymap in ipairs(vim.api.nvim_get_keymap(mode)) do
+      if not vim.startswith(keymap.lhs, '<Plug>') then
+        table.insert(found, mode .. ' ' .. keymap.lhs)
+      end
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+---Puts the environment, the current directory and the client's settings back, and removes every
+---temporary directory.
 function M.cleanup()
+  if saved_cwd then
+    vim.cmd.cd(vim.fn.fnameescape(saved_cwd))
+    saved_cwd = nil
+  end
   for name, saved in pairs(saved_env) do
     vim.env[name] = saved.value
   end
