@@ -3,3 +3,7 @@
 [files]
 # The map's original input, kept verbatim in Portuguese.
 extend-exclude = ["docs/wayfinder-input.md"]
+
+[default.extend-words]
+# Neovim's `:enew` command (edit a new, empty buffer).
+enew = "enew"

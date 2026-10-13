@@ -1,7 +1,8 @@
 -- orca-term's Neovim client: the `:OrcaTerm <subcommand>` command. Neovim runs this file at startup.
 --
--- It defines the command and nothing else: no global keymap, no autocommand, and no work until the
--- command runs. Each subcommand calls a module under lua/orca-term/.
+-- It defines the command and the `<Plug>` maps a person can bind keys of their own to, and nothing
+-- else: no global key, no autocommand, and no work until the command runs. Each subcommand calls a
+-- module under lua/orca-term/.
 
 ---Each subcommand's name and what it does.
 ---@type table<string, fun()>
@@ -40,3 +41,9 @@ end, {
     end, names())
   end,
 })
+
+-- No key reaches this map until a person binds one, e.g.
+-- `vim.keymap.set('n', '<leader>o', '<Plug>(OrcaTermSidebar)')`.
+vim.keymap.set('n', '<Plug>(OrcaTermSidebar)', function()
+  require('orca-term.sidebar').toggle()
+end, { desc = 'orca-term: toggle the sidebar in every tab' })
