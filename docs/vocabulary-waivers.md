@@ -14,3 +14,4 @@ lint.
 - `request`: GitHub's pull request and the `pull_request` event.
 - `tab`: Neovim's tabpage, which each worktree gets one of.
 - `unit`: unit tests.
+- `thread`: Rust's `std::thread`, never a session.

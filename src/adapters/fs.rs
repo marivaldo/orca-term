@@ -1,18 +1,20 @@
-//! Adapter: the file system. Reading, writing and copying files, creating directories and
-//! resolving paths through symlinks all happen here.
+//! Adapter: the file system. Reading, writing and copying files, creating directories, resolving
+//! paths through symlinks and locking a worktree all happen here.
 #![expect(
     clippy::disallowed_methods,
     clippy::disallowed_types,
     reason = "this adapter is the one place that touches the file system"
 )]
 
-use std::fs::{self, File};
+use std::fs::{self, File, TryLockError};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+use crate::domain::state::{AdminDir, LockStatus};
 
 /// The bytes of the file at `path`, or `None` when it does not exist.
 pub(crate) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -150,6 +152,73 @@ pub(crate) fn byte_copy(from: &Path, to: &Path, mode: u32) -> std::io::Result<()
     fs::set_permissions(to, fs::Permissions::from_mode(mode))
 }
 
+/// Creates the file at `path`, or empties it when it exists, and opens it for writing.
+pub(crate) fn create_truncated(path: &Path) -> Result<File> {
+    File::create(path).with_context(|| format!("could not create {}", path.display()))
+}
+
+/// Proof that this process holds a worktree's lock, an exclusive `flock` on the `lock` file in
+/// its admin directory. The lock is released when the value is dropped, or when the process dies.
+///
+/// Writing a worktree's state takes a `&WorktreeLock`, so a write without the lock does not
+/// compile.
+#[derive(Debug)]
+pub(crate) struct WorktreeLock {
+    admin: AdminDir,
+    /// Kept open for as long as the lock is held: closing it releases the lock.
+    _file: File,
+}
+
+impl WorktreeLock {
+    /// The admin directory of the worktree this lock is for.
+    pub(crate) fn admin(&self) -> &AdminDir {
+        &self.admin
+    }
+}
+
+/// Takes the lock of the worktree whose admin directory is `admin` without waiting, creating the
+/// directory and the lock file when missing. `None` when another process holds it.
+pub(crate) fn try_lock_worktree(admin: &AdminDir) -> Result<Option<WorktreeLock>> {
+    create_dir_all(admin.path())?;
+    let path = admin.lock_file();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(WorktreeLock {
+            admin: admin.clone(),
+            _file: file,
+        })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(err)) => {
+            Err(err).with_context(|| format!("could not lock {}", path.display()))
+        }
+    }
+}
+
+/// Whether the lock of the worktree whose admin directory is `admin` is held right now. Only
+/// reads: a missing lock file is a free lock, and a lock taken to find out is released at once.
+pub(crate) fn lock_status(admin: &AdminDir) -> Result<LockStatus> {
+    let path = admin.lock_file();
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(LockStatus::Free),
+        Err(err) => return Err(err).with_context(|| format!("could not open {}", path.display())),
+    };
+    match file.try_lock() {
+        // Dropping `file` at the end of this function releases the lock just taken.
+        Ok(()) => Ok(LockStatus::Free),
+        Err(TryLockError::WouldBlock) => Ok(LockStatus::Held),
+        Err(TryLockError::Error(err)) => {
+            Err(err).with_context(|| format!("could not probe {}", path.display()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use assert_fs::TempDir;
@@ -174,6 +243,22 @@ mod tests {
         assert_eq!(read_optional(&path).unwrap().as_deref(), Some(&b"{}"[..]));
         let leftovers: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "the temp file is renamed away");
+    }
+
+    // That a lock is free again once released is checked by the black-box tests in
+    // `tests/worktree_setup.rs`, each in a process of its own: here, another test of this process
+    // starting a child would hold a copy of the lock's file until the child runs its program.
+    #[test]
+    fn a_held_worktree_lock_is_seen_as_held() {
+        let dir = TempDir::new().unwrap();
+        let admin = AdminDir::new(dir.path().join("orca-term"));
+        assert_eq!(lock_status(&admin).unwrap(), LockStatus::Free);
+        assert!(!admin.path().exists(), "probing never creates anything");
+
+        let lock = try_lock_worktree(&admin).unwrap().unwrap();
+        assert_eq!(lock.admin(), &admin);
+        assert_eq!(lock_status(&admin).unwrap(), LockStatus::Held);
+        assert!(try_lock_worktree(&admin).unwrap().is_none());
     }
 
     #[test]

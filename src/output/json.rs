@@ -7,8 +7,11 @@ use serde::Serialize;
 
 use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
+use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
+use crate::domain::worktree::Created;
 
 /// Every document carries `contract` and `version` next to its own fields.
 #[derive(Debug, Serialize)]
@@ -41,14 +44,95 @@ struct WorktreeView<'a> {
     detail: Option<String>,
 }
 
-/// The fleet as one JSON document.
-pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
+/// `worktree new --json`: the worktree as `worktree ls` shows it, and what was done to make it.
+#[derive(Debug, Serialize)]
+struct CreatedView<'a> {
+    worktree: WorktreeView<'a>,
+    start: String,
+    copied: usize,
+    base: &'a Path,
+    setup: SetupView<'a>,
+}
+
+/// `worktree setup --json`: the worktree as `worktree ls` shows it, and what its setup did.
+#[derive(Debug, Serialize)]
+struct SetupDoneView<'a> {
+    worktree: WorktreeView<'a>,
+    setup: SetupView<'a>,
+}
+
+/// What a setup did: `status` is `none` (no script configured), `succeeded` or `failed`, and
+/// `log` is the setup log, `null` when no script ran.
+#[derive(Debug, Serialize)]
+struct SetupView<'a> {
+    status: &'static str,
+    log: Option<&'a Path>,
+}
+
+/// Any command's failure with `--json`: `kind` is `other` unless the failure is typed.
+#[derive(Debug, Serialize)]
+struct ErrorView {
+    error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    kind: &'static str,
+    message: String,
+}
+
+/// Wraps `body` in the envelope and renders it.
+fn document<T: Serialize>(body: T) -> serde_json::Result<String> {
     serde_json::to_string(&Envelope {
         contract: CONTRACT,
         version: VERSION,
-        body: FleetView {
-            primary: primary_view(&fleet.primary),
-            worktrees: fleet.worktrees.iter().map(worktree_view).collect(),
+        body,
+    })
+}
+
+/// The fleet as one JSON document.
+pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
+    document(FleetView {
+        primary: primary_view(&fleet.primary),
+        worktrees: fleet.worktrees.iter().map(listed_view).collect(),
+    })
+}
+
+/// What `worktree new` made, as one JSON document.
+pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
+    document(CreatedView {
+        worktree: worktree_view(
+            created.name.as_str(),
+            &created.path,
+            Some(&created.branch),
+            &created.setup.state,
+        ),
+        start: created.start.to_string(),
+        copied: created.copied,
+        base: &created.base.value,
+        setup: setup_view(&created.setup),
+    })
+}
+
+/// What `worktree setup` did, as one JSON document.
+pub(crate) fn set_up(done: &SetupDone) -> serde_json::Result<String> {
+    document(SetupDoneView {
+        worktree: worktree_view(
+            &done.name,
+            &done.path,
+            done.branch.as_ref(),
+            &done.setup.state,
+        ),
+        setup: setup_view(&done.setup),
+    })
+}
+
+/// A failure as one JSON document, with the kind the client tells failures apart by.
+pub(crate) fn error(err: &anyhow::Error) -> serde_json::Result<String> {
+    document(ErrorView {
+        error: ErrorBody {
+            kind: error::kind(err),
+            message: format!("{err:#}"),
         },
     })
 }
@@ -60,13 +144,27 @@ fn primary_view(primary: &PrimaryCheckout) -> PrimaryView<'_> {
     }
 }
 
-fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
+fn listed_view(worktree: &Worktree) -> WorktreeView<'_> {
+    worktree_view(
+        &worktree.name,
+        &worktree.path,
+        worktree.branch.as_ref(),
+        &worktree.state,
+    )
+}
+
+fn worktree_view<'a>(
+    name: &'a str,
+    path: &'a Path,
+    branch: Option<&'a Branch>,
+    state: &State,
+) -> WorktreeView<'a> {
     WorktreeView {
-        name: &worktree.name,
-        path: &worktree.path,
-        branch: worktree.branch.as_ref().map(Branch::as_str),
-        state: state_name(&worktree.state),
-        detail: state_detail(&worktree.state),
+        name,
+        path,
+        branch: branch.map(Branch::as_str),
+        state: state_name(state),
+        detail: state.detail(),
     }
 }
 
@@ -74,15 +172,20 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
 fn state_name(state: &State) -> &'static str {
     match state {
         State::NoAgent => "no_agent",
+        State::SettingUp => "setting_up",
+        State::NotReady(_) => "not_ready",
         State::Broken(_) => "broken",
     }
 }
 
-/// Why the worktree is in its state, when there is something to say.
-fn state_detail(state: &State) -> Option<String> {
-    match state {
-        State::NoAgent => None,
-        State::Broken(reason) => Some(reason.to_string()),
+fn setup_view(setup: &SetupReport) -> SetupView<'_> {
+    SetupView {
+        status: match setup.outcome {
+            SetupOutcome::NoScript => "none",
+            SetupOutcome::Succeeded => "succeeded",
+            SetupOutcome::Failed(_) => "failed",
+        },
+        log: setup.log.as_deref(),
     }
 }
 
@@ -91,8 +194,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::domain::error::TypedError;
     use crate::domain::fleet::WorktreeEntry;
-    use crate::domain::state::BrokenReason;
+    use crate::domain::setup::Exit;
+    use crate::domain::state::{BrokenReason, NotReadyReason};
 
     #[test]
     fn the_fleet_document_keeps_its_shape() {
@@ -116,5 +221,59 @@ mod tests {
                 r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune"}}]}}"#
             )
         );
+    }
+
+    #[test]
+    fn setup_states_are_named_in_snake_case_with_their_detail() {
+        let failed = State::NotReady(NotReadyReason::Failed {
+            exit: Exit::Code(1),
+            last_line: Some("boom".to_owned()),
+        });
+        let view = worktree_view("fix", Path::new("/l/fix"), None, &failed);
+        assert_eq!(view.state, "not_ready");
+        assert_eq!(view.detail.as_deref(), Some("setup failed (exit 1): boom"));
+        assert_eq!(state_name(&State::SettingUp), "setting_up");
+    }
+
+    #[test]
+    fn the_setup_document_keeps_its_shape() {
+        let done = SetupDone {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            branch: Some(Branch::new("fix")),
+            setup: SetupReport {
+                outcome: SetupOutcome::Succeeded,
+                script: None,
+                log: Some(PathBuf::from("/a/setup.log")),
+                state: State::NoAgent,
+            },
+        };
+        assert_eq!(
+            set_up(&done).unwrap(),
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn an_error_carries_its_kind_and_message() {
+        let busy = anyhow::Error::new(TypedError::Busy {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+        });
+        let doc: serde_json::Value = serde_json::from_str(&error(&busy).unwrap()).unwrap();
+        assert_eq!(doc["contract"], 1);
+        assert_eq!(doc["error"]["kind"], "busy");
+        assert!(
+            doc["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("is busy")
+        );
+        let other: serde_json::Value =
+            serde_json::from_str(&error(&anyhow::anyhow!("git failed")).unwrap()).unwrap();
+        assert_eq!(other["error"]["kind"], "other");
+        assert_eq!(other["error"]["message"], "git failed");
     }
 }

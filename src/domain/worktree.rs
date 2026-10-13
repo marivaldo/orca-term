@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 use crate::domain::branch::{self, Branch, BranchNameError, StartPoint};
 use crate::domain::config::Setting;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::setup::SetupReport;
 use crate::domain::state::State;
 
 /// A valid name for a new worktree: one path segment, not read as an option, and a valid branch
@@ -82,6 +83,16 @@ pub(crate) enum Target {
     Path(PathBuf),
 }
 
+/// The target as the person wrote it.
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => f.write_str(name),
+            Self::Path(path) => write!(f, "{}", path.display()),
+        }
+    }
+}
+
 /// A target is a path when it contains `/` or is `.` or `..`, and a name otherwise.
 impl FromStr for Target {
     type Err = Infallible;
@@ -114,6 +125,8 @@ pub(crate) struct Created {
     pub(crate) start: StartPoint,
     pub(crate) copied: usize,
     pub(crate) base: Setting<PathBuf>,
+    /// What its setup did, and the state it left the worktree in.
+    pub(crate) setup: SetupReport,
 }
 
 /// What `worktree rm` did.
@@ -212,6 +225,20 @@ pub(crate) fn find_by_name<'f>(fleet: &'f Fleet, name: &str) -> Result<&'f Workt
             )
         }
     }
+}
+
+/// Refuses to set up a worktree whose directory is gone: there is nothing to run the script in.
+pub(crate) fn check_can_set_up(worktree: &Worktree) -> Result<()> {
+    if let State::Broken(reason) = &worktree.state
+        && reason.is_gone()
+    {
+        bail!(
+            "worktree {} at {} is broken ({reason}); it cannot be set up",
+            worktree.name,
+            worktree.path.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Refuses to remove a worktree whose directory is gone: only `worktree prune` cleans it.
@@ -324,6 +351,8 @@ mod tests {
         assert_eq!(target("/l/fix"), Target::Path(PathBuf::from("/l/fix")));
         assert_eq!(target("."), Target::Path(PathBuf::from(".")));
         assert_eq!(target(".."), Target::Path(PathBuf::from("..")));
+        assert_eq!(target("fix").to_string(), "fix");
+        assert_eq!(target("a/fix").to_string(), "a/fix");
     }
 
     #[test]

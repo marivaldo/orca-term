@@ -1,10 +1,14 @@
 //! Domain: the configuration, YAML files layered key by key.
 //!
 //! Precedence, highest first: the uncommitted override `orca-term.yaml` in the git common dir, the
-//! committed `orca-term.yaml` at the primary checkout root, the global
+//! committed `orca-term.yaml` at the root of a checkout, the global
 //! `$XDG_CONFIG_HOME/orca-term/config.yaml` (or `~/.config/orca-term/config.yaml`), then the
 //! built-in default. Every resolved key remembers which source won and which it overrode, so the
 //! precedence can be printed.
+//!
+//! Which checkout supplies the committed file depends on the key, as in Orca: `base` comes from
+//! the primary checkout, since it decides where a worktree goes before the worktree exists, and
+//! `scripts.setup` comes from the worktree itself, from the revision checked out there.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -18,8 +22,8 @@ use crate::domain::fleet::PrimaryCheckout;
 /// The config file's name, both committed and in the git common dir.
 pub(crate) const FILE_NAME: &str = "orca-term.yaml";
 
-/// Every key this version understands.
-const KEYS: &[&str] = &["base"];
+/// Every top-level key this version understands.
+const KEYS: &[&str] = &["base", "scripts"];
 
 /// The built-in default for `base`, the directory worktrees live under.
 const DEFAULT_BASE: &str = "~/orca-term/worktrees";
@@ -53,26 +57,22 @@ pub(crate) struct Setting<T> {
     pub(crate) overridden: Vec<String>,
 }
 
-impl fmt::Display for Setting<PathBuf> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.value.display())?;
+impl<T> Setting<T> {
+    /// Where the value came from, as `built-in default`, `from <file>` or
+    /// `from <file>, overriding <files>`.
+    pub(crate) fn origin(&self) -> String {
         match &self.source {
-            None => write!(f, " (built-in default)"),
-            Some(source) if self.overridden.is_empty() => write!(f, " (from {source})"),
-            Some(source) => write!(
-                f,
-                " (from {source}, overriding {})",
-                self.overridden.join(", ")
-            ),
+            None => "built-in default".to_owned(),
+            Some(source) if self.overridden.is_empty() => format!("from {source}"),
+            Some(source) => format!("from {source}, overriding {}", self.overridden.join(", ")),
         }
     }
 }
 
-/// The resolved configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Config {
-    /// The directory worktrees live under, as `<base>/<repo>/<name>`.
-    pub(crate) base: Setting<PathBuf>,
+impl fmt::Display for Setting<PathBuf> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.value.display(), self.origin())
+    }
 }
 
 /// Where a config file may be, how the precedence line names it and what relative paths in it
@@ -98,11 +98,25 @@ pub(crate) struct Layer {
 #[serde(deny_unknown_fields)]
 struct Raw {
     base: Option<String>,
+    scripts: Option<Scripts>,
+}
+
+/// The `scripts` mapping, the same shape as Orca's.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Scripts {
+    setup: Option<String>,
 }
 
 /// Every config file of the repository whose primary checkout is `primary` and whose git common
-/// dir is `common_dir`, highest precedence first. Some of them may not exist.
-pub(crate) fn sources(primary: &PrimaryCheckout, common_dir: &Path, env: &Env) -> Vec<Source> {
+/// dir is `common_dir`, highest precedence first, with the committed file read from the root of
+/// `checkout` (the primary checkout or a worktree). Some of them may not exist.
+pub(crate) fn sources(
+    primary: &PrimaryCheckout,
+    checkout: &Path,
+    common_dir: &Path,
+    env: &Env,
+) -> Vec<Source> {
     let root = &primary.path;
     let local = common_dir.join(FILE_NAME);
     let mut sources = vec![
@@ -112,9 +126,9 @@ pub(crate) fn sources(primary: &PrimaryCheckout, common_dir: &Path, env: &Env) -
             anchor: root.clone(),
         },
         Source {
-            path: root.join(FILE_NAME),
+            path: checkout.join(FILE_NAME),
             label: FILE_NAME.to_owned(),
-            anchor: root.clone(),
+            anchor: checkout.to_owned(),
         },
     ];
     if let Some(global) = env.global_file() {
@@ -141,13 +155,14 @@ impl Layer {
     }
 }
 
-/// Resolves `layers`, highest precedence first, over the built-in defaults.
-pub(crate) fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
+/// The directory worktrees live under, as `<base>/<repo>/<name>`: `base` resolved from `layers`,
+/// highest precedence first, over the built-in default.
+pub(crate) fn resolve_base(layers: &[Layer], env: &Env) -> Result<Setting<PathBuf>> {
     let home = env.home.as_deref();
     let mut setters = layers
         .iter()
         .filter_map(|l| l.raw.base.as_deref().map(|v| (l, v)));
-    let base = match setters.next() {
+    Ok(match setters.next() {
         Some((winner, value)) => Setting {
             value: expand(value, &winner.anchor, home)
                 .with_context(|| format!("{}: invalid `base`", winner.label))?,
@@ -161,8 +176,26 @@ pub(crate) fn resolve(layers: &[Layer], env: &Env) -> Result<Config> {
             source: None,
             overridden: Vec::new(),
         },
-    };
-    Ok(Config { base })
+    })
+}
+
+/// The setup script: `scripts.setup` resolved from `layers`, highest precedence first. `None`
+/// when no layer sets it, or when the winning layer sets it empty, which turns off a script a
+/// lower layer sets.
+pub(crate) fn resolve_setup(layers: &[Layer]) -> Option<Setting<String>> {
+    let mut setters = layers.iter().filter_map(|l| {
+        let script = l.raw.scripts.as_ref()?.setup.as_deref()?;
+        Some((l, script))
+    });
+    let (winner, script) = setters.next()?;
+    if script.trim().is_empty() {
+        return None;
+    }
+    Some(Setting {
+        value: script.to_owned(),
+        source: Some(winner.label.clone()),
+        overridden: setters.map(|(l, _)| l.label.clone()).collect(),
+    })
 }
 
 fn parse(text: &str) -> Result<Raw> {
@@ -232,6 +265,20 @@ mod tests {
             anchor: PathBuf::from(anchor),
             raw: Raw {
                 base: base.map(str::to_owned),
+                scripts: None,
+            },
+        }
+    }
+
+    fn setup_layer(label: &str, setup: Option<&str>) -> Layer {
+        Layer {
+            label: label.to_owned(),
+            anchor: PathBuf::from("/repo"),
+            raw: Raw {
+                base: None,
+                scripts: Some(Scripts {
+                    setup: setup.map(str::to_owned),
+                }),
             },
         }
     }
@@ -252,14 +299,11 @@ mod tests {
 
     #[test]
     fn the_built_in_default_lives_under_home() {
-        let config = resolve(&[], &env()).unwrap();
+        let base = resolve_base(&[], &env()).unwrap();
+        assert_eq!(base.value, PathBuf::from("/home/me/orca-term/worktrees"));
+        assert_eq!(base.source, None);
         assert_eq!(
-            config.base.value,
-            PathBuf::from("/home/me/orca-term/worktrees")
-        );
-        assert_eq!(config.base.source, None);
-        assert_eq!(
-            config.base.to_string(),
+            base.to_string(),
             "/home/me/orca-term/worktrees (built-in default)"
         );
     }
@@ -271,7 +315,7 @@ mod tests {
             layer("orca-term.yaml", "/repo", None),
             layer("/g/config.yaml", "/g", Some("/g/worktrees")),
         ];
-        let base = resolve(&layers, &env()).unwrap().base;
+        let base = resolve_base(&layers, &env()).unwrap();
         assert_eq!(
             base.to_string(),
             "/l (from .git/orca-term.yaml, overriding /g/config.yaml)"
@@ -280,12 +324,11 @@ mod tests {
 
     #[test]
     fn relative_paths_resolve_against_the_layer_anchor() {
-        let base = resolve(
+        let base = resolve_base(
             &[layer("orca-term.yaml", "/w/repo", Some("../worktrees"))],
             &env(),
         )
-        .unwrap()
-        .base;
+        .unwrap();
         assert_eq!(base.value, PathBuf::from("/w/worktrees"));
         assert_eq!(base.to_string(), "/w/worktrees (from orca-term.yaml)");
     }
@@ -330,7 +373,12 @@ mod tests {
 
     #[test]
     fn the_sources_go_local_then_committed_then_global() {
-        let sources = sources(&primary(), Path::new("/repo/.git"), &env());
+        let sources = sources(
+            &primary(),
+            Path::new("/repo"),
+            Path::new("/repo/.git"),
+            &env(),
+        );
         let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -348,11 +396,95 @@ mod tests {
 
     #[test]
     fn a_malformed_file_is_named_in_the_error() {
-        let source = sources(&primary(), Path::new("/repo/.git"), &env()).remove(1);
+        let source = sources(
+            &primary(),
+            Path::new("/repo"),
+            Path::new("/repo/.git"),
+            &env(),
+        )
+        .remove(1);
         let err = Layer::parse(source, "bogus: 1\n").unwrap_err();
         assert_eq!(
             format!("{err:#}"),
-            "invalid config file /repo/orca-term.yaml: unknown key `bogus` (known keys: base)"
+            "invalid config file /repo/orca-term.yaml: unknown key `bogus` (known keys: base, \
+             scripts)"
+        );
+    }
+
+    #[test]
+    fn the_committed_file_comes_from_the_checkout_given() {
+        let sources = sources(
+            &primary(),
+            Path::new("/w/repo/fix"),
+            Path::new("/repo/.git"),
+            &env(),
+        );
+        assert_eq!(sources[0].path, PathBuf::from("/repo/.git/orca-term.yaml"));
+        assert_eq!(sources[0].label, ".git/orca-term.yaml");
+        assert_eq!(sources[1].path, PathBuf::from("/w/repo/fix/orca-term.yaml"));
+        assert_eq!(sources[1].anchor, PathBuf::from("/w/repo/fix"));
+    }
+
+    #[test]
+    fn the_setup_script_is_parsed_from_the_scripts_mapping() {
+        let raw = parse("scripts:\n  setup: |\n    pnpm install\n    echo done\n").unwrap();
+        assert_eq!(
+            raw.scripts.unwrap().setup.as_deref(),
+            Some("pnpm install\necho done\n")
+        );
+        assert!(parse("scripts:\n").unwrap().scripts.is_none());
+        let err = parse("scripts:\n  archive: rm -rf x\n").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown field `archive`"),
+            "{err:#}"
+        );
+        assert!(parse("scripts:\n  setup: [a]\n").is_err());
+        assert!(parse("scripts: make\n").is_err());
+    }
+
+    #[test]
+    fn the_highest_layer_setting_the_setup_script_wins() {
+        let setup = resolve_setup(&[
+            setup_layer(".git/orca-term.yaml", Some("make local")),
+            setup_layer("orca-term.yaml", Some("make")),
+            layer("/g/config.yaml", "/g", Some("/g/w")),
+        ])
+        .unwrap();
+        assert_eq!(setup.value, "make local");
+        assert_eq!(
+            setup.origin(),
+            "from .git/orca-term.yaml, overriding orca-term.yaml"
+        );
+        let setup = resolve_setup(&[
+            layer(".git/orca-term.yaml", "/repo", Some("/l")),
+            setup_layer("orca-term.yaml", Some("make")),
+        ])
+        .unwrap();
+        assert_eq!(setup.origin(), "from orca-term.yaml");
+        assert_eq!(resolve_setup(&[layer("orca-term.yaml", "/r", None)]), None);
+        assert_eq!(resolve_setup(&[]), None);
+    }
+
+    #[test]
+    fn an_empty_setup_script_is_no_script_and_turns_off_a_lower_one() {
+        assert_eq!(
+            resolve_setup(&[setup_layer("orca-term.yaml", Some("  \n"))]),
+            None
+        );
+        assert_eq!(
+            resolve_setup(&[
+                setup_layer(".git/orca-term.yaml", Some("")),
+                setup_layer("orca-term.yaml", Some("make")),
+            ]),
+            None
+        );
+        assert_eq!(
+            resolve_setup(&[
+                setup_layer(".git/orca-term.yaml", None),
+                setup_layer("orca-term.yaml", Some("make")),
+            ])
+            .map(|s| s.value),
+            Some("make".to_owned())
         );
     }
 

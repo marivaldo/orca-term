@@ -6,7 +6,7 @@
 //! orca-term config nor places worktrees under the developer's home.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_fs::TempDir;
@@ -96,6 +96,20 @@ impl Repo {
         cmd.current_dir(dir);
         self.env_assert(&mut cmd);
         cmd
+    }
+
+    /// The `orca-term` binary started in the background from `dir` with `args` and the fixture's
+    /// environment, for tests that act while it runs. Its output is discarded.
+    pub(crate) fn spawn_orca_term(&self, dir: &Path, args: &[&str]) -> Child {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_orca-term"));
+        cmd.current_dir(dir)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.xdg);
+        self.env(&mut cmd).spawn().unwrap()
     }
 
     fn env<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {

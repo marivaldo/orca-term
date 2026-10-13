@@ -18,7 +18,7 @@ module sits in one of five layers, and code may use only its own layer and the l
 main      src/main.rs, src/lib.rs     parse the arguments, run, turn an error into an exit code
 edge      src/cli.rs, src/output*     the command-line surface and everything printed
 ops       src/ops*                    one module per command
-adapters  src/adapters*               the only code that touches git, files and the environment
+adapters  src/adapters*               the only code that touches git, files, processes and the environment
 domain    src/domain*                 pure rules: data in, data or a decision out
 ```
 
@@ -30,25 +30,36 @@ the adapters, and returns a domain value that `output` prints.
 
 ### main
 
-- `main.rs`: parses the arguments with clap, calls `orca_term::run`, prints an error and exits 1.
-- `lib.rs`: declares the layer modules; exposes `Cli`, `run` and `output::error` to the binary.
+- `main.rs`: parses the arguments with clap, calls `orca_term::run` and exits with the code it
+  returns, or hands the error to `output::error`, which prints it and returns its exit code.
+- `lib.rs`: declares the layer modules; exposes `Cli`, `run`, `output::error` and
+  `output::Format` to the binary.
 
 ### edge
 
-- `cli.rs`: the clap types for every command and flag, and the dispatch to `ops`.
-- `output.rs`: the only writer to stdout and stderr; renders the fleet table and the reports of
-  `worktree new`, `rm` and `prune`.
-- `output/json.rs`: the JSON documents of `--json`, built as views from domain values, with the
-  `contract` and `version` envelope.
+- `cli.rs`: the clap types for every command and flag, the dispatch to `ops`, and the exit code
+  of a command that did its job (1 when a setup failed).
+- `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
+  `worktree new`, `setup`, `rm` and `prune`, and errors (as text on stderr, or as JSON on stdout
+  with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
+  has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
+  writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
+  handed by `cli` to the ops module.
+- `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`
+  and errors), built as views from domain values, with the `contract` and `version` envelope.
 
 ### ops
 
-- `ops.rs`: what several commands share: reading the fleet and each worktree's state.
+- `ops.rs`: what several commands share: reading the fleet and deriving each worktree's state,
+  finding the worktree a command names, taking a worktree's lock, writing `worktree.json`,
+  reading the config files, and running a worktree's setup.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
-  copy the copy list, write the state file.
+  lock it, copy the copy list, run the setup.
+- `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
+  the setup again.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository.
-- `ops/worktree_rm.rs`: `worktree rm`: find the target, decide the branch's fate, remove, delete
-  or keep the branch.
+- `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
+  `--force`), decide the branch's fate, remove, delete or keep the branch.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune` and what it cleaned.
 
 ### adapters
@@ -56,7 +67,10 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `is_merged`, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating
-  directories, resolving paths through symlinks.
+  directories, resolving paths through symlinks, and a worktree's lock: `WorktreeLock`, taken
+  without waiting, and the read-only probe `ls` uses.
+- `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
+  stdout and stderr merged through one pipe and copied to the setup log and the live echo.
 - `adapters/env.rs`: the current directory, `HOME` and `XDG_CONFIG_HOME`.
 
 ### domain
@@ -68,10 +82,15 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/fleet.rs`: the fleet derived from git's list: the primary checkout apart, names,
   gone worktrees, what a prune cleaned.
 - `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`.
-- `domain/config.rs`: `orca-term.yaml` parsing, the precedence of the config files, `~` and
-  relative path expansion.
-- `domain/state.rs`: a worktree's state and why it is broken, its admin directory, and the
-  `worktree.json` schema rules and bytes.
+- `domain/config.rs`: `orca-term.yaml` parsing (`base`, `scripts.setup`), the precedence of the
+  config files, which checkout supplies the committed file (the primary checkout for `base`, the
+  worktree for `scripts.setup`), `~` and relative path expansion.
+- `domain/state.rs`: a worktree's state and why it is broken or not ready, derived from
+  `worktree.json`, the lock and the setup log; its admin directory; and the `worktree.json`
+  schema rules and bytes.
+- `domain/setup.rs`: the setup: how it ended, what `worktree.json` records, the variables its
+  script gets, the last line of its log, and the reports of the commands that run it.
+- `domain/error.rs`: the typed errors a client tells apart, with their `kind` and exit code.
 - `domain/include.rs`: the copy list: which paths `.worktreeinclude` makes copyable, and the
   rule that a path never escapes the worktree.
 - `domain/contract.rs`: the `contract` and `version` integers every `--json` output carries.
@@ -97,10 +116,23 @@ validate"):
 - `PrimaryCheckout` (`domain/fleet.rs`): the primary checkout's path and branch. The git adapter
   and the config sources take it where they need the primary checkout, so they cannot be handed a
   worktree's path by mistake.
-- `State` and `BrokenReason` (`domain/state.rs`): `NoAgent`, or `Broken` because the directory
-  is missing, git marks it prunable, or the state file cannot be read.
-- `AdminDir` (`domain/state.rs`): the directory holding a worktree's state, and its
-  `worktree.json`.
+- `State` (`domain/state.rs`): `NoAgent`, `SettingUp`, `NotReady(NotReadyReason)` or
+  `Broken(BrokenReason)`. `NotReadyReason` is `Interrupted` (a setup recorded as running whose
+  lock nobody holds) or `Failed` with its `Exit` and the last line of its log. `BrokenReason` says
+  the directory is missing, git marks it prunable, or the state file cannot be read. Broken wins
+  over every other state.
+- `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
+  its `setup.log` and its `lock`.
+- `LockStatus` (`domain/state.rs`): `Held` or `Free`, what the read-only probe of a worktree's
+  lock found.
+- `SetupRecord` and `Exit` (`domain/setup.rs`): what `worktree.json` records about the setup,
+  `Running`, `Succeeded` or `Failed(Exit)`, where `Exit` is a non-zero `Code` or a `Signal`.
+- `SetupOutcome`, `SetupReport` and `SetupDone` (`domain/setup.rs`): what running the setup did
+  (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
+  source, the log, the state it left), and what `worktree setup` did.
+- `TypedError` (`domain/error.rs`): the failures a client tells apart; so far `Busy`.
+- `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
+  only be made by taking the lock, and dropping it releases the lock.
 
 ## Invariants
 
@@ -108,18 +140,38 @@ validate"):
   reads the environment or prints. It takes strings, bytes and parsed values, and returns values,
   decisions or errors. That is why it is unit-tested without a repository.
 - **Only adapters touch the outside world.** Only `adapters/git.rs` starts git, only
-  `adapters/fs.rs` reads or writes files, and only `adapters/env.rs` reads the environment.
+  `adapters/script.rs` starts the setup script, only `adapters/fs.rs` reads or writes files, and
+  only `adapters/env.rs` reads the environment.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
-  Domain types never derive `Serialize` for output.
+  Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
+  makes and `cli` hands down, so ops and adapters never name stdout or stderr.
 - **Each command is one ops module**: a short sequence of adapter and domain calls, readable top
   to bottom. Shared steps go in `ops.rs`.
 - **Dependencies point down**: main > edge > ops > adapters > domain. A module uses its own layer
   or a lower one, through `crate::` paths, never a higher one.
-- **Nothing writes on a read path**: `worktree ls` only reads.
+- **Nothing writes on a read path**: `worktree ls` only reads. It probes a worktree's lock with
+  a non-blocking try that it releases at once, reads the setup log only for a failed setup, and
+  never rewrites an interrupted setup (ADR 0003: volatile facts are checked on read).
+- **Writes to a worktree's state hold its lock.** The function that writes `worktree.json`
+  (`ops::write_state`) takes a `&WorktreeLock`, so a write without the lock does not compile.
+  `worktree ls` reads a setup recorded as running once more when its lock is free, since the
+  setup records its end before releasing the lock. `worktree new` takes the lock as soon as
+  git's worktree exists and holds it until the setup
+  ends; `worktree setup` and `worktree rm` take it without waiting and fail as `busy` when it is
+  held.
+- **A failed setup undoes nothing**: the worktree, its branch and its log stay, and the worktree
+  is not ready until `worktree setup` succeeds.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
   `thiserror` enums (`WorktreeNameError`, `BranchNameError`) whose messages a person can read.
-  Typed errors for failures the client must tell apart, with a JSON `error.kind`, arrive with
-  their first case (#29).
+  Failures the client must tell apart are `TypedError` cases (`domain/error.rs`), carried inside
+  the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
+  stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
+  `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
+  the typed error's (`busy`) or `other`.
+- **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
+  `worktree setup` when the setup failed (the worktree exists and the normal report says it is
+  not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
+  holds.
 
 ## Guards
 
@@ -133,6 +185,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `//! Main: ...`), and the Clippy opt-out outside adapters. Its table of modules and layers is
   `MODULES` in `xtask/src/layers.rs`; a new top-level module is added there on purpose.
 - Clippy `print_stdout` and `print_stderr` keep printing in `output`.
+- The compiler keeps writes to a worktree's state under its lock: `ops::write_state` takes a
+  `&WorktreeLock`, which only taking the lock can make.
 
 ## Tests
 

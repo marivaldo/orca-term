@@ -7,11 +7,9 @@ use clap::Parser;
 use orca_term::{Cli, output};
 
 fn main() -> ExitCode {
-    match orca_term::run(&Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            output::error(&err);
-            ExitCode::FAILURE
-        }
+    let cli = Cli::parse();
+    match orca_term::run(&cli) {
+        Ok(code) => code,
+        Err(err) => output::error(&err, cli.format()),
     }
 }

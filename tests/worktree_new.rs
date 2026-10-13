@@ -10,6 +10,10 @@
     reason = "a black-box test builds real repositories and files around the binary it drives"
 )]
 
+#[expect(
+    dead_code,
+    reason = "the fixture is shared between suites, and this one leaves part of it unused"
+)]
 mod support;
 
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -425,7 +429,10 @@ fn the_worktree_state_is_written_to_the_admin_dir_and_lists_as_no_agent() {
     let state: Value =
         serde_json::from_slice(&std::fs::read(Path::new(&admin).join("worktree.json")).unwrap())
             .unwrap();
-    assert_eq!(state, serde_json::json!({"schema": 1, "agent": null}));
+    assert_eq!(
+        state,
+        serde_json::json!({"schema": 1, "agent": null, "setup": null})
+    );
     assert!(!worktree.join(".orca-term").exists());
     assert_eq!(git_in(&repo, &worktree, &["status", "--porcelain"]), "");
 
