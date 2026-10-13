@@ -1,0 +1,4 @@
+# selene, the Lua linter: https://kampfkarren.github.io/selene/
+# `vim` is the standard library defined in vim.yml: Lua 5.1 plus Neovim's globals, the approach
+# lazy.nvim uses (https://github.com/folke/lazy.nvim/blob/306a05526ada86a7b30af95c5cc81ffba93fef97/vim.yml).
+std = "vim"

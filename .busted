@@ -1,0 +1,12 @@
+-- busted's settings. `busted` runs every spec/*_spec.lua inside headless Neovim: busted starts
+-- itself again under nlua, which runs Lua through `nvim -l`. `just lua-test` sets up the paths.
+return {
+  _all = {
+    lua = 'nlua',
+    lpath = 'lua/?.lua;lua/?/init.lua;spec/?.lua',
+    ROOT = { 'spec' },
+  },
+  default = {
+    verbose = true,
+  },
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "LuaJIT",
+  "workspace.library": [
+    "$VIMRUNTIME",
+    "${3rd}/luv/library",
+    "${3rd}/busted/library",
+    "${3rd}/luassert/library"
+  ],
+  "workspace.checkThirdParty": "Disable",
+  "workspace.ignoreDir": [".rocks", "target"],
+  "diagnostics.groupFileStatus": {
+    "strict": "Any",
+    "type-check": "Any"
+  },
+  "diagnostics.groupSeverity": {
+    "strict": "Warning",
+    "type-check": "Warning"
+  },
+  "diagnostics.unusedLocalExclude": ["_*"]
+}
