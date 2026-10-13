@@ -15,3 +15,5 @@ lint.
 - `tab`: Neovim's tabpage, which each worktree gets one of.
 - `unit`: unit tests.
 - `thread`: Rust's `std::thread`, never a session.
+- `plugin`: Neovim's `plugin/` directory, and the Lua plugin that is the Neovim client; never the core.
+- `server`: `lua-language-server`, the name of LuaLS's binary; never the core or a holder.
