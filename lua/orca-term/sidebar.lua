@@ -6,7 +6,8 @@
 --
 -- The fleet is read when the sidebar opens and when Neovim gains focus; there is no timer. Opening
 -- never moves the cursor out of the person's window and never resizes their windows beyond the
--- split itself; closing only closes the sidebar's windows.
+-- split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
+-- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
 
 local core = require('orca-term.core')
 local highlights = require('orca-term.highlights')
@@ -230,6 +231,52 @@ local function hide(win)
   vim.o.eadirection = eadirection
 end
 
+---The windows of `tab` other than the sidebar's, leaving out floating windows.
+---@param tab integer
+---@return integer[]
+local function other_windows(tab)
+  local found = {}
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    local floating = vim.api.nvim_win_get_config(win).relative ~= ''
+    if vim.api.nvim_win_get_buf(win) ~= state.buf and not floating then
+      table.insert(found, win)
+    end
+  end
+  return found
+end
+
+---Before `:q` (`:wq`, `ZZ`) on the last window of the tab that is not the sidebar, closes the
+---tab's sidebar, so the `:q` closes the tab, or quits Neovim in the last tab, as it would without
+---the sidebar.
+local function before_quit()
+  local current = vim.api.nvim_get_current_win()
+  local tab = vim.api.nvim_get_current_tabpage()
+  local others = other_windows(tab)
+  local sidebar = window_in(tab)
+  if sidebar and #others == 1 and others[1] == current then
+    vim.api.nvim_win_close(sidebar, true)
+  end
+end
+
+---After a window closes without `:q` (`<C-w>c`, `:close`), closes its tab when only the sidebar is
+---left in it. The last tab is left as it is: quitting Neovim for the person would be worse.
+---@param closed integer the window being closed, still in the layout
+local function after_close(closed)
+  if not vim.api.nvim_win_is_valid(closed) then
+    return
+  end
+  local tab = vim.api.nvim_win_get_tabpage(closed)
+  -- WinClosed runs before the window leaves the layout: look once it is gone.
+  vim.schedule(function()
+    if not vim.api.nvim_tabpage_is_valid(tab) or #vim.api.nvim_list_tabpages() == 1 then
+      return
+    end
+    if window_in(tab) and #other_windows(tab) == 0 then
+      vim.cmd.tabclose(vim.api.nvim_tabpage_get_number(tab))
+    end
+  end)
+end
+
 ---Shows the sidebar in every tab, and in every tab made later, until it is closed.
 function M.open()
   highlights.define()
@@ -247,6 +294,18 @@ function M.open()
     desc = 'orca-term: show the sidebar in this tab',
     callback = function()
       show_in(vim.api.nvim_get_current_tabpage())
+    end,
+  })
+  vim.api.nvim_create_autocmd('QuitPre', {
+    group = group,
+    desc = "orca-term: let :q on the tab's last window close the tab, not leave the sidebar",
+    callback = before_quit,
+  })
+  vim.api.nvim_create_autocmd('WinClosed', {
+    group = group,
+    desc = 'orca-term: close a tab left with only the sidebar',
+    callback = function(args)
+      after_close(tonumber(args.match) or -1)
     end,
   })
   vim.api.nvim_create_autocmd('FocusGained', {
