@@ -97,11 +97,13 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
 fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
     match command {
         WorktreeCommand::New { name, .. } => {
+            output::creating_worktree(name, format);
             let created = worktree_new::run(name, &mut *output::live_echo(format))?;
             output::worktree_created(&created, format)?;
             Ok(exit_code(&created.setup))
         }
         WorktreeCommand::Setup { worktree, .. } => {
+            output::running_setup(worktree, format);
             let done = worktree_setup::run(worktree, &mut *output::live_echo(format))?;
             output::worktree_set_up(&done, format)?;
             Ok(exit_code(&done.setup))

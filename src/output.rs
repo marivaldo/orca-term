@@ -2,8 +2,9 @@
 //! JSON documents live in `output::json`.
 //!
 //! Reports and JSON documents go to stdout. Errors go to stderr, or to stdout as a JSON document
-//! with `--json`. A setup script's output is echoed live to stderr, through the writer
-//! [`live_echo`] hands to the command, and never with `--json`.
+//! with `--json`. A command that may run a setup first says on stderr what it starts (`creating
+//! worktree fix...`), and the setup script's output follows there live, through the writer
+//! [`live_echo`] hands to the command; neither appears with `--json`.
 
 mod json;
 
@@ -16,7 +17,7 @@ use crate::domain::error;
 use crate::domain::fleet::Fleet;
 use crate::domain::include;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
-use crate::domain::worktree::{BranchOutcome, Created, Removed};
+use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
 /// How a command prints its result and its errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,27 @@ impl Format {
     /// The format a command's `--json` flag asks for.
     pub(crate) fn from_json_flag(json: bool) -> Self {
         if json { Self::Json } else { Self::Text }
+    }
+}
+
+/// Says on stderr that `worktree new` is creating the worktree `name`, before the setup's live
+/// output, which may take minutes. Nothing with `--json`.
+pub(crate) fn creating_worktree(name: &WorktreeName, format: Format) {
+    progress(&format!("creating worktree {name}..."), format);
+}
+
+/// Says on stderr that `worktree setup` is running the setup of `target`, before its live output.
+/// Nothing with `--json`.
+pub(crate) fn running_setup(target: &Target, format: Format) {
+    progress(&format!("running the setup of {target}..."), format);
+}
+
+fn progress(line: &str, format: Format) {
+    if format == Format::Text {
+        #[expect(clippy::print_stderr, reason = "this module owns the process's output")]
+        {
+            eprintln!("{line}");
+        }
     }
 }
 

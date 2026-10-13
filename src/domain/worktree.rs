@@ -83,6 +83,16 @@ pub(crate) enum Target {
     Path(PathBuf),
 }
 
+/// The target as the person wrote it.
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => f.write_str(name),
+            Self::Path(path) => write!(f, "{}", path.display()),
+        }
+    }
+}
+
 /// A target is a path when it contains `/` or is `.` or `..`, and a name otherwise.
 impl FromStr for Target {
     type Err = Infallible;
@@ -341,6 +351,8 @@ mod tests {
         assert_eq!(target("/l/fix"), Target::Path(PathBuf::from("/l/fix")));
         assert_eq!(target("."), Target::Path(PathBuf::from(".")));
         assert_eq!(target(".."), Target::Path(PathBuf::from("..")));
+        assert_eq!(target("fix").to_string(), "fix");
+        assert_eq!(target("a/fix").to_string(), "a/fix");
     }
 
     #[test]

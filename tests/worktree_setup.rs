@@ -153,9 +153,10 @@ fn setup_runs_in_the_new_worktree_with_its_variables_and_is_logged_in_the_admin_
         std::fs::read_to_string(&log).unwrap(),
         "to-stdout\nto-stderr\n"
     );
-    assert!(
-        stderr(&out).contains("to-stdout\nto-stderr\n"),
-        "echoed live"
+    assert_eq!(
+        stderr(&out),
+        "creating worktree fix...\nto-stdout\nto-stderr\n",
+        "on stderr, orca-term says what it starts before the setup's live output"
     );
     let report = stdout(&out);
     assert!(
@@ -262,6 +263,7 @@ fn worktree_setup_runs_the_script_again_and_a_success_makes_the_worktree_ready()
     let out = orca_term(&repo, &["worktree", "setup", "fix"]);
 
     assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "running the setup of fix...\nall good\n");
     assert!(stdout(&out).starts_with("worktree fix is ready\n"));
     assert_eq!(listed(&repo)["state"], "no_agent");
     let log = admin_dir(&repo, &worktree).join("setup.log");
