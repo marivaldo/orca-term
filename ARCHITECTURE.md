@@ -1,6 +1,7 @@
 # Architecture
 
-This file is the map of the `orca-term` core: where each concept lives and the rules the code keeps.
+This file is the map of `orca-term`, its core and its Neovim client: where each concept lives and the
+rules the code keeps.
 Read it before changing the code; update it when a module moves. The words follow the glossary in
 `CONTEXT.md`, and the decision behind the shape is ADR 0010 (`docs/adr/`).
 
@@ -194,4 +195,36 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   built by `tests/support/mod.rs`, and check what a person or the client sees.
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
   each domain and edge module. Adapters keep the few tests that need a real directory.
+- **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
+  headless Neovim against the binary `cargo build` makes, in throwaway git repositories built by
+  `spec/support.lua`. See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
+
+## Neovim client
+
+The Neovim client is Lua at the repository root, beside the crate (ADR 0008), laid out as a
+Neovim plugin: Neovim runs `plugin/` at startup and `require` finds the modules in `lua/`. It needs
+Neovim 0.11 or later. The client is thin: it runs the core's commands with `--json` and shows
+what they print.
+
+- `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command, with completion of the
+  subcommands, and nothing else.
+- `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
+  the core binary). Calling setup() is optional; `config` holds the defaults until then.
+- `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
+  `target/release/orca-term` or `target/debug/orca-term` in the repository the client is loaded
+  from, else `orca-term` on PATH. Each command (so far `worktree_ls`) runs the binary with
+  `--json`, waits for it, decodes the JSON and refuses a document whose `contract` differs from
+  the client's own `CONTRACT`. It returns the document, or `nil` and an error `{ kind, message }`
+  whose message names the fix; it never throws.
+- `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`, a stub until issue #30 builds the sidebar.
+
+Its rules:
+
+- **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
+  other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
+  `lua/` or `plugin/`.
+- **The client never computes state.** The fleet, each worktree's state and every decision come
+  from the core's JSON; the client renders them. No logic is bound to the Neovim process.
+- **No global keymap.** Every key the client adds is local to one of its buffers;
+  `spec/plugin_spec.lua` checks that loading the client defines no global keymap.

@@ -23,6 +23,23 @@ Needs Rust 1.97 and [just](https://github.com/casey/just). `just check` runs eve
 see `docs/harness.md` for the tools it expects and the rules it enforces. `just hooks` installs the
 local git hooks (needs [lefthook](https://github.com/evilmartians/lefthook)).
 
+### Tools for the Neovim client
+
+`just lua`, part of `just check`, formats, lints and type-checks the Lua and runs its specs in
+headless Neovim. It needs Neovim 0.11 or later, [StyLua](https://github.com/JohnnyMorganz/StyLua),
+[selene](https://github.com/Kampfkarren/selene),
+[lua-language-server](https://github.com/LuaLS/lua-language-server) and
+[LuaRocks](https://luarocks.org) with LuaJIT. Set them up once; on macOS with Homebrew:
+
+```sh
+brew install neovim luajit stylua selene lua-language-server luarocks
+just lua-rocks   # installs busted and nlua, pinned, into .rocks/ (ignored by git)
+```
+
+On Linux, CI shows the way: the tools come from their GitHub releases at the versions pinned in
+`.github/workflows/check.yml`, LuaRocks and the Lua 5.1 headers from the distribution
+(`luarocks liblua5.1-0-dev` on Ubuntu), then `just lua-rocks`.
+
 ## Scope
 
 In: parallel agents in isolated worktrees, diff review that can feed comments back to the agent
