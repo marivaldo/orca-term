@@ -19,6 +19,13 @@ Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the cu
 and `orca-term agent start|attach|stop <worktree>` run claude in one of them, inside claude's own
 sandbox, held by a detached process that any terminal can attach to.
 
+In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
+pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree and `.` runs
+its setup again, copies its path or removes it (always asking first). `:OrcaTerm jump` picks a
+worktree and `:OrcaTerm worktree N` goes to the Nth; bind keys to `<Plug>(OrcaTermSidebar)`,
+`<Plug>(OrcaTermJump)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
+client sets no global key.
+
 ## Development
 
 Needs Rust 1.97 and [just](https://github.com/casey/just). `just check` runs every check CI runs;

@@ -337,7 +337,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
   headless Neovim against the binary `cargo build` makes, in throwaway git repositories built by
   `spec/support.lua`. The sidebar's text and highlights are compared with
-  `spec/golden/sidebar.txt` (`UPDATE_GOLDEN=1 just lua-test` rewrites it). See "Neovim client"
+  `spec/golden/sidebar.txt` (`UPDATE_GOLDEN=1 just lua-test` rewrites it). The person's answers
+  and the notifications go through `support.stub_ui` (stubs of `vim.ui.input`, `vim.ui.select` and
+  `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. See "Neovim client"
   below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
@@ -348,16 +350,22 @@ Neovim plugin: Neovim runs `plugin/` at startup and `require` finds the modules 
 Neovim 0.11 or later. The client is thin: it runs the core's commands with `--json` and shows
 what they print.
 
-- `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command, with completion of the
-  subcommands, and the `<Plug>(OrcaTermSidebar)` map, and nothing else.
+- `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
+  `worktree N`), with completion of the subcommands, and the `<Plug>(OrcaTermSidebar)`,
+  `<Plug>(OrcaTermJump)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and
+  nothing else.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
   `target/release/orca-term` or `target/debug/orca-term` in the repository the client is loaded
-  from, else `orca-term` on PATH. Each command (so far `worktree_ls`) runs the binary with
-  `--json`, waits for it, decodes the JSON and refuses a document whose `contract` differs from
-  the client's own `CONTRACT`. It returns the document, or `nil` and an error `{ kind, message }`
-  whose message names the fix; it never throws.
+  from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
+  and refuses a document whose `contract` differs from the client's own `CONTRACT`.
+  `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` and `worktree_rm`
+  (which may run a setup for minutes) do not: `vim.system` runs them with no time limit and their
+  result reaches a callback through `vim.schedule`. Each gives the document, or `nil` and an error
+  `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
+  client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
+  throws.
 - `lua/orca-term/fleet.lua`: the attention order, pure: each worktree's rank (1 waiting to 8 no
   agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank then
   name (recency joins when the core prints it).
@@ -371,22 +379,44 @@ what they print.
   to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` so a person's own definition wins.
 - `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
-  the fleet through `core.lua` on open and on `FocusGained`, paints what `render.lua` returns, and
-  keeps the selection (a worktree's path) across refreshes. Its only keys, `j` and `k`, are local
-  to its buffer. A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
+  the fleet through `core.lua` on open, on `FocusGained` and when an action asks (`refresh()`),
+  paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
+  on `TabEnter` and on `DirChanged` of a tab, the worktree whose directory is the tab's becomes
+  the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
+  the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
+  creates a worktree and `.` opens the menu of the worktree under the cursor (through
+  `actions.lua`). A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
   other window it closes the tab's sidebar first, and on `WinClosed` it closes a tab left with
   only the sidebar (unless it is the last tab).
+- `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
+  (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
+  time, never remembered. `go_to` enters it and focuses its main window (not the sidebar), or
+  makes it after the last tab with `$tabnew` and `:tcd`; `close_all` closes every tab of a
+  worktree after its removal, pointing the last tab at the primary checkout instead.
+- `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
+  `vim.ui.select` and told through `vim.notify`: `create` (`a`), `menu` (`.`: `run_setup`,
+  `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth` (`:OrcaTerm worktree N`), the
+  last two in the sidebar's order (`render.fleet(...).order`). `worktree new` and `worktree setup`
+  run without blocking: the sidebar is read again 500 ms after they start (showing *setting up*)
+  and when they finish. `remove` always asks first; a `dirty` refusal asks once more before
+  `--force`; `busy` is only reported. It touches no window or buffer.
 
 Its rules:
 
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
-- **Only `sidebar.lua` touches windows and buffers; `fleet.lua` and `render.lua` are pure.**
-  The order and the look are plain functions of the fleet, tested without a window; the sidebar
-  only paints them. `cargo xtask client-boundary` refuses a window or buffer call anywhere else,
+- **Only `sidebar.lua` and `tabs.lua` touch windows, tabs and buffers; `fleet.lua` and
+  `render.lua` are pure.** The order and the look are plain functions of the fleet, tested without
+  a window; the sidebar only paints them, and `actions.lua` moves between tabs only through
+  `tabs.lua`. `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd`
+  that splits or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else,
   and any `vim.api` or `vim.cmd` in the pure modules.
+- **A worktree is independent of its tabs.** Opening, closing or moving a tab never changes a
+  worktree; only `actions.lua`, through the core, creates, sets up or removes one, and removing
+  always asks for confirmation (twice when it would discard changes).
 - **The client never computes state.** The fleet, each worktree's state and every decision come
   from the core's JSON; the client renders them. No logic is bound to the Neovim process.
-- **No global keymap.** Every key the client adds is local to one of its buffers;
+- **No global keymap.** Every key the client adds is local to one of its buffers, and the
+  commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
