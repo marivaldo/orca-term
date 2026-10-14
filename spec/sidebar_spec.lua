@@ -278,6 +278,6 @@ describe('the sidebar', function()
       table.insert(keys, keymap.lhs)
     end
     table.sort(keys)
-    assert.are.same({ 'j', 'k' }, keys)
+    assert.are.same({ '.', '<CR>', 'a', 'j', 'k' }, keys)
   end)
 end)
