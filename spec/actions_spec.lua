@@ -302,7 +302,8 @@ describe('the worktree actions', function()
         return #ui.prompts == 3
       end, 'the second confirmation')
       assert.are.equal(
-        'alpha has uncommitted changes. Remove anyway, discarding them?',
+        'alpha has uncommitted changes. Remove anyway, discarding them and deleting its branch '
+          .. 'even if unmerged?',
         ui.prompts[3]
       )
       assert.are.same({ 'Remove anyway', 'Cancel' }, ui.shown[3])

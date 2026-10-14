@@ -127,13 +127,15 @@ local function removal_message(removed)
   return 'removed worktree ' .. removed.name
 end
 
----Asks whether to remove `worktree` although it has changes, discarding them.
+---Asks whether to remove `worktree` although it has changes. Forcing discards them and also
+---deletes the worktree's branch, merged or not, so the question says both.
 ---@param worktree orca_term.Worktree
 ---@param on_yes fun()
 local function confirm_discarding(worktree, on_yes)
-  local prompt = ('%s has uncommitted changes. Remove anyway, discarding them?'):format(
-    worktree.name
-  )
+  local prompt = (
+    '%s has uncommitted changes. Remove anyway, discarding them and deleting its branch even if '
+    .. 'unmerged?'
+  ):format(worktree.name)
   vim.ui.select({ 'Remove anyway', 'Cancel' }, { prompt = prompt }, function(choice)
     if choice == 'Remove anyway' then
       on_yes()
