@@ -2,7 +2,7 @@
 //! (`ARCHITECTURE.md`, "Neovim client"):
 //!
 //! - only `lua/orca-term/core.lua` starts processes; every other file reaches the core through it;
-//! - only `lua/orca-term/sidebar.lua` touches windows and buffers;
+//! - only `lua/orca-term/sidebar.lua` and `lua/orca-term/tabs.lua` touch windows, tabs and buffers;
 //! - `lua/orca-term/fleet.lua` and `lua/orca-term/render.lua` are pure: no `vim.api`, no `vim.cmd`.
 //!
 //! The check is textual, like the layers lint: `--` comments are skipped, and each line of each Lua
@@ -31,21 +31,32 @@ const PROCESS_CALLS: &[&str] = &[
     "os.execute",
 ];
 
-/// The one file allowed to touch windows and buffers.
-const SIDEBAR_MODULE: &str = "lua/orca-term/sidebar.lua";
+/// The files allowed to touch windows, tabs and buffers: the sidebar, and the worktrees' tabs.
+const WINDOW_MODULES: &[&str] = &["lua/orca-term/sidebar.lua", "lua/orca-term/tabs.lua"];
+
+/// The same files, as the findings name them.
+const WINDOW_MODULES_TEXT: &str = "lua/orca-term/sidebar.lua and lua/orca-term/tabs.lua";
 
 /// Calls that open, change or read windows, tabs and buffers. A prefix such as `nvim_win_` stands
-/// for every API function that starts with it. A `vim.cmd` that splits is caught apart, by
-/// [`splits_with_vim_cmd`].
+/// for every API function that starts with it (`nvim_set_current_` covers the window, the tab and
+/// the buffer). A `vim.cmd` that splits or works tabs is caught apart, by [`splits_with_vim_cmd`]
+/// and [`works_tabs_with_vim_cmd`].
 const WINDOW_CALLS: &[&str] = &[
     "nvim_open_win",
     "nvim_win_",
     "nvim_buf_",
     "nvim_create_buf",
     "nvim_tabpage_",
+    "nvim_set_current_",
+    "nvim_list_wins",
+    "nvim_list_tabpages",
+    "nvim_list_bufs",
     "vim.bo",
     "vim.wo",
 ];
+
+/// Ex commands that open, close or point tabs elsewhere.
+const TAB_COMMANDS: &[&str] = &["tabnew", "tabedit", "tabclose", "tabonly", "tcd", "tchdir"];
 
 /// The files that must stay pure: data in, data out.
 const PURE_MODULES: &[&str] = &["lua/orca-term/fleet.lua", "lua/orca-term/render.lua"];
@@ -99,22 +110,27 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
                 ));
             }
         }
-        if path != SIDEBAR_MODULE {
+        if !WINDOW_MODULES.contains(&path) {
             for call in WINDOW_CALLS.iter().filter(|call| calls(code, call)) {
                 problems.push(format!(
-                    "{at}: `{call}` touches windows or buffers; only {SIDEBAR_MODULE} may"
+                    "{at}: `{call}` touches windows or buffers; only {WINDOW_MODULES_TEXT} may"
                 ));
             }
             if splits_with_vim_cmd(code) {
                 problems.push(format!(
-                    "{at}: `vim.cmd` opens a split; only {SIDEBAR_MODULE} may open windows"
+                    "{at}: `vim.cmd` opens a split; only {WINDOW_MODULES_TEXT} may open windows"
+                ));
+            }
+            if works_tabs_with_vim_cmd(code) {
+                problems.push(format!(
+                    "{at}: `vim.cmd` opens, closes or moves a tab; only {WINDOW_MODULES_TEXT} may"
                 ));
             }
         }
         if PURE_MODULES.contains(&path) {
             for call in IMPURE_CALLS.iter().filter(|call| calls(code, call)) {
                 problems.push(format!(
-                    "{at}: `{call}` is not allowed in a pure module; move it to {SIDEBAR_MODULE}"
+                    "{at}: `{call}` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua or lua/orca-term/tabs.lua"
                 ));
             }
         }
@@ -126,6 +142,23 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
 /// `vim.cmd('topleft vsplit')` or `vim.cmd.vsplit()`.
 fn splits_with_vim_cmd(code: &str) -> bool {
     calls(code, "vim.cmd") && code.contains("split")
+}
+
+/// Whether `code` runs an Ex command that opens, closes or points a tab elsewhere through
+/// `vim.cmd`, such as `vim.cmd('$tabnew')`, `vim.cmd.tcd(dir)` or `vim.cmd('tabclose! 2')`.
+fn works_tabs_with_vim_cmd(code: &str) -> bool {
+    calls(code, "vim.cmd") && TAB_COMMANDS.iter().any(|command| has_word(code, command))
+}
+
+/// Whether `code` holds `word` with no letter, digit or `_` on either side (`tcd` is not in
+/// `etcd`).
+fn has_word(code: &str, word: &str) -> bool {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices(word).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let after = code[at + word.len()..].chars().next();
+        !before.is_some_and(is_name) && !after.is_some_and(is_name)
+    })
 }
 
 /// Whether `code` holds `call` as a name of its own, not the tail of a longer one
@@ -190,11 +223,39 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_module_may_touch_windows_and_buffers() {
+    fn the_sidebar_and_tabs_modules_may_touch_windows_tabs_and_buffers() {
         let text = "local win = vim.api.nvim_open_win(buf, false, {})\n\
                     vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})\n\
-                    vim.wo[win].number = false\nvim.cmd('topleft vsplit')\n";
-        assert!(check_file("lua/orca-term/sidebar.lua", text).is_empty());
+                    vim.wo[win].number = false\nvim.cmd('topleft vsplit')\n\
+                    vim.cmd('$tabnew')\nvim.cmd.tcd(dir)\nvim.cmd('tabclose! 2')\n\
+                    vim.api.nvim_set_current_tabpage(tab)\n";
+        for path in WINDOW_MODULES {
+            assert!(check_file(path, text).is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn any_other_client_file_working_tabs_is_refused() {
+        let text = "vim.cmd('$tabnew')\nvim.cmd.tcd(dir)\nvim.cmd('tabclose! ' .. n)\n\
+                    vim.cmd.tabonly()\nvim.api.nvim_set_current_tabpage(tab)\n\
+                    vim.api.nvim_list_tabpages()\nvim.api.nvim_set_current_win(win)\n";
+        let problems = check_file("lua/orca-term/actions.lua", text);
+        assert_eq!(problems.len(), 7, "{problems:#?}");
+        assert_eq!(
+            problems[0],
+            "lua/orca-term/actions.lua:1: `vim.cmd` opens, closes or moves a tab; only lua/orca-term/sidebar.lua and lua/orca-term/tabs.lua may"
+        );
+        assert_eq!(
+            problems[4],
+            "lua/orca-term/actions.lua:5: `nvim_set_current_` touches windows or buffers; only lua/orca-term/sidebar.lua and lua/orca-term/tabs.lua may"
+        );
+    }
+
+    #[test]
+    fn a_tab_command_is_a_word_of_its_own() {
+        assert!(works_tabs_with_vim_cmd("vim.cmd.tcd(path)"));
+        assert!(!works_tabs_with_vim_cmd("vim.cmd('echo etcd')"));
+        assert!(!works_tabs_with_vim_cmd("local tabnew_count = 1"));
     }
 
     #[test]
@@ -207,11 +268,11 @@ mod tests {
         assert_eq!(problems.len(), 9, "{problems:#?}");
         assert_eq!(
             problems[0],
-            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua may"
+            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua and lua/orca-term/tabs.lua may"
         );
         assert_eq!(
             problems[7],
-            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua may open windows"
+            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua and lua/orca-term/tabs.lua may open windows"
         );
     }
 
@@ -224,10 +285,10 @@ mod tests {
                 check_file(path, text),
                 [
                     format!(
-                        "{path}:2: `vim.api` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua"
+                        "{path}:2: `vim.api` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua or lua/orca-term/tabs.lua"
                     ),
                     format!(
-                        "{path}:3: `vim.cmd` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua"
+                        "{path}:3: `vim.cmd` is not allowed in a pure module; move it to lua/orca-term/sidebar.lua or lua/orca-term/tabs.lua"
                     ),
                 ]
             );
