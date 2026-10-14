@@ -68,8 +68,9 @@ lua-rocks:
 deny:
     cargo deny check
 
-# Spelling, workflows, vocabulary, layers, the client boundary, commit messages and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab layers client-boundary (commit-lint range) guard-test
+# Spelling, workflows, vocabulary, layers, the client boundary, the launch guard, commit messages
+# and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree.
 typos *files:
@@ -90,6 +91,11 @@ layers:
 # fleet.lua and render.lua are pure.
 client-boundary:
     cargo xtask client-boundary
+
+# No launch of an agent bypasses permissions: the forbidden flags and modes are named only in the
+# run-time guard, src/domain/launch.rs.
+launch-guard:
+    cargo xtask launch-guard
 
 # Lints every commit in the range; skipped when its base does not exist (no remote yet).
 commit-lint range="origin/main..HEAD":

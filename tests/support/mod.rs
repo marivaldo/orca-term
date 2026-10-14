@@ -101,15 +101,24 @@ impl Repo {
     /// The `orca-term` binary started in the background from `dir` with `args` and the fixture's
     /// environment, for tests that act while it runs. Its output is discarded.
     pub(crate) fn spawn_orca_term(&self, dir: &Path, args: &[&str]) -> Child {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_orca-term"));
-        cmd.current_dir(dir)
+        self.command(dir)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// The `orca-term` binary as a plain `Command`, to run from `dir` with the fixture's
+    /// environment, for tests that drive it themselves.
+    pub(crate) fn command(&self, dir: &Path) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_orca-term"));
+        cmd.current_dir(dir)
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.xdg);
-        self.env(&mut cmd).spawn().unwrap()
+        self.env(&mut cmd);
+        cmd
     }
 
     fn env<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {

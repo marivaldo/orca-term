@@ -1,14 +1,20 @@
 //! Edge: the command-line surface. It parses the arguments, hands each command to its ops module
 //! and gives the result to `output`.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::adapters::terminal::DetachKey;
+use crate::domain::agent::Size;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
-use crate::ops::{worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_setup};
+use crate::ops::{
+    agent_attach, agent_holder, agent_start, agent_stop, worktree_ls, worktree_new, worktree_prune,
+    worktree_rm, worktree_setup,
+};
 use crate::output::{self, Format};
 
 #[derive(Debug, Parser)]
@@ -29,6 +35,11 @@ enum Command {
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
+    },
+    /// Run a worktree's agent: start it in a detached holder, attach a terminal to it, stop it.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
 }
 
@@ -71,6 +82,58 @@ enum WorktreeCommand {
     Prune,
 }
 
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Start claude in a worktree, inside its sandbox, held by a detached process.
+    Start {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The agent's first terminal height, in rows (default: this terminal's, else 24).
+        #[arg(long)]
+        rows: Option<u16>,
+        /// The agent's first terminal width, in columns (default: this terminal's, else 80).
+        #[arg(long)]
+        cols: Option<u16>,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Attach this terminal to a worktree's running agent; Ctrl-\ detaches and leaves it running.
+    Attach {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Let no key detach: only closing the terminal does (for Neovim, whose terminal uses
+        /// Ctrl-\ itself).
+        #[arg(long)]
+        no_detach_key: bool,
+    },
+    /// Stop a worktree's agent and wait for its holder to end.
+    Stop {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The holder process itself, started by `agent start`.
+    #[command(hide = true)]
+    Holder {
+        /// The worktree's admin directory, absolute.
+        #[arg(long)]
+        admin: PathBuf,
+        /// The worktree, absolute.
+        #[arg(long)]
+        worktree: PathBuf,
+        #[arg(long)]
+        rows: u16,
+        #[arg(long)]
+        cols: u16,
+        /// The agent's command line, program first.
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
+    },
+}
+
 impl Cli {
     /// How the command asked for its output, which is also how its error is printed.
     pub fn format(&self) -> Format {
@@ -80,6 +143,10 @@ impl Cli {
                 | WorktreeCommand::New { json, .. }
                 | WorktreeCommand::Setup { json, .. } => *json,
                 WorktreeCommand::Rm { .. } | WorktreeCommand::Prune => false,
+            },
+            Command::Agent { command } => match command {
+                AgentCommand::Start { json, .. } | AgentCommand::Stop { json, .. } => *json,
+                AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
         };
         Format::from_json_flag(json)
@@ -91,6 +158,7 @@ impl Cli {
 pub fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Command::Worktree { command } => run_worktree(command, cli.format()),
+        Command::Agent { command } => run_agent(command, cli.format()),
     }
 }
 
@@ -130,6 +198,48 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        AgentCommand::Start {
+            worktree,
+            rows,
+            cols,
+            ..
+        } => {
+            let started = agent_start::run(worktree, *rows, *cols)?;
+            output::agent_started(&started, format)?;
+        }
+        AgentCommand::Attach {
+            worktree,
+            no_detach_key,
+        } => {
+            let detach_key = if *no_detach_key {
+                DetachKey::None
+            } else {
+                DetachKey::CtrlBackslash
+            };
+            output::attach_ended(&agent_attach::run(worktree, detach_key)?);
+        }
+        AgentCommand::Stop { worktree, .. } => {
+            output::agent_stopped(&agent_stop::run(worktree)?, format)?;
+        }
+        AgentCommand::Holder {
+            admin,
+            worktree,
+            rows,
+            cols,
+            argv,
+        } => {
+            let size = Size {
+                rows: *rows,
+                cols: *cols,
+            };
+            agent_holder::run(admin.clone(), worktree.clone(), size, argv.clone())?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// A failed setup leaves the worktree not ready and the command exits 1.

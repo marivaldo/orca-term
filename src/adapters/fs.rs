@@ -58,6 +58,44 @@ pub(crate) fn create_dir_all(path: &Path) -> Result<()> {
     fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))
 }
 
+/// Removes the file at `path`; nothing to do when it does not exist.
+pub(crate) fn remove_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("could not remove {}", path.display())),
+    }
+}
+
+/// The subdirectories of `dir`, sorted by name. Empty when `dir` does not exist.
+pub(crate) fn list_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("could not list {}", dir.display())),
+    };
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("could not list {}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    Ok(dirs)
+}
+
+/// The first of `dirs` holding an executable regular file named `name`: what a shell finds for
+/// `name` with those directories as PATH.
+pub(crate) fn executable_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    dirs.iter().map(|dir| dir.join(name)).find(|candidate| {
+        fs::metadata(candidate)
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
+}
+
 /// `path` made absolute with every symlink resolved. Fails when it does not exist.
 pub(crate) fn canonicalize(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
@@ -180,19 +218,37 @@ impl WorktreeLock {
 /// directory and the lock file when missing. `None` when another process holds it.
 pub(crate) fn try_lock_worktree(admin: &AdminDir) -> Result<Option<WorktreeLock>> {
     create_dir_all(admin.path())?;
-    let path = admin.lock_file();
+    Ok(
+        try_lock_file(&admin.lock_file())?.map(|FileLock(file)| WorktreeLock {
+            admin: admin.clone(),
+            _file: file,
+        }),
+    )
+}
+
+/// Whether the lock of the worktree whose admin directory is `admin` is held right now. Only
+/// reads: a missing lock file is a free lock, and a lock taken to find out is released at once.
+pub(crate) fn lock_status(admin: &AdminDir) -> Result<LockStatus> {
+    lock_status_at(&admin.lock_file())
+}
+
+/// An exclusive `flock` on a file, held until the value is dropped or the process dies. The
+/// holder keeps one on `agent.lock` for its whole life.
+#[derive(Debug)]
+pub(crate) struct FileLock(File);
+
+/// Takes an exclusive `flock` on the file at `path` without waiting, creating the file when
+/// missing. `None` when another process holds it.
+pub(crate) fn try_lock_file(path: &Path) -> Result<Option<FileLock>> {
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)
+        .open(path)
         .with_context(|| format!("could not open {}", path.display()))?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(WorktreeLock {
-            admin: admin.clone(),
-            _file: file,
-        })),
+        Ok(()) => Ok(Some(FileLock(file))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(err)) => {
             Err(err).with_context(|| format!("could not lock {}", path.display()))
@@ -200,11 +256,10 @@ pub(crate) fn try_lock_worktree(admin: &AdminDir) -> Result<Option<WorktreeLock>
     }
 }
 
-/// Whether the lock of the worktree whose admin directory is `admin` is held right now. Only
-/// reads: a missing lock file is a free lock, and a lock taken to find out is released at once.
-pub(crate) fn lock_status(admin: &AdminDir) -> Result<LockStatus> {
-    let path = admin.lock_file();
-    let file = match File::open(&path) {
+/// Whether the file at `path` is locked right now. Only reads: a missing file is a free lock, and
+/// a lock taken to find out is released at once.
+pub(crate) fn lock_status_at(path: &Path) -> Result<LockStatus> {
+    let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(LockStatus::Free),
         Err(err) => return Err(err).with_context(|| format!("could not open {}", path.display())),
@@ -259,6 +314,46 @@ mod tests {
         assert_eq!(lock.admin(), &admin);
         assert_eq!(lock_status(&admin).unwrap(), LockStatus::Held);
         assert!(try_lock_worktree(&admin).unwrap().is_none());
+    }
+
+    // As above, that the lock is free again once dropped is left to the black-box tests
+    // (`tests/agent.rs`, a holder's lock after `agent stop`).
+    #[test]
+    fn a_held_file_lock_is_seen_as_held_and_a_missing_file_is_free() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent.lock");
+        assert_eq!(lock_status_at(&path).unwrap(), LockStatus::Free);
+        let lock = try_lock_file(&path).unwrap().unwrap();
+        assert_eq!(lock_status_at(&path).unwrap(), LockStatus::Held);
+        assert!(try_lock_file(&path).unwrap().is_none());
+        drop(lock);
+    }
+
+    #[test]
+    fn executables_are_found_in_the_first_directory_that_has_them() {
+        let dir = TempDir::new().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("plain"), "").unwrap();
+        fs::write(b.join("tool"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(b.join("tool"), fs::Permissions::from_mode(0o755)).unwrap();
+        let dirs = [a.clone(), b.clone()];
+        assert_eq!(executable_in(&dirs, "tool"), Some(b.join("tool")));
+        assert_eq!(executable_in(&dirs, "plain"), None, "not executable");
+        assert_eq!(executable_in(&dirs, "absent"), None);
+        assert_eq!(list_dirs(dir.path()).unwrap(), [a, b]);
+        assert!(list_dirs(&dir.path().join("none")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn removing_a_missing_file_is_not_an_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("gone");
+        remove_if_exists(&path).unwrap();
+        fs::write(&path, "x").unwrap();
+        remove_if_exists(&path).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

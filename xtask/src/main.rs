@@ -12,11 +12,12 @@ use anyhow::{Context, Result, bail};
 
 mod client_boundary;
 mod commit;
+mod launch_guard;
 mod layers;
 mod pr_title;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,6 +60,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
         ["vocab"] => vocab::lint_repository(Path::new(".")),
         ["layers"] => layers::lint_repository(Path::new(".")),
         ["client-boundary"] => client_boundary::lint_repository(Path::new(".")),
+        ["launch-guard"] => launch_guard::lint_repository(Path::new(".")),
         _ => bail!(USAGE),
     }
 }

@@ -25,8 +25,10 @@
 ---@field name string
 ---@field path string
 ---@field branch? string
----@field state string `no_agent`, `setting_up`, `not_ready` or `broken`
+---@field state string `no_agent`, `idle`, `setting_up`, `not_ready` or `broken`
 ---@field detail? string why the worktree is not ready or broken
+---@field agent? string the worktree's agent, `claude-code`; `nil` when it has none
+---@field holder boolean whether the agent's holder is alive right now
 
 ---The fleet, as `worktree ls --json` prints it.
 ---@class orca_term.Fleet
