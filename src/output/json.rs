@@ -12,7 +12,7 @@ use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
-use crate::domain::worktree::Created;
+use crate::domain::worktree::{BranchOutcome, Created, Removed};
 
 /// Every document carries `contract` and `version` next to its own fields.
 #[derive(Debug, Serialize)]
@@ -71,6 +71,23 @@ struct SetupDoneView<'a> {
 struct SetupView<'a> {
     status: &'static str,
     log: Option<&'a Path>,
+}
+
+/// `worktree rm --json`: the worktree removed, and what happened to its branch.
+#[derive(Debug, Serialize)]
+struct RemovedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    branch: RemovedBranchView<'a>,
+}
+
+/// `status` is `deleted`, `kept` or `none` (the worktree was detached, so it had no branch);
+/// `name` is the branch, null when there was none; `reason` says why it was deleted or kept.
+#[derive(Debug, Serialize)]
+struct RemovedBranchView<'a> {
+    name: Option<&'a str>,
+    status: &'static str,
+    reason: Option<String>,
 }
 
 /// `agent start --json`: the worktree as `worktree ls` shows it, the holder and the sandbox's
@@ -164,6 +181,33 @@ pub(crate) fn set_up(done: &SetupDone) -> serde_json::Result<String> {
         ),
         setup: setup_view(&done.setup),
     })
+}
+
+/// What `worktree rm` removed, as one JSON document.
+pub(crate) fn removed(removed: &Removed) -> serde_json::Result<String> {
+    document(RemovedView {
+        name: &removed.name,
+        path: &removed.path,
+        branch: removed_branch_view(&removed.branch),
+    })
+}
+
+fn removed_branch_view(outcome: &BranchOutcome) -> RemovedBranchView<'_> {
+    let (name, status, reason) = match outcome {
+        BranchOutcome::DeletedMerged { branch, into } => {
+            (Some(branch), "deleted", Some(format!("merged into {into}")))
+        }
+        BranchOutcome::DeletedForced { branch } => {
+            (Some(branch), "deleted", Some("--force".to_owned()))
+        }
+        BranchOutcome::Kept { branch, reason } => (Some(branch), "kept", Some(reason.to_string())),
+        BranchOutcome::Detached => (None, "none", None),
+    };
+    RemovedBranchView {
+        name: name.map(Branch::as_str),
+        status,
+        reason,
+    }
 }
 
 /// What `agent start` did, as one JSON document.
@@ -274,6 +318,7 @@ mod tests {
     use crate::domain::fleet::WorktreeEntry;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
+    use crate::domain::worktree::KeptReason;
 
     #[test]
     fn the_fleet_document_keeps_its_shape() {
@@ -398,6 +443,46 @@ mod tests {
             format!(
                 r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"agent":null,"holder":false}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
             )
+        );
+    }
+
+    #[test]
+    fn the_removal_document_keeps_its_shape() {
+        let doc = removed(&Removed {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            branch: BranchOutcome::Kept {
+                branch: Branch::new("fix"),
+                reason: KeptReason::DefaultBranch,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","branch":{{"name":"fix","status":"kept","reason":"it is the default branch"}}}}"#
+            )
+        );
+        let detached: serde_json::Value = serde_json::from_str(
+            &removed(&Removed {
+                name: "spike".to_owned(),
+                path: PathBuf::from("/l/spike"),
+                branch: BranchOutcome::Detached,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            detached["branch"],
+            serde_json::json!({"name": null, "status": "none", "reason": null})
+        );
+        let outcome = BranchOutcome::DeletedForced {
+            branch: Branch::new("fix"),
+        };
+        let forced = removed_branch_view(&outcome);
+        assert_eq!(
+            (forced.status, forced.reason.as_deref()),
+            ("deleted", Some("--force"))
         );
     }
 

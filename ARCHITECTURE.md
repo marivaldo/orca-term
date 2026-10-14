@@ -51,7 +51,7 @@ the adapters, and returns a domain value that `output` prints.
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
   handed by `cli` to the ops module.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
-  `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
+  `worktree rm`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
   and `version` envelope. Each worktree carries `agent` (`"claude-code"` or null) and `holder`
   (whether a holder is alive).
 
@@ -67,7 +67,8 @@ the adapters, and returns a domain value that `output` prints.
   the setup again.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
-  `--force`), decide the branch's fate, remove, delete or keep the branch.
+  `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
+  the branch's fate, remove, delete or keep the branch.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune` and what it cleaned.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
@@ -195,7 +196,8 @@ validate"):
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
-  `BusyReason`: the lock is held, or the agent is running) and `NoSandbox`.
+  `BusyReason`: the lock is held, or the agent is running), `NoSandbox` and `Dirty` (a worktree
+  `worktree rm` keeps because it has modified or untracked files).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -267,12 +269,13 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `no_sandbox`) or `other`.
+  the typed error's (`busy`, `no_sandbox`, `dirty`) or `other`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
   holds or whose agent is running; 5 for `no_sandbox`, a machine where claude's sandbox cannot
-  run (4 is kept for a later slice).
+  run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
+  or untracked files (4 is kept for a later slice).
 
 ## Known limits of the agent holder
 

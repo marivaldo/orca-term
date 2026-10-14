@@ -77,6 +77,9 @@ enum WorktreeCommand {
         /// Remove a worktree with changes and delete an unmerged branch.
         #[arg(long)]
         force: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Clean the worktrees whose directory is gone (`git worktree prune`). Nothing else prunes.
     Prune,
@@ -141,8 +144,9 @@ impl Cli {
             Command::Worktree { command } => match command {
                 WorktreeCommand::Ls { json }
                 | WorktreeCommand::New { json, .. }
-                | WorktreeCommand::Setup { json, .. } => *json,
-                WorktreeCommand::Rm { .. } | WorktreeCommand::Prune => false,
+                | WorktreeCommand::Setup { json, .. }
+                | WorktreeCommand::Rm { json, .. } => *json,
+                WorktreeCommand::Prune => false,
             },
             Command::Agent { command } => match command {
                 AgentCommand::Start { json, .. } | AgentCommand::Stop { json, .. } => *json,
@@ -176,13 +180,15 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             output::worktree_set_up(&done, format)?;
             Ok(exit_code(&done.setup))
         }
-        WorktreeCommand::Rm { worktree, force } => {
+        WorktreeCommand::Rm {
+            worktree, force, ..
+        } => {
             let removal = if *force {
                 Removal::Forced
             } else {
                 Removal::Safe
             };
-            output::worktree_removed(&worktree_rm::run(worktree, removal)?);
+            output::worktree_removed(&worktree_rm::run(worktree, removal)?, format)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Prune => {

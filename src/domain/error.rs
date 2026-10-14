@@ -27,6 +27,13 @@ pub(crate) enum TypedError {
     /// (empty when the system has no sandbox at all), and `hint` the fix.
     #[error("{}", no_sandbox_message(missing, hint))]
     NoSandbox { missing: Vec<String>, hint: String },
+    /// The worktree has modified or untracked files, so `worktree rm` keeps it unless forced.
+    #[error(
+        "worktree {name} at {} has modified or untracked files; pass --force to remove it \
+         anyway, discarding its changes",
+        path.display()
+    )]
+    Dirty { name: String, path: PathBuf },
 }
 
 /// Why a worktree is busy.
@@ -70,6 +77,7 @@ impl TypedError {
         match self {
             Self::Busy { .. } => "busy",
             Self::NoSandbox { .. } => "no_sandbox",
+            Self::Dirty { .. } => "dirty",
         }
     }
 
@@ -78,6 +86,7 @@ impl TypedError {
         match self {
             Self::Busy { .. } => 3,
             Self::NoSandbox { .. } => 5,
+            Self::Dirty { .. } => 6,
         }
     }
 }
@@ -147,6 +156,21 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "claude's sandbox is not available: bwrap and socat not found on PATH; install them"
+        );
+    }
+
+    #[test]
+    fn a_worktree_with_changes_has_its_own_kind_and_exit_code() {
+        let err = anyhow::Error::new(TypedError::Dirty {
+            name: "wip".to_owned(),
+            path: PathBuf::from("/w/repo/wip"),
+        });
+        assert_eq!(kind(&err), "dirty");
+        assert_eq!(exit_code(&err), 6);
+        assert_eq!(
+            err.to_string(),
+            "worktree wip at /w/repo/wip has modified or untracked files; pass --force to remove \
+             it anyway, discarding its changes"
         );
     }
 

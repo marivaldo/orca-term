@@ -169,6 +169,16 @@ pub(crate) fn worktree_add(
     Ok(())
 }
 
+/// Whether the worktree at `worktree` has modified or untracked files: what makes
+/// `git worktree remove` refuse it without `--force`. Ignored files do not count.
+pub(crate) fn has_changes(worktree: &Path) -> Result<bool> {
+    let status = output(
+        worktree,
+        &["status", "--porcelain", "--ignore-submodules=none"],
+    )?;
+    Ok(!status.is_empty())
+}
+
 /// `git worktree remove`, with `--force` when the removal is forced.
 pub(crate) fn worktree_remove(
     primary: &PrimaryCheckout,
