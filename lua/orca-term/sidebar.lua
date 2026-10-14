@@ -8,10 +8,10 @@
 -- both through `actions.lua`. The selection follows the current tab when it is a worktree's.
 --
 -- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
--- it; there is no timer. Opening
--- never moves the cursor out of the person's window and never resizes their windows beyond the
--- split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
--- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
+-- it; there is no timer. Opening never moves the cursor out of the person's window and never
+-- resizes their windows beyond the split itself; closing only closes the sidebar's windows. A tab
+-- never ends up holding only the sidebar: `:q` on its last other window closes the tab (or quits
+-- Neovim) as it would without it.
 
 local actions = require('orca-term.actions')
 local core = require('orca-term.core')

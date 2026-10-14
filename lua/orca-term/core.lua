@@ -3,8 +3,8 @@
 -- This is the only module that starts a process (`cargo xtask client-boundary` checks it). It
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for; the commands that may run a setup (`worktree
--- new`, `setup`, `rm`) are not, and hand their result to a callback in Neovim's main loop. The client never works the fleet out by itself: it shows
--- what the core prints.
+-- new`, `setup`, `rm`) are not, and hand their result to a callback in Neovim's main loop. The
+-- client never works the fleet out by itself: it shows what the core prints.
 --
 -- Every function returns (or hands its callback) its result, or `nil` and an `orca_term.Error`.
 -- None of them throws.
