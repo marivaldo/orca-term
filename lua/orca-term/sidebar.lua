@@ -1,11 +1,12 @@
 -- orca-term's sidebar: the fleet in a left split of every tab, toggled by `:OrcaTerm sidebar`.
 --
--- This module and `tabs.lua` are the only ones that touch windows and buffers (`cargo xtask
--- client-boundary` checks it). It reads the fleet through `core.lua`, has `render.lua` turn it into
--- lines and colours, and paints them into one buffer that every tab shows in its own window. Its
--- keys, local to that buffer, move the selection (`j`, `k`), go to a worktree's tab (`<CR>`, through
--- `tabs.lua`), create a worktree (`a`) and open the menu of the worktree under the cursor (`.`),
--- both through `actions.lua`. The selection follows the current tab when it is a worktree's.
+-- This module, `tabs.lua` and `terminal.lua` are the only ones that touch windows and buffers
+-- (`cargo xtask client-boundary` checks it). It reads the fleet through `core.lua`, has
+-- `render.lua` turn it into lines and colours, and paints them into one buffer that every tab shows
+-- in its own window. Its keys, local to that buffer, move the selection (`j`, `k`), open a worktree
+-- (`<CR>`: its tab, and its agent's terminal when it has an agent), create a worktree (`a`) and
+-- open the menu of the worktree under the cursor (`.`), all three through `actions.lua`. The
+-- selection follows the current tab when it is a worktree's.
 --
 -- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
 -- it; there is no timer. Opening never moves the cursor out of the person's window and never
@@ -177,7 +178,7 @@ local function primary_path()
   return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
 end
 
----`<CR>`: selects the worktree under the cursor and goes to its tab.
+---`<CR>`: selects the worktree under the cursor and opens it: its tab, and its agent's terminal.
 local function open_worktree()
   local worktree = worktree_under_cursor()
   if not worktree then
@@ -185,7 +186,7 @@ local function open_worktree()
   end
   state.selected = worktree.path
   redraw()
-  tabs.go_to(worktree.path)
+  actions.open(worktree, primary_path())
 end
 
 ---`.`: the menu of the worktree under the cursor.
@@ -254,7 +255,7 @@ local function ensure_buffer()
   map('k', function()
     move(-1)
   end, 'select the previous worktree')
-  map('<CR>', open_worktree, "go to the worktree's tab")
+  map('<CR>', open_worktree, "go to the worktree's tab and show its agent")
   map('a', function()
     actions.create(primary_path())
   end, 'create a worktree')

@@ -4,6 +4,10 @@
 -- of the fixture's own, and the core gets a HOME and an XDG_CONFIG_HOME inside the fixture, so
 -- the specs never read the developer's config. The variables are set in this Neovim, whose
 -- children inherit them, and `cleanup()` puts them back.
+--
+-- `agent_repo()` mirrors tests/support/agent.rs: a fake `claude` and fake sandbox tools on a PATH
+-- of their own, so the agent specs need no claude, no sandbox and no network. `cleanup()` stops
+-- every agent a spec left running.
 
 local M = {}
 
@@ -27,6 +31,9 @@ local saved_cwd = nil
 local temp_dirs = {}
 ---The functions `stub_ui()` replaced, put back by `cleanup()`.
 local real_ui = { input = vim.ui.input, select = vim.ui.select, notify = vim.notify }
+---The repositories `agent_repo()` made, whose agents `cleanup()` stops.
+---@type spec.Repo[]
+local agent_repos = {}
 
 ---Sets an environment variable of this Neovim and its children until `cleanup()`.
 ---@param name string
@@ -130,6 +137,90 @@ function M.add_worktree(repo, path, branch)
   return assert(vim.uv.fs_realpath(path))
 end
 
+---The fake sandbox tools, one set for each OS, all present so the specs run the same way on macOS
+---and Linux.
+M.SANDBOX_TOOLS = { 'sandbox-exec', 'bwrap', 'socat' }
+
+---The fake `claude`, as in tests/support/agent.rs: answers `--version`, says it is ready, echoes
+---every line typed, and ends on `SIGHUP` as claude does. The idle timeout ends a leaked one on its
+---own. Bash builtins and absolute paths only: its PATH holds nothing else.
+local FAKE_CLAUDE = {
+  '#!/bin/bash',
+  'if [ "$1" = "--version" ]; then echo "2.1.296 (Claude Code)"; exit 0; fi',
+  'trap \'echo "got HUP"; exit 129\' HUP',
+  'echo "fake claude ready"',
+  'while IFS= read -r -t 120 line; do',
+  '  echo "you said: $line"',
+  'done',
+  'exit 0',
+}
+
+---@class spec.AgentRepo: spec.Repo
+---@field bin string the one directory on PATH: the fake claude and sandbox tools, git and bash
+
+---A repository whose agents are the fake claude: PATH, for this Neovim and its children, is one
+---directory holding the fake `claude`, the fake sandbox tools and links to the real `git` and
+---`bash`. A child Neovim must then be started by its full path, `vim.v.progpath`.
+---@return spec.AgentRepo
+function M.agent_repo()
+  local repo = M.repo() --[[@as spec.AgentRepo]]
+  repo.bin = repo.tmp .. '/bin'
+  vim.fn.mkdir(repo.bin, 'p')
+  for _, tool in ipairs({ 'git', 'bash' }) do
+    local real = vim.fn.exepath(tool)
+    assert(real ~= '', tool .. ' is not on PATH')
+    assert(vim.uv.fs_symlink(real, repo.bin .. '/' .. tool))
+  end
+  for _, tool in ipairs(M.SANDBOX_TOOLS) do
+    M.write_script(repo.bin .. '/' .. tool, { 'exit 0' })
+  end
+  local claude = repo.bin .. '/claude'
+  vim.fn.writefile(FAKE_CLAUDE, claude)
+  assert(vim.uv.fs_chmod(claude, tonumber('755', 8)))
+  M.set_env('PATH', repo.bin)
+  table.insert(agent_repos, repo)
+  return repo
+end
+
+---Removes the fake sandbox tools from the PATH of `repo`, so starting an agent fails as
+---`no_sandbox`.
+---@param repo spec.AgentRepo
+function M.remove_sandbox(repo)
+  for _, tool in ipairs(M.SANDBOX_TOOLS) do
+    vim.fn.delete(repo.bin .. '/' .. tool)
+  end
+end
+
+---The worktree named `name`, as `worktree ls --json` prints it.
+---@param repo spec.Repo
+---@param name string
+---@return table
+function M.listed(repo, name)
+  local fleet = vim.json.decode(M.run({ M.binary, 'worktree', 'ls', '--json' }, repo.root))
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.name == name then
+      return worktree
+    end
+  end
+  error('no worktree named ' .. name)
+end
+
+---Stops every agent of `repo` whose holder is alive, so no spec leaves a process behind. Never
+---fails: it runs while a failed spec is cleaned up.
+---@param repo spec.Repo
+local function stop_agents(repo)
+  local ls = M.core(repo, { 'worktree', 'ls', '--json' })
+  local decoded, fleet = pcall(vim.json.decode, ls.stdout or '')
+  if not decoded or type(fleet) ~= 'table' then
+    return
+  end
+  for _, worktree in ipairs(fleet.worktrees or {}) do
+    if worktree.holder == true then
+      M.core(repo, { 'agent', 'stop', worktree.path })
+    end
+  end
+end
+
 ---Runs the core binary with `args` in the repository's primary checkout, without checking how it
 ---exits, and returns what `vim.system` reports.
 ---@param repo spec.Repo
@@ -161,13 +252,7 @@ end
 ---@param name string
 ---@return string
 function M.worktree_path(repo, name)
-  local fleet = vim.json.decode(M.run({ M.binary, 'worktree', 'ls', '--json' }, repo.root))
-  for _, worktree in ipairs(fleet.worktrees) do
-    if worktree.name == name then
-      return worktree.path
-    end
-  end
-  error('no worktree named ' .. name)
+  return M.listed(repo, name).path
 end
 
 ---Makes `dir` Neovim's current directory until `cleanup()`.
@@ -185,8 +270,8 @@ function M.load_client()
   require('orca-term').setup({ binary = M.binary })
 end
 
----Closes the sidebar if it is open, then every tab and window but one, so the next spec starts
----from a single empty window.
+---Closes the sidebar if it is open, then every tab and window but one, and wipes every agent
+---terminal (which detaches it), so the next spec starts from a single empty window.
 function M.reset_editor()
   local sidebar = require('orca-term.sidebar')
   if sidebar.is_open() then
@@ -195,6 +280,12 @@ function M.reset_editor()
   vim.cmd('silent! tabonly!')
   vim.cmd('silent! only!')
   vim.cmd('enew!')
+  local mark = require('orca-term.terminal').MARK
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.b[buf][mark] then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end
 end
 
 local MODES = { 'n', 'v', 'x', 's', 'o', 'i', 'c', 't' }
@@ -264,9 +355,13 @@ function M.wait_for(condition, what)
   assert(vim.wait(20000, condition, 20), 'timed out waiting for ' .. what)
 end
 
----Puts the environment, the current directory and the client's settings back, and removes every
----temporary directory.
+---Stops every agent a spec started, puts the environment, the current directory and the client's
+---settings back, and removes every temporary directory.
 function M.cleanup()
+  for _, repo in ipairs(agent_repos) do
+    stop_agents(repo)
+  end
+  agent_repos = {}
   if saved_cwd then
     vim.cmd.cd(vim.fn.fnameescape(saved_cwd))
     saved_cwd = nil

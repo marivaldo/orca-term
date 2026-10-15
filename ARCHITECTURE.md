@@ -365,7 +365,10 @@ what they print.
   result reaches a callback through `vim.schedule`. Each gives the document, or `nil` and an error
   `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
   client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
-  throws.
+  throws. `agent_start` (with the terminal's size) runs without blocking too. `agent_attach` is
+  the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
+  buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
+  prefix; closing the terminal detaches).
 - `lua/orca-term/fleet.lua`: the attention order, pure: each worktree's rank (1 waiting to 8 no
   agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank then
   name (recency joins when the core prints it).
@@ -393,25 +396,36 @@ what they print.
   time, never remembered. `go_to` enters it and focuses its main window (not the sidebar), or
   makes it after the last tab with `$tabnew` and `:tcd`; `close_all` closes every tab of a
   worktree after its removal, pointing the last tab at the primary checkout instead.
+- `lua/orca-term/terminal.lua`: the agents' terminal buffers. A worktree's terminal is the buffer
+  whose `b:orca_term_agent` is the worktree's path, found again each time, never remembered.
+  `open` shows it in the current window in terminal mode, reusing a live one or attaching a new
+  one through `core.agent_attach`. Closing it only detaches: `:q` hides it, still attached, and
+  wiping it ends the attach; the agent runs on in its holder. The first terminal opened adds an
+  `ExitPre` autocommand that detaches every agent terminal, so a running attach never makes Neovim
+  refuse `:wqa` or `:xa` (E948).
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
-  `vim.ui.select` and told through `vim.notify`: `create` (`a`), `menu` (`.`: `run_setup`,
-  `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth` (`:OrcaTerm worktree N`), the
-  last two in the sidebar's order (`render.fleet(...).order`). `worktree new` and `worktree setup`
-  run without blocking: the sidebar is read again 500 ms after they start (showing *setting up*)
-  and when they finish. `remove` always asks first; a `dirty` refusal asks once more before
-  `--force`; `busy` is only reported. It touches no window or buffer.
+  `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
+  has an agent, `agent start` without blocking, then its terminal through `terminal.lua`; a
+  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
+  `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
+  (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
+  `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
+  they start (showing *setting up*) and when they finish. `remove` always asks first; a
+  `dirty` refusal asks once more before `--force`; `busy` is only reported. It touches no window
+  or buffer.
 
 Its rules:
 
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
-- **Only `sidebar.lua` and `tabs.lua` touch windows, tabs and buffers; `fleet.lua` and
-  `render.lua` are pure.** The order and the look are plain functions of the fleet, tested without
-  a window; the sidebar only paints them, and `actions.lua` moves between tabs only through
-  `tabs.lua`. `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd`
-  that splits or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else,
-  and any `vim.api` or `vim.cmd` in the pure modules.
+- **Only `sidebar.lua`, `tabs.lua` and `terminal.lua` touch windows, tabs and buffers;
+  `fleet.lua` and `render.lua` are pure.** The order and the look are plain functions of the
+  fleet, tested without a window; the sidebar only paints them, and `actions.lua` moves between
+  tabs only through `tabs.lua` and opens terminals only through `terminal.lua`.
+  `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd` that splits
+  or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else, and any
+  `vim.api` or `vim.cmd` in the pure modules.
 - **A worktree is independent of its tabs.** Opening, closing or moving a tab never changes a
   worktree; only `actions.lua`, through the core, creates, sets up or removes one, and removing
   always asks for confirmation (twice when it would discard changes).
@@ -420,3 +434,9 @@ Its rules:
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
   commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
+
+Its known limits:
+
+- If quitting is refused for another reason after `ExitPre` detached the terminals (a buffer with
+  unsaved changes), they stay detached until the next `<CR>` attaches again.
+- A person who changes tab while the agent is starting gets no terminal until their next `<CR>`.

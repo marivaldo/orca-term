@@ -87,8 +87,8 @@ vocab:
 layers:
     cargo xtask layers
 
-# The Neovim client: only core.lua starts processes, only sidebar.lua and tabs.lua touch windows,
-# tabs and buffers, fleet.lua and render.lua are pure.
+# The Neovim client: only core.lua starts processes, only sidebar.lua, tabs.lua and terminal.lua
+# touch windows, tabs and buffers, fleet.lua and render.lua are pure.
 client-boundary:
     cargo xtask client-boundary
 

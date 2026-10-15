@@ -1,16 +1,19 @@
--- orca-term's worktree actions: create a worktree (`a` in the sidebar), the menu of the worktree
--- under the cursor (`.`: run its setup again, copy its path, remove it), and going to a worktree by
--- picking it (`:OrcaTerm jump`) or by its number (`:OrcaTerm worktree N`).
+-- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
+-- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
+-- again, copy its path, remove it), and going to a worktree by picking it (`:OrcaTerm jump`) or by
+-- its number (`:OrcaTerm worktree N`).
 --
--- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`
--- and moves between tabs through `tabs.lua`; it touches no window or buffer itself. The commands
--- that may run a setup never block Neovim: the sidebar is read again shortly after they start (so
--- the worktree shows as setting up) and once more when they finish, and the outcome is told with
--- `vim.notify`. Removing a worktree always asks first.
+-- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
+-- moves between tabs through `tabs.lua` and shows agents through `terminal.lua`; it touches no
+-- window or buffer itself. The commands that may run a setup, and starting an agent, never block
+-- Neovim: the sidebar is read again shortly after a setup starts (so the worktree shows as setting
+-- up) and once more when the command finishes, and the outcome is told with `vim.notify`. Removing
+-- a worktree always asks first.
 
 local core = require('orca-term.core')
 local render = require('orca-term.render')
 local tabs = require('orca-term.tabs')
+local terminal = require('orca-term.terminal')
 
 local M = {}
 
@@ -50,8 +53,82 @@ local function refresh_shortly()
   vim.defer_fn(refresh_sidebar, M.EARLY_REFRESH_MS)
 end
 
----Asks for a name and creates that worktree through the core, without waiting for its setup.
----Once created, even when its setup failed, the worktree's tab becomes current.
+---The agents `a` offers, in the order shown: claude first, as Orca does, then none.
+M.AGENTS = { 'claude-code', 'No agent' }
+
+---Starts the agent of the worktree at `path` through the core, then shows it in the worktree's
+---tab, attached, in terminal mode. Starting is idempotent: an agent already running is only
+---attached to, and one whose holder is gone (after a reboot, or after the agent exited) starts
+---again. A refusal, such as a worktree not ready or no sandbox, is told with the core's reason and
+---opens no terminal. The caller has gone to the worktree's tab.
+---@param path string
+---@param primary string the primary checkout's path, where the core runs
+local function start_and_attach(path, primary)
+  core.agent_start(path, terminal.size(), primary, function(started, err)
+    refresh_sidebar()
+    if not started then
+      fail(err)
+      return
+    end
+    -- Starting takes a moment. A person who has moved to another tab meanwhile is left there: the
+    -- terminal opens on their next `<CR>`.
+    if not tabs.is_current(path) then
+      return
+    end
+    -- Back to the tab's main window, should the person have moved to the sidebar meanwhile.
+    tabs.go_to(path)
+    local attach_err = terminal.open(path, primary)
+    if attach_err then
+      fail(attach_err)
+    end
+  end)
+end
+
+---Opens `worktree`: goes to its tab and, when it has an agent, shows the agent's terminal there,
+---starting the agent first when its holder is gone. A worktree with no agent only gets its tab.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.open(worktree, primary)
+  tabs.go_to(worktree.path)
+  if worktree.agent then
+    start_and_attach(worktree.path, primary)
+  end
+end
+
+---Creates the worktree `name` through the core, without waiting for its setup. Once created, even
+---when its setup failed, the worktree's tab becomes current; then, when the setup did not fail and
+---`with_agent` is true, its agent starts and shows there.
+---@param name string
+---@param with_agent boolean
+---@param primary string
+local function create_worktree(name, with_agent, primary)
+  core.worktree_new(name, primary, function(created, err)
+    refresh_sidebar()
+    if not created then
+      fail(err)
+      return
+    end
+    local path = created.worktree.path
+    tabs.go_to(path)
+    if created.setup.status == 'failed' then
+      local detail = created.worktree.detail or 'see its setup log'
+      local message = ('created worktree %s, but its setup failed: %s'):format(name, detail)
+      if with_agent then
+        message = message .. '; its agent was not started'
+      end
+      warn(message)
+      return
+    end
+    info('created worktree ' .. name)
+    if with_agent then
+      start_and_attach(path, primary)
+    end
+  end)
+  refresh_shortly()
+end
+
+---Asks for a name, then for the agent (claude-code or none), and creates that worktree through
+---the core, without waiting for its setup. Cancelling either question creates nothing.
 ---@param primary string the primary checkout's path, where the core runs
 function M.create(primary)
   vim.ui.input({ prompt = 'New worktree name: ' }, function(input)
@@ -59,21 +136,11 @@ function M.create(primary)
     if name == '' then
       return
     end
-    core.worktree_new(name, primary, function(created, err)
-      refresh_sidebar()
-      if not created then
-        fail(err)
-        return
-      end
-      tabs.go_to(created.worktree.path)
-      if created.setup.status == 'failed' then
-        local detail = created.worktree.detail or 'see its setup log'
-        warn(('created worktree %s, but its setup failed: %s'):format(name, detail))
-      else
-        info('created worktree ' .. name)
+    vim.ui.select(M.AGENTS, { prompt = 'Agent for ' .. name }, function(choice)
+      if choice then
+        create_worktree(name, choice == M.AGENTS[1], primary)
       end
     end)
-    refresh_shortly()
   end)
 end
 

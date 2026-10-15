@@ -1,10 +1,10 @@
 -- orca-term's worktree tabs: each worktree gets a tab of its own, whose tab-local directory is the
 -- worktree.
 --
--- This module and `sidebar.lua` are the only ones that touch windows and tabs (`cargo xtask
--- client-boundary` checks it). A worktree's tab is never remembered: it is found again, each time,
--- as the tab whose directory (`getcwd(-1, tabnr)`) is the worktree's path, compared with symlinks
--- resolved. Closing a tab only closes the tab; the worktree stays as it is.
+-- This module, `sidebar.lua` and `terminal.lua` are the only ones that touch windows and tabs
+-- (`cargo xtask client-boundary` checks it). A worktree's tab is never remembered: it is found
+-- again, each time, as the tab whose directory (`getcwd(-1, tabnr)`) is the worktree's path,
+-- compared with symlinks resolved. Closing a tab only closes the tab; the worktree stays as it is.
 
 local M = {}
 
