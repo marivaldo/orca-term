@@ -1,11 +1,12 @@
 //! Adapter: the process environment, meaning the current directory, the variables the
-//! configuration depends on and the directories of PATH.
+//! configuration depends on, the directories of PATH and the clock.
 #![expect(
     clippy::disallowed_methods,
     reason = "this adapter is the one place that reads the process environment"
 )]
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -14,6 +15,15 @@ use crate::domain::config::Env;
 /// The directory the core was started in.
 pub(crate) fn current_dir() -> Result<PathBuf> {
     std::env::current_dir().context("could not read the current directory")
+}
+
+/// The time now, in milliseconds since the Unix epoch (0 for a clock set before it).
+pub(crate) fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// The directories of `PATH`, in order; empty when it is unset.

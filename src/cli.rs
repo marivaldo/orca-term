@@ -1,6 +1,7 @@
 //! Edge: the command-line surface. It parses the arguments, hands each command to its ops module
 //! and gives the result to `output`.
 
+use std::panic;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -12,8 +13,8 @@ use crate::domain::agent::Size;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    agent_attach, agent_holder, agent_start, agent_stop, worktree_ls, worktree_new, worktree_prune,
-    worktree_rm, worktree_setup,
+    agent_attach, agent_holder, agent_start, agent_stop, hook, worktree_ls, worktree_new,
+    worktree_prune, worktree_rm, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -40,6 +41,15 @@ enum Command {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
+    },
+    /// What the agent's hooks run: `hook claude --admin <dir> <event>`, the event's payload on
+    /// stdin. Its arguments are taken as they come, unchecked, so that clap never refuses them
+    /// (clap exits 2 on a usage error, which claude would take as a refusal); `HookArgs` reads
+    /// them.
+    #[command(hide = true, disable_help_flag = true)]
+    Hook {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
     },
 }
 
@@ -152,6 +162,7 @@ impl Cli {
                 AgentCommand::Start { json, .. } | AgentCommand::Stop { json, .. } => *json,
                 AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
+            Command::Hook { .. } => false,
         };
         Format::from_json_flag(json)
     }
@@ -163,7 +174,49 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),
+        Command::Hook { args } => {
+            run_hook(&HookArgs::parse(args));
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+/// The arguments of `hook`, read leniently: the agent first, `--admin <dir>` (or `--admin=<dir>`)
+/// anywhere, and the event as the next word. Anything else is ignored.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HookArgs {
+    agent: Option<String>,
+    admin: Option<PathBuf>,
+    /// The event as the settings name it; informational, since the payload names it too.
+    event: Option<String>,
+}
+
+impl HookArgs {
+    fn parse(args: &[String]) -> Self {
+        let mut parsed = Self::default();
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                "--admin" => parsed.admin = words.next().map(PathBuf::from),
+                flag if flag.starts_with("--admin=") => {
+                    parsed.admin = Some(PathBuf::from(&flag["--admin=".len()..]));
+                }
+                // Any other flag is ignored.
+                flag if flag.starts_with('-') => {}
+                _ if parsed.agent.is_none() => parsed.agent = Some(word.clone()),
+                _ if parsed.event.is_none() => parsed.event = Some(word.clone()),
+                _ => {}
+            }
+        }
+        parsed
+    }
+}
+
+/// Runs the hook, which exits 0 and prints nothing whatever happens: even a panic is caught, and
+/// its message silenced, since claude reads a hook's output and exit status.
+fn run_hook(args: &HookArgs) {
+    panic::set_hook(Box::new(|_| {}));
+    let _ = panic::catch_unwind(|| hook::run(args.agent.as_deref(), args.admin.as_deref()));
 }
 
 fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
@@ -254,5 +307,63 @@ fn exit_code(setup: &SetupReport) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(args: &[&str]) -> Vec<String> {
+        args.iter().map(|&arg| arg.to_owned()).collect()
+    }
+
+    #[test]
+    fn hook_arguments_are_read_leniently() {
+        assert_eq!(
+            HookArgs::parse(&words(&["claude", "--admin", "/a/orca-term", "Stop"])),
+            HookArgs {
+                agent: Some("claude".to_owned()),
+                admin: Some(PathBuf::from("/a/orca-term")),
+                event: Some("Stop".to_owned()),
+            }
+        );
+        assert_eq!(
+            HookArgs::parse(&words(&[
+                "--bogus",
+                "claude",
+                "Stop",
+                "--admin=/a",
+                "extra"
+            ])),
+            HookArgs {
+                agent: Some("claude".to_owned()),
+                admin: Some(PathBuf::from("/a")),
+                event: Some("Stop".to_owned()),
+            }
+        );
+        assert_eq!(HookArgs::parse(&[]), HookArgs::default());
+        assert_eq!(HookArgs::parse(&words(&["claude", "--admin"])).admin, None);
+    }
+
+    #[test]
+    fn clap_takes_any_hook_arguments() {
+        for args in [
+            vec!["orca-term", "hook"],
+            vec!["orca-term", "hook", "--help"],
+            vec![
+                "orca-term",
+                "hook",
+                "claude",
+                "--admin",
+                "/a",
+                "Stop",
+                "--what",
+                "-x",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap();
+            assert!(matches!(cli.command, Command::Hook { .. }), "{args:?}");
+        }
     }
 }

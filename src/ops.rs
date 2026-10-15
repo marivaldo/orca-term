@@ -6,6 +6,7 @@ pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
+pub(crate) mod hook;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;

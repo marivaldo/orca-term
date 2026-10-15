@@ -44,6 +44,19 @@ pub(crate) const AGENT_SOCKET_FILE: &str = "agent.sock";
 /// The settings claude is launched with, rebuilt on every start.
 const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
 
+/// The live status the agent's hooks keep (`domain/turn.rs`).
+const STATUS_FILE: &str = "status.json";
+
+/// The turn log the agent's hooks append to (`domain/turn.rs`).
+const TURN_LOG_FILE: &str = "turns.jsonl";
+
+/// The lock each hook run takes, waiting briefly, while it changes the status and the turn log.
+/// Commands never take it.
+const HOOK_LOCK_FILE: &str = "hook.lock";
+
+/// What went wrong in the hooks, one line each, kept small.
+const HOOK_LOG_FILE: &str = "hook.log";
+
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
@@ -92,6 +105,26 @@ impl AdminDir {
     /// claude's settings file, `claude-settings.json`.
     pub(crate) fn claude_settings(&self) -> PathBuf {
         self.0.join(CLAUDE_SETTINGS_FILE)
+    }
+
+    /// The hooks' live status, `status.json`.
+    pub(crate) fn status_file(&self) -> PathBuf {
+        self.0.join(STATUS_FILE)
+    }
+
+    /// The hooks' turn log, `turns.jsonl`.
+    pub(crate) fn turn_log(&self) -> PathBuf {
+        self.0.join(TURN_LOG_FILE)
+    }
+
+    /// The hooks' lock, `hook.lock`.
+    pub(crate) fn hook_lock(&self) -> PathBuf {
+        self.0.join(HOOK_LOCK_FILE)
+    }
+
+    /// The hooks' error log, `hook.log`.
+    pub(crate) fn hook_log(&self) -> PathBuf {
+        self.0.join(HOOK_LOG_FILE)
     }
 }
 
@@ -548,6 +581,22 @@ mod tests {
         assert_eq!(
             admin.claude_settings(),
             PathBuf::from("/repo/.git/worktrees/fix/orca-term/claude-settings.json")
+        );
+        assert_eq!(
+            admin.status_file(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/status.json")
+        );
+        assert_eq!(
+            admin.turn_log(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/turns.jsonl")
+        );
+        assert_eq!(
+            admin.hook_lock(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/hook.lock")
+        );
+        assert_eq!(
+            admin.hook_log(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/hook.log")
         );
     }
 
