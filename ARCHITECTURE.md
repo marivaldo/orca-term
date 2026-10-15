@@ -153,7 +153,7 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
-  unix socket, `v:servername`); and the msgpack-RPC notification, encoded by hand, that fires
+  unix socket, `v:servername`); and the msgpack-RPC request, encoded by hand, that fires
   `User OrcaTermWorktreeChanged` with the worktree's path.
 - `domain/agent.rs`: the agent a worktree runs (`Agent::ClaudeCode`, recorded as `claude-code`,
   run as `claude`), whether its holder is alive, the holder's record (`agent.json`), a terminal
@@ -314,10 +314,12 @@ validate"):
 - **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
   starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
   exit (the holder, once its files are gone) and `worktree rm`, the command calls
-  `ops::notify_changed`, which sends every address in the registry the notification firing
-  `User OrcaTermWorktreeChanged` with the worktree's path. Each Neovim takes at most 200 ms, on a
-  thread of its own, so one that never accepts or reads cannot hold the command up; notifying
-  never fails the write before it. A Neovim that is gone has its file pruned; any other failure
+  `ops::notify_changed`, which sends every address in the registry the request firing
+  `User OrcaTermWorktreeChanged` with the worktree's path, and waits for its answer before hanging
+  up: Neovim drops a queued call whose caller has already gone (measured on 0.11 on Linux). All
+  Neovims are told at once, one thread each, within 200 ms in all, so one that never accepts,
+  reads or answers cannot hold the command up (it misses that change); notifying never fails the
+  write before it. A Neovim that is gone has its file pruned; any other failure
   is skipped and the file kept. `worktree ls` sends nothing.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
@@ -372,6 +374,9 @@ validate"):
   refuses the connection, so its address is pruned; it updates again once it regains focus with
   the sidebar open, which registers it again.
 - **A holder killed outright notifies nobody**: the sidebar shows the change on the next focus.
+- **A Neovim that does not answer within 200 ms misses that change** (suspended, or busy in a
+  blocking command): the core hangs up and Neovim drops the call. The next change or focus reads
+  the fleet again. Every hook of a worktree then waits those 200 ms.
 
 ## Guards
 
