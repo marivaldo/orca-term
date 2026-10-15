@@ -72,7 +72,8 @@ pub(crate) fn claude_argv(program: &str, settings_file: &Path) -> Vec<String> {
 
 /// The settings passed to claude as `--settings <file>`: its sandbox on and set to fail rather
 /// than run unsandboxed, the network open, and writes to every worktree's admin directory,
-/// `refs/orca-term` and `orca-term.yaml` in the git common dir denied, from sandboxed commands
+/// `refs/orca-term`, `orca-term.yaml` and the `orca-term` directory (the registry of running
+/// Neovims, which the core connects to) in the git common dir denied, from sandboxed commands
 /// and from the Edit tool alike. `admin_dirs` are the admin directories that exist at launch:
 /// Linux ignores the `*` entries, so each one is listed concretely too. `writable` are the extra
 /// paths the config allows, absolute. `hooks` reports the turns to the worktree whose admin
@@ -93,6 +94,7 @@ pub(crate) fn claude_settings(
         format!("{common}/worktrees/*/{ADMIN_DIR_NAME}"),
         format!("{common}/refs/{ADMIN_DIR_NAME}"),
         format!("{common}/orca-term.yaml"),
+        format!("{common}/{ADMIN_DIR_NAME}"),
     ]);
     let allow_write: Vec<String> = writable.iter().map(|p| p.display().to_string()).collect();
     json!({
@@ -120,6 +122,7 @@ pub(crate) fn claude_settings(
                 format!("Edit(/{common}/worktrees/*/{ADMIN_DIR_NAME}/**)"),
                 format!("Edit(/{common}/refs/{ADMIN_DIR_NAME}/**)"),
                 format!("Edit(/{common}/orca-term.yaml)"),
+                format!("Edit(/{common}/{ADMIN_DIR_NAME}/**)"),
             ],
         },
         "hooks": hooks_settings(hooks),
@@ -293,7 +296,8 @@ mod tests {
                 "/r/.git/worktrees/fix/orca-term",
                 "/r/.git/worktrees/*/orca-term",
                 "/r/.git/refs/orca-term",
-                "/r/.git/orca-term.yaml"
+                "/r/.git/orca-term.yaml",
+                "/r/.git/orca-term"
             ])
         );
         assert_eq!(at("/sandbox/network/allowedDomains"), json!(["*"]));
@@ -308,7 +312,8 @@ mod tests {
             json!([
                 "Edit(//r/.git/worktrees/*/orca-term/**)",
                 "Edit(//r/.git/refs/orca-term/**)",
-                "Edit(//r/.git/orca-term.yaml)"
+                "Edit(//r/.git/orca-term.yaml)",
+                "Edit(//r/.git/orca-term/**)"
             ])
         );
         assert_eq!(

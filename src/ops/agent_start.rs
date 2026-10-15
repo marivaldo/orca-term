@@ -89,12 +89,13 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     })
 }
 
-/// Creates `refs/orca-term` and every worktree's `orca-term` directory under `common` before the
-/// launch, and returns the latter: the sandbox denies writes to them by name, and on Linux a
-/// denied path that does not exist would be stood in for by a placeholder file. Canonical paths,
-/// since `common` is.
+/// Creates `refs/orca-term`, the `orca-term` directory (where the registry of running Neovims
+/// lives) and every worktree's `orca-term` directory under `common` before the launch, and
+/// returns the last: the sandbox denies writes to them by name, and on Linux a denied path that
+/// does not exist would be stood in for by a placeholder file. Canonical paths, since `common` is.
 fn prepare_admin_dirs(common: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     fs::create_dir_all(&common.join("refs").join(ADMIN_DIR_NAME))?;
+    fs::create_dir_all(&common.join(ADMIN_DIR_NAME))?;
     let mut admin_dirs = Vec::new();
     for worktree_dir in fs::list_dirs(&common.join("worktrees"))? {
         let admin_dir = worktree_dir.join(ADMIN_DIR_NAME);

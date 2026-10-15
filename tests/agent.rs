@@ -413,6 +413,7 @@ fn the_launch_carries_the_settings_file_accept_edits_and_no_forbidden_flag() {
         format!("{common_text}/worktrees/*/orca-term"),
         format!("{common_text}/refs/orca-term"),
         format!("{common_text}/orca-term.yaml"),
+        format!("{common_text}/orca-term"),
     ] {
         assert!(
             deny_write.contains(&json!(expected)),
@@ -425,11 +426,16 @@ fn the_launch_carries_the_settings_file_accept_edits_and_no_forbidden_flag() {
             format!("Edit(/{common_text}/worktrees/*/orca-term/**)"),
             format!("Edit(/{common_text}/refs/orca-term/**)"),
             format!("Edit(/{common_text}/orca-term.yaml)"),
+            format!("Edit(/{common_text}/orca-term/**)"),
         ])
     );
     assert!(
         common.join("refs/orca-term").is_dir(),
         "pre-created before the launch"
+    );
+    assert!(
+        common.join("orca-term").is_dir(),
+        "the registry's directory, pre-created before the launch"
     );
 }
 
