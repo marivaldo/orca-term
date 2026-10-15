@@ -25,6 +25,8 @@ local saved_env = {}
 local saved_cwd = nil
 ---@type string[]
 local temp_dirs = {}
+---The functions `stub_ui()` replaced, put back by `cleanup()`.
+local real_ui = { input = vim.ui.input, select = vim.ui.select, notify = vim.notify }
 
 ---Sets an environment variable of this Neovim and its children until `cleanup()`.
 ---@param name string
@@ -213,6 +215,55 @@ function M.global_keymaps()
   return found
 end
 
+---What the stubbed `vim.ui` and `vim.notify` saw.
+---@class spec.Ui
+---@field prompts string[] every prompt asked, in order
+---@field shown string[][] the items each `vim.ui.select` offered, as shown to the person
+---@field notes { message: string, level: integer }[] every notification, in order
+
+---Answers the client's questions until `cleanup()`, and records them: `vim.ui.input` answers
+---`answers.input`, and each `vim.ui.select` answers the next of `answers.select`, an item as shown
+---(a select with no answer left, or whose answer is not offered, is cancelled). `vim.notify` only
+---records.
+---@param answers { input?: string, select?: string[] }
+---@return spec.Ui
+function M.stub_ui(answers)
+  local ui = { prompts = {}, shown = {}, notes = {} }
+  local queue = vim.deepcopy(answers.select or {})
+  ---@diagnostic disable-next-line: duplicate-set-field
+  vim.ui.input = function(opts, on_confirm)
+    table.insert(ui.prompts, opts.prompt)
+    on_confirm(answers.input)
+  end
+  ---@diagnostic disable-next-line: duplicate-set-field
+  vim.ui.select = function(items, opts, on_choice)
+    table.insert(ui.prompts, opts.prompt)
+    local wanted = table.remove(queue, 1)
+    local shown = {}
+    local chosen, index = nil, nil
+    for i, item in ipairs(items) do
+      shown[i] = opts.format_item and opts.format_item(item) or item
+      if shown[i] == wanted and not chosen then
+        chosen, index = item, i
+      end
+    end
+    table.insert(ui.shown, shown)
+    on_choice(chosen, index)
+  end
+  ---@diagnostic disable-next-line: duplicate-set-field
+  vim.notify = function(message, level)
+    table.insert(ui.notes, { message = message, level = level })
+  end
+  return ui
+end
+
+---Waits, letting Neovim's event loop run, until `condition()` holds; fails the spec after 20 s.
+---@param condition fun(): boolean
+---@param what string what is awaited, for the failure
+function M.wait_for(condition, what)
+  assert(vim.wait(20000, condition, 20), 'timed out waiting for ' .. what)
+end
+
 ---Puts the environment, the current directory and the client's settings back, and removes every
 ---temporary directory.
 function M.cleanup()
@@ -228,6 +279,7 @@ function M.cleanup()
     vim.fn.delete(dir, 'rf')
   end
   temp_dirs = {}
+  vim.ui.input, vim.ui.select, vim.notify = real_ui.input, real_ui.select, real_ui.notify
   require('orca-term').setup()
 end
 

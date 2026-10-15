@@ -1,11 +1,13 @@
 //! Ops: `worktree rm`, which removes a worktree. Its branch goes too only when merged into the
 //! default branch, or with `--force`. A worktree whose lock is held (its setup or another
 //! orca-term command is running on it) or whose agent is running is refused, even with `--force`.
+//! A worktree with modified or untracked files is refused as `dirty` unless `--force`.
 
 use anyhow::{Context, Result};
 
 use crate::adapters::{env, git};
 use crate::domain::branch::Branch;
+use crate::domain::error::TypedError;
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
@@ -22,6 +24,13 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     check_no_holder(worktree)?;
     // Held until the worktree is gone, so no setup can start in it meanwhile.
     let _lock = lock_worktree(&worktree.name, &worktree.path)?;
+    if removal == Removal::Safe && git::has_changes(&worktree.path)? {
+        return Err(TypedError::Dirty {
+            name: worktree.name.clone(),
+            path: worktree.path.clone(),
+        }
+        .into());
+    }
     let primary = &fleet.primary;
 
     // Decided before the worktree goes, so a failure here leaves everything in place.

@@ -1,17 +1,23 @@
 -- orca-term's sidebar: the fleet in a left split of every tab, toggled by `:OrcaTerm sidebar`.
 --
--- This is the only module that touches windows and buffers (`cargo xtask client-boundary` checks
--- it). It reads the fleet through `core.lua`, has `render.lua` turn it into lines and colours, and
--- paints them into one buffer that every tab shows in its own window.
+-- This module and `tabs.lua` are the only ones that touch windows and buffers (`cargo xtask
+-- client-boundary` checks it). It reads the fleet through `core.lua`, has `render.lua` turn it into
+-- lines and colours, and paints them into one buffer that every tab shows in its own window. Its
+-- keys, local to that buffer, move the selection (`j`, `k`), go to a worktree's tab (`<CR>`, through
+-- `tabs.lua`), create a worktree (`a`) and open the menu of the worktree under the cursor (`.`),
+-- both through `actions.lua`. The selection follows the current tab when it is a worktree's.
 --
--- The fleet is read when the sidebar opens and when Neovim gains focus; there is no timer. Opening
--- never moves the cursor out of the person's window and never resizes their windows beyond the
--- split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
--- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
+-- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
+-- it; there is no timer. Opening never moves the cursor out of the person's window and never
+-- resizes their windows beyond the split itself; closing only closes the sidebar's windows. A tab
+-- never ends up holding only the sidebar: `:q` on its last other window closes the tab (or quits
+-- Neovim) as it would without it.
 
+local actions = require('orca-term.actions')
 local core = require('orca-term.core')
 local highlights = require('orca-term.highlights')
 local render = require('orca-term.render')
+local tabs = require('orca-term.tabs')
 
 local M = {}
 
@@ -124,6 +130,72 @@ local function refresh()
   redraw()
 end
 
+---Reads the fleet again and redraws, when the sidebar is open; does nothing otherwise.
+function M.refresh()
+  if state.open then
+    refresh()
+  end
+end
+
+---Selects the worktree whose directory is the current tab's, when there is one. In any other tab,
+---such as the primary checkout's, the selection stays where it was.
+local function follow_tab()
+  if not state.fleet then
+    return
+  end
+  for _, worktree in ipairs(state.fleet.worktrees) do
+    if tabs.is_current(worktree.path) then
+      if state.selected ~= worktree.path then
+        state.selected = worktree.path
+        redraw()
+      end
+      return
+    end
+  end
+end
+
+---The worktree on the cursor's line, or `nil` on the header, a heading or a blank line.
+---@return orca_term.Worktree?
+local function worktree_under_cursor()
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local path = state.rendered and state.rendered.paths[line]
+  if not (path and state.fleet) then
+    return nil
+  end
+  for _, worktree in ipairs(state.fleet.worktrees) do
+    if worktree.path == path then
+      return worktree
+    end
+  end
+  return nil
+end
+
+---The primary checkout's path, where the core runs for the actions; the current directory when the
+---fleet could not be read.
+---@return string
+local function primary_path()
+  return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
+end
+
+---`<CR>`: selects the worktree under the cursor and goes to its tab.
+local function open_worktree()
+  local worktree = worktree_under_cursor()
+  if not worktree then
+    return
+  end
+  state.selected = worktree.path
+  redraw()
+  tabs.go_to(worktree.path)
+end
+
+---`.`: the menu of the worktree under the cursor.
+local function worktree_menu()
+  local worktree = worktree_under_cursor()
+  if worktree then
+    actions.menu(worktree, primary_path())
+  end
+end
+
 ---Moves the selection `step` worktrees down (1) or up (-1), stopping at the first and the last.
 ---@param step integer
 local function move(step)
@@ -172,13 +244,21 @@ local function ensure_buffer()
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = M.FILETYPE
 
-  -- The sidebar's only keys, local to its buffer.
-  vim.keymap.set('n', 'j', function()
+  -- The sidebar's keys, local to its buffer.
+  local function map(lhs, rhs, desc)
+    vim.keymap.set('n', lhs, rhs, { buffer = buf, nowait = true, desc = 'orca-term: ' .. desc })
+  end
+  map('j', function()
     move(1)
-  end, { buffer = buf, nowait = true, desc = 'orca-term: select the next worktree' })
-  vim.keymap.set('n', 'k', function()
+  end, 'select the next worktree')
+  map('k', function()
     move(-1)
-  end, { buffer = buf, nowait = true, desc = 'orca-term: select the previous worktree' })
+  end, 'select the previous worktree')
+  map('<CR>', open_worktree, "go to the worktree's tab")
+  map('a', function()
+    actions.create(primary_path())
+  end, 'create a worktree')
+  map('.', worktree_menu, 'the actions of the worktree under the cursor')
 
   state.buf = buf
   return buf
@@ -283,6 +363,7 @@ function M.open()
   ensure_buffer()
   state.open = true
   refresh()
+  follow_tab()
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
     show_in(tab)
   end
@@ -295,6 +376,17 @@ function M.open()
     callback = function()
       show_in(vim.api.nvim_get_current_tabpage())
     end,
+  })
+  vim.api.nvim_create_autocmd('TabEnter', {
+    group = group,
+    desc = 'orca-term: select the worktree whose tab this is',
+    callback = follow_tab,
+  })
+  vim.api.nvim_create_autocmd('DirChanged', {
+    group = group,
+    pattern = 'tabpage',
+    desc = "orca-term: select the worktree this tab's directory became",
+    callback = follow_tab,
   })
   vim.api.nvim_create_autocmd('QuitPre', {
     group = group,

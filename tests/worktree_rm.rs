@@ -19,6 +19,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use predicates::prelude::*;
+use serde_json::Value;
 use support::Repo;
 
 fn git_in(repo: &Repo, dir: &Path, args: &[&str]) -> String {
@@ -107,7 +108,7 @@ fn a_dirty_worktree_needs_force() {
     std::fs::write(wip.join("scratch.txt"), "unsaved\n").unwrap();
 
     rm(&repo, &["wip"])
-        .failure()
+        .code(6)
         .stderr(predicate::str::contains("--force"))
         .stderr(predicate::str::contains("untracked"));
     assert!(wip.join("scratch.txt").exists());
@@ -116,6 +117,57 @@ fn a_dirty_worktree_needs_force() {
     rm(&repo, &["wip", "--force"]).success();
     assert!(!wip.exists());
     assert!(!registered(&repo, &wip));
+}
+
+#[test]
+fn a_worktree_with_changes_is_the_typed_dirty_error_and_ignored_files_do_not_count() {
+    let repo = Repo::new();
+    repo.write(".gitignore", "build/\n");
+    repo.commit_all("ignore build");
+    let wip = worktree(&repo, "worktrees/wip", "wip");
+    // An ignored file alone leaves the worktree clean, as git sees it.
+    std::fs::create_dir_all(wip.join("build")).unwrap();
+    std::fs::write(wip.join("build/out.o"), "object\n").unwrap();
+    // A modified tracked file makes it dirty.
+    std::fs::write(wip.join(".gitignore"), "build/\ndist/\n").unwrap();
+
+    let out = rm(&repo, &["wip", "--json"]).code(6);
+    let doc: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(doc["contract"], 1);
+    assert_eq!(doc["error"]["kind"], "dirty");
+    let message = doc["error"]["message"].as_str().unwrap();
+    assert!(message.contains("modified or untracked files"), "{message}");
+    assert!(message.contains("--force"), "{message}");
+    assert!(registered(&repo, &wip));
+
+    git_in(&repo, &wip, &["checkout", "--", ".gitignore"]);
+    rm(&repo, &["wip"]).success();
+    assert!(!registered(&repo, &wip));
+}
+
+#[test]
+fn with_json_the_removal_says_what_happened_to_the_branch() {
+    let repo = Repo::new();
+    let docs = worktree(&repo, "worktrees/docs", "docs");
+    let fix = worktree(&repo, "worktrees/fix", "fix");
+    commit_in(&repo, &fix);
+
+    let out = rm(&repo, &["docs", "--json"]).success();
+    let doc: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(doc["contract"], 1);
+    assert_eq!(doc["name"], "docs");
+    assert_eq!(doc["path"], docs.to_str().unwrap());
+    assert_eq!(
+        doc["branch"],
+        serde_json::json!({"name": "docs", "status": "deleted", "reason": "merged into main"})
+    );
+
+    let out = rm(&repo, &["fix", "--json"]).success();
+    let doc: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        doc["branch"],
+        serde_json::json!({"name": "fix", "status": "kept", "reason": "not merged into main"})
+    );
 }
 
 #[test]

@@ -238,8 +238,12 @@ fn render_setup(name: &str, setup: &SetupReport) -> String {
 }
 
 /// Prints what `worktree rm` removed and what happened to the worktree's branch.
-pub(crate) fn worktree_removed(removed: &Removed) {
-    out(&render_worktree_removed(removed));
+pub(crate) fn worktree_removed(removed: &Removed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_worktree_removed(removed)),
+        Format::Json => out(&json::removed(removed)?),
+    }
+    Ok(())
 }
 
 fn render_worktree_removed(removed: &Removed) -> String {
