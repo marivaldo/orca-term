@@ -336,25 +336,33 @@ impl Changed {
 
     /// Tells every Neovim registered in the repository that this worktree changed, firing
     /// `User OrcaTermWorktreeChanged` there with its path. A Neovim that is gone has its file
-    /// removed from the registry; any other failure is skipped. It never fails, and each Neovim
-    /// takes a bounded time (`adapters/nvim.rs`), so the write that came before is never held up.
+    /// removed from the registry; any other failure is skipped. It never fails, and all the
+    /// Neovims together take a bounded time (`adapters/nvim.rs`), so the write that came before is
+    /// never held up.
     pub(crate) fn notify(&self) {
         let registry = nvim::registry_dir(&self.common);
         let Ok(names) = fs::list_file_names(&registry) else {
             return;
         };
-        let message = nvim::worktree_changed(&self.worktree.to_string_lossy());
+        // Each registry file, with the Neovim address it holds.
+        let mut entries = Vec::new();
+        let mut sockets = Vec::new();
         for name in names.iter().filter(|name| nvim::is_entry_name(name)) {
             let entry = registry.join(name);
             let address = fs::read_optional(&entry)
                 .ok()
                 .flatten()
                 .and_then(|bytes| Address::from_entry(&bytes));
-            let Some(address) = address else {
-                continue;
-            };
-            if adapters::nvim::send(address.as_path(), &message) == Sent::Gone {
-                let _ = fs::remove_if_exists(&entry);
+            if let Some(address) = address {
+                sockets.push(address.as_path().to_owned());
+                entries.push(entry);
+            }
+        }
+        let message = nvim::worktree_changed(&self.worktree.to_string_lossy());
+        let sent = adapters::nvim::send_all(&sockets, &message);
+        for (entry, sent) in entries.iter().zip(sent) {
+            if sent == Sent::Gone {
+                let _ = fs::remove_if_exists(entry);
             }
         }
     }

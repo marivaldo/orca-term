@@ -1,8 +1,8 @@
 //! Domain: the running Neovims of a repository, and what the core tells them. Each Neovim
 //! registers its server address (`v:servername`, the path of a unix socket) in the registry,
 //! `<git common dir>/orca-term/nvim/`, one file per Neovim; after every write to a worktree's
-//! state the core sends each one a msgpack-RPC notification that fires
-//! `User OrcaTermWorktreeChanged` there, with the worktree's path, so its sidebar redraws.
+//! state the core sends each one a msgpack-RPC request that fires `User OrcaTermWorktreeChanged`
+//! there, with the worktree's path, so its sidebar redraws.
 //!
 //! A registry file is named after its address: the address's 64-bit FNV-1a hash in 16 lowercase
 //! hex digits, so the name is short, the same for the same address every time (registering is
@@ -21,7 +21,7 @@ use crate::domain::state::ADMIN_DIR_NAME;
 /// The registry's directory, inside the repository's `orca-term` directory in the git common dir.
 const REGISTRY_DIR_NAME: &str = "nvim";
 
-/// The `User` autocommand pattern the notification fires in Neovim.
+/// The `User` autocommand pattern the request fires in Neovim.
 pub(crate) const EVENT: &str = "OrcaTermWorktreeChanged";
 
 /// The registry of the repository whose git common dir is `common`: one file per running Neovim.
@@ -108,14 +108,20 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
-/// The msgpack-RPC notification that tells a Neovim the worktree at `path` changed:
-/// `[2, "nvim_exec_autocmds", ["User", {"pattern": EVENT, "data": {"path": path}}]]`. Type 2 is a
-/// notification, which Neovim never answers. `path` is the worktree's path as `worktree ls`
-/// prints it, so the client can compare the two.
+/// The id of the one request the core sends on each connection.
+pub(crate) const REQUEST_ID: u8 = 1;
+
+/// The msgpack-RPC request that tells a Neovim the worktree at `path` changed:
+/// `[0, REQUEST_ID, "nvim_exec_autocmds", ["User", {"pattern": EVENT, "data": {"path": path}}]]`.
+/// Type 0 is a request, which Neovim answers once the call has run. It is a request and not a
+/// notification (type 2, never answered) because Neovim drops a call still waiting to run when
+/// its connection closes: the core must wait for the answer before it hangs up. `path` is the
+/// worktree's path as `worktree ls` prints it, so the client can compare the two.
 pub(crate) fn worktree_changed(path: &str) -> Vec<u8> {
     let mut out = Vec::new();
-    push_array(&mut out, 3);
-    push_uint(&mut out, 2);
+    push_array(&mut out, 4);
+    push_uint(&mut out, 0);
+    push_uint(&mut out, REQUEST_ID);
     push_str(&mut out, "nvim_exec_autocmds");
     // The call's arguments: the event, then its options.
     push_array(&mut out, 2);
@@ -185,9 +191,9 @@ mod tests {
         out
     }
 
-    /// The notification's bytes up to the path's string, which each test appends.
+    /// The request's bytes up to the path's string, which each test appends.
     fn head() -> Vec<u8> {
-        let mut out = vec![0x93, 0x02];
+        let mut out = vec![0x94, 0x00, 0x01];
         out.extend(fixstr("nvim_exec_autocmds"));
         out.push(0x92);
         out.extend(fixstr("User"));
@@ -201,16 +207,16 @@ mod tests {
     }
 
     #[test]
-    fn the_notification_is_the_exact_msgpack_of_the_autocommand_call() {
+    fn the_request_is_the_exact_msgpack_of_the_autocommand_call() {
         let mut expected = head();
         expected.extend(fixstr("/w/fix"));
         assert_eq!(worktree_changed("/w/fix"), expected);
         // The whole message, byte by byte, for a reader without msgpack at hand.
         assert_eq!(
-            worktree_changed("/a")[..22],
+            worktree_changed("/a")[..23],
             [
-                0x93, 0x02, 0xb2, b'n', b'v', b'i', b'm', b'_', b'e', b'x', b'e', b'c', b'_', b'a',
-                b'u', b't', b'o', b'c', b'm', b'd', b's', 0x92,
+                0x94, 0x00, 0x01, 0xb2, b'n', b'v', b'i', b'm', b'_', b'e', b'x', b'e', b'c', b'_',
+                b'a', b'u', b't', b'o', b'c', b'm', b'd', b's', 0x92,
             ]
         );
         assert!(
