@@ -3,8 +3,10 @@
 -- This is the only module that starts a process (`cargo xtask client-boundary` checks it). It
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for; the commands that may run a setup (`worktree
--- new`, `setup`, `rm`) are not, and hand their result to a callback in Neovim's main loop. The
--- client never works the fleet out by itself: it shows what the core prints.
+-- new`, `setup`, `rm`) and `agent start` are not, and hand their result to a callback in Neovim's
+-- main loop. `agent attach` is the one command run without `--json`: it runs in a terminal buffer
+-- the caller made current, for the person to use, until it detaches or the agent ends. The client
+-- never works the fleet out by itself: it shows what the core prints.
 --
 -- Every function returns (or hands its callback) its result, or `nil` and an `orca_term.Error`.
 -- None of them throws.
@@ -66,6 +68,17 @@
 ---@field name string
 ---@field path string
 ---@field branch orca_term.RemovedBranch
+
+---The holder of an agent, as `agent start --json` prints it.
+---@class orca_term.Holder
+---@field status string `started`, or `already_running` when the agent was running already
+---@field pid? integer the holder's process id
+
+---What `agent start --json` prints: the worktree, its agent and its holder.
+---@class orca_term.Started
+---@field worktree orca_term.Worktree
+---@field agent string the agent started, `claude-code`
+---@field holder orca_term.Holder
 
 local M = {}
 
@@ -269,6 +282,45 @@ function M.worktree_rm(path, force, cwd, on_done)
     table.insert(args, '--force')
   end
   run_async(args, cwd, on_done)
+end
+
+---Starts the agent of the worktree at `path` in its holder, without waiting:
+---`orca-term agent start <path> --rows R --cols C --json`, `size` being the agent's first terminal
+---size. An agent already running is not an error: `holder.status` is then `already_running`. A
+---worktree that is not ready fails as `other`, a missing sandbox as `no_sandbox`; the message says
+---why and names the fix.
+---@param path string
+---@param size { rows: integer, cols: integer }
+---@param cwd string
+---@param on_done fun(started: orca_term.Started?, err: orca_term.Error?)
+function M.agent_start(path, size, cwd, on_done)
+  local rows, cols = tostring(size.rows), tostring(size.cols)
+  run_async({ 'agent', 'start', path, '--rows', rows, '--cols', cols }, cwd, on_done)
+end
+
+---Attaches the current buffer, as a terminal, to the agent of the worktree at `path`:
+---`orca-term agent attach <path> --no-detach-key`, run in `cwd`. The caller makes an empty buffer
+---current first. No key detaches (Ctrl-\ is Neovim's terminal prefix): the attach ends when its
+---terminal closes, which detaches and leaves the agent running, or when the agent ends. Returns
+---the terminal's job id.
+---@param path string
+---@param cwd string
+---@return integer? job
+---@return orca_term.Error? err
+function M.agent_attach(path, cwd)
+  local binary, find_err = M.find_binary()
+  if not binary then
+    return nil, find_err
+  end
+  local command = { binary, 'agent', 'attach', path, '--no-detach-key' }
+  local shown = table.concat(command, ' ')
+  -- jobstart throws when `cwd` is not a directory, and returns 0 or -1 when it cannot start.
+  local started, job = pcall(vim.fn.jobstart, command, { term = true, cwd = cwd })
+  if not started or job <= 0 then
+    local why = started and ('jobstart returned %d'):format(job) or tostring(job)
+    return nil, failure('failed', ('could not run `%s` in %s: %s'):format(shown, cwd, why))
+  end
+  return job
 end
 
 return M
