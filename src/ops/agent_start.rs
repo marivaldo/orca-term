@@ -121,6 +121,7 @@ fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktree> {
         path: worktree.path.clone(),
         branch: worktree.branch.clone(),
         state: derived.state,
+        activity: derived.activity,
         agent: derived.agent,
         holder: derived.holder,
     })

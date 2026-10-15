@@ -36,7 +36,9 @@ struct PrimaryView<'a> {
     branch: Option<&'a str>,
 }
 
-/// One worktree: `agent` is its recorded agent's name or null, `holder` whether a holder is alive.
+/// One worktree: `activity` is what its agent is doing or said last, beside a state from its
+/// hooks (`working`, `waiting`, `finished`, `failed`, `interrupted`), else null; `agent` is its
+/// recorded agent's name or null, `holder` whether a holder is alive.
 #[derive(Debug, Serialize)]
 struct WorktreeView<'a> {
     name: &'a str,
@@ -44,6 +46,7 @@ struct WorktreeView<'a> {
     branch: Option<&'a str>,
     state: &'static str,
     detail: Option<String>,
+    activity: Option<&'a str>,
     agent: Option<&'a str>,
     holder: bool,
 }
@@ -157,6 +160,7 @@ pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
             &created.path,
             Some(&created.branch),
             &created.setup.state,
+            created.setup.activity.as_deref(),
             created.setup.agent.as_deref(),
             HolderStatus::Gone,
         ),
@@ -176,6 +180,7 @@ pub(crate) fn set_up(done: &SetupDone) -> serde_json::Result<String> {
             &done.path,
             done.branch.as_ref(),
             &done.setup.state,
+            done.setup.activity.as_deref(),
             done.setup.agent.as_deref(),
             HolderStatus::Gone,
         ),
@@ -261,6 +266,7 @@ fn listed_view(worktree: &Worktree) -> WorktreeView<'_> {
         &worktree.path,
         worktree.branch.as_ref(),
         &worktree.state,
+        worktree.activity.as_deref(),
         worktree.agent.as_deref(),
         worktree.holder,
     )
@@ -271,6 +277,7 @@ fn worktree_view<'a>(
     path: &'a Path,
     branch: Option<&'a Branch>,
     state: &State,
+    activity: Option<&'a str>,
     agent: Option<&'a str>,
     holder: HolderStatus,
 ) -> WorktreeView<'a> {
@@ -280,6 +287,7 @@ fn worktree_view<'a>(
         branch: branch.map(Branch::as_str),
         state: state_name(state),
         detail: state.detail(),
+        activity,
         agent,
         holder: holder.is_alive(),
     }
@@ -290,6 +298,11 @@ fn state_name(state: &State) -> &'static str {
     match state {
         State::NoAgent => "no_agent",
         State::Idle => "idle",
+        State::Working => "working",
+        State::Waiting => "waiting",
+        State::Finished => "finished",
+        State::Failed => "failed",
+        State::Interrupted => "interrupted",
         State::SettingUp => "setting_up",
         State::NotReady(_) => "not_ready",
         State::Broken(_) => "broken",
@@ -339,7 +352,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","agent":null,"holder":false}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false}}]}}"#
             )
         );
     }
@@ -356,6 +369,7 @@ mod tests {
             None,
             &failed,
             None,
+            None,
             HolderStatus::Gone,
         );
         assert_eq!(view.state, "not_ready");
@@ -364,12 +378,44 @@ mod tests {
         assert_eq!(state_name(&State::Idle), "idle");
     }
 
+    #[test]
+    fn the_agent_states_are_named_and_carry_their_activity() {
+        for (state, name) in [
+            (State::Working, "working"),
+            (State::Waiting, "waiting"),
+            (State::Finished, "finished"),
+            (State::Failed, "failed"),
+            (State::Interrupted, "interrupted"),
+        ] {
+            assert_eq!(state_name(&state), name);
+        }
+        let worktree = Worktree {
+            state: State::Working,
+            activity: Some("Bash: npm test".to_owned()),
+            ..idle_worktree()
+        };
+        let mut fleet = Fleet::from_entries(vec![WorktreeEntry {
+            path: PathBuf::from("/repo"),
+            branch: Some(Branch::new("main")),
+            prunable: None,
+        }])
+        .unwrap();
+        fleet.worktrees.push(worktree);
+        assert_eq!(
+            super::fleet(&fleet).unwrap(),
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true}}]}}"#
+            )
+        );
+    }
+
     fn idle_worktree() -> Worktree {
         Worktree {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/fix"),
             branch: Some(Branch::new("fix")),
             state: State::Idle,
+            activity: None,
             agent: Some("claude-code".to_owned()),
             holder: HolderStatus::Alive,
         }
@@ -391,7 +437,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"agent":"claude-code","holder":true}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}}}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -435,13 +481,14 @@ mod tests {
                 script: None,
                 log: Some(PathBuf::from("/a/setup.log")),
                 state: State::NoAgent,
+                activity: None,
                 agent: None,
             },
         };
         assert_eq!(
             set_up(&done).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"agent":null,"holder":false}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
             )
         );
     }

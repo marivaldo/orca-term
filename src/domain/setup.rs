@@ -83,8 +83,11 @@ pub(crate) struct SetupReport {
     pub(crate) script: Option<Setting<String>>,
     /// The setup log, written when a script ran.
     pub(crate) log: Option<PathBuf>,
-    /// The state the setup left the worktree in: ready (idle or no agent) or not ready.
+    /// The state the setup left the worktree in: ready (no agent, or its agent's state) or not
+    /// ready.
     pub(crate) state: State,
+    /// The activity shown beside that state (`domain/fleet.rs`).
+    pub(crate) activity: Option<String>,
     /// The agent the worktree keeps recorded through the setup, by name.
     pub(crate) agent: Option<String>,
 }

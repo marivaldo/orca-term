@@ -26,6 +26,7 @@ use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
+use crate::domain::turn::{self, Status};
 use crate::domain::worktree::{self, Target};
 
 /// Reads the fleet of the repository containing `dir`, with each worktree's state. Never writes.
@@ -40,6 +41,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
     for (worktree, prunable) in fleet.worktrees.iter_mut().zip(prunable) {
         let derived = read_state(&worktree.path, prunable);
         worktree.state = derived.state;
+        worktree.activity = derived.activity;
         worktree.agent = derived.agent;
         worktree.holder = derived.holder;
     }
@@ -50,6 +52,8 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Derived {
     pub(crate) state: State,
+    /// What the agent is doing or said last, beside a state from its hooks.
+    pub(crate) activity: Option<String>,
     /// The agent recorded in `worktree.json`, by name.
     pub(crate) agent: Option<String>,
     /// Whether a holder is alive right now.
@@ -60,6 +64,7 @@ impl Derived {
     fn broken(reason: BrokenReason) -> Self {
         Self {
             state: State::Broken(reason),
+            activity: None,
             agent: None,
             holder: HolderStatus::Gone,
         }
@@ -82,16 +87,18 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
     }
 }
 
-/// The state of the worktree whose admin directory is `admin`, from its state file and the
-/// volatile facts behind it. Only reads: the worktree's lock is probed only for a setup recorded
-/// as running, the holder's lock is probed and released at once, and the setup log is read only
-/// for a failed setup.
+/// The state of the worktree whose admin directory is `admin`, from its state file, the hooks'
+/// live status and the volatile facts behind them. Only reads: the worktree's lock is probed only
+/// for a setup recorded as running, the holder's lock is probed and released at once, the setup
+/// log is read only for a failed setup, and the live status only for a ready worktree with an
+/// agent.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     let mut recorded = read_recorded(admin)?;
     if recorded.setup == Some(SetupRecord::Running) {
         if fs::lock_status(admin)? == LockStatus::Held {
             return Ok(Derived {
                 state: state::setup_running(LockStatus::Held),
+                activity: None,
                 agent: recorded.agent,
                 holder: HolderStatus::Gone,
             });
@@ -102,20 +109,32 @@ pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
         recorded = read_recorded(admin)?;
     }
     let holder = HolderStatus::from_lock(fs::lock_status_at(&admin.agent_lock())?);
-    let state = match recorded.setup {
+    let (state, activity) = match recorded.setup {
         // Still recorded as running, with its lock seen free: the process died.
-        Some(SetupRecord::Running) => state::setup_running(LockStatus::Free),
+        Some(SetupRecord::Running) => (state::setup_running(LockStatus::Free), None),
         Some(SetupRecord::Failed(exit)) => {
             let log = fs::read_optional(&admin.setup_log())?.unwrap_or_default();
-            state::setup_failed(exit, &log)
+            (state::setup_failed(exit, &log), None)
         }
-        Some(SetupRecord::Succeeded) | None => state::ready(recorded.agent.as_deref()),
+        Some(SetupRecord::Succeeded) | None => {
+            let status = recorded.agent.as_ref().and_then(|_| read_status(admin));
+            state::ready(recorded.agent.as_deref(), status.as_ref(), holder)
+        }
     };
     Ok(Derived {
         state,
+        activity,
         agent: recorded.agent,
         holder,
     })
+}
+
+/// The hooks' live status in `admin`, or `None` when there is none this core can use: missing,
+/// unreadable, corrupt or of a newer schema. It never fails the fleet; the next hook rewrites a
+/// corrupt one, saying so in `hook.log`.
+fn read_status(admin: &AdminDir) -> Option<Status> {
+    let bytes = fs::read_optional(&admin.status_file()).ok().flatten();
+    turn::read_status(bytes.as_deref()).usable()
 }
 
 /// What the state file in `admin` records.
@@ -254,6 +273,7 @@ pub(crate) fn set_up(
             script: None,
             log: None,
             state: derived.state,
+            activity: derived.activity,
             agent: derived.agent,
         });
     };
@@ -269,6 +289,7 @@ pub(crate) fn set_up(
         script: Some(script),
         log: Some(log_path),
         state: derived.state,
+        activity: derived.activity,
         agent: derived.agent,
     })
 }

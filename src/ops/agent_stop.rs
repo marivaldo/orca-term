@@ -35,6 +35,7 @@ pub(crate) fn run(target: &Target) -> Result<Stopped> {
     Ok(Stopped {
         worktree: Worktree {
             state: derived.state,
+            activity: derived.activity,
             agent: derived.agent,
             holder: derived.holder,
             ..worktree.clone()
