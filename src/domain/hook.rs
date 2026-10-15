@@ -180,15 +180,23 @@ impl Step {
 
     /// Makes the open turn the one `prompt_id` belongs to. A `prompt_id` no turn has means a
     /// queued prompt became a turn of its own: the open turn is closed as interrupted and one is
-    /// opened for it, named after the queued prompt. Returns whether a turn is open.
+    /// opened for it, named after the queued prompt. With no turn open, the `prompt_id` of the
+    /// latest closed turn means a late or repeated event of a turn that already ended: it is
+    /// ignored. Returns whether a turn is open.
     fn follow_prompt(&mut self, prompt_id: Option<&str>) -> bool {
         let open_id = self
             .status
             .turn
             .as_ref()
             .map(|turn| turn.prompt_id.as_deref());
+        let closed_id = self
+            .status
+            .latest
+            .as_ref()
+            .and_then(|turn| turn.prompt_id.as_deref());
         match (prompt_id, open_id) {
             (Some(id), Some(Some(open))) if id == open => true,
+            (Some(id), None) if closed_id == Some(id) => false,
             (Some(id), _) => {
                 let prompt = self.status.queued.take().unwrap_or_default();
                 self.close(Outcome::Interrupted, None, None);
@@ -550,6 +558,27 @@ mod tests {
         let (status, log) = replay(&[tool("PreToolUse", "p9", "Bash", json!({"command": "ls"}))]);
         assert_eq!(summary(&log), [(1, None)], "no turn was open");
         assert_eq!(status.turn.unwrap().activity, "Bash: ls");
+    }
+
+    #[test]
+    fn events_of_a_turn_that_already_ended_are_ignored() {
+        let late_tool = Payload {
+            tool_name: Some("Bash".to_owned()),
+            ..event("PostToolUse", Some("p1"))
+        };
+        for late in [late_tool, stop("p1", "again")] {
+            let (status, log) = replay(&[submit("p1", "go"), stop("p1", "ok"), late.clone()]);
+            assert_eq!(
+                summary(&log),
+                [(1, None), (1, Some(Outcome::Finished))],
+                "{}",
+                late.event
+            );
+            assert_eq!(status.turn, None, "{}", late.event);
+            let latest = status.latest.unwrap();
+            assert_eq!(latest.outcome, Outcome::Finished);
+            assert_eq!(latest.detail.as_deref(), Some("ok"));
+        }
     }
 
     #[test]
