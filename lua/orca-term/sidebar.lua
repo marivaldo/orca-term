@@ -9,7 +9,9 @@
 -- selection follows the current tab when it is a worktree's.
 --
 -- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
--- it; there is no timer. Opening never moves the cursor out of the person's window and never
+-- it; it is never polled. While a listed worktree is working, one timer turns its glyph through
+-- `render.SPINNER` by drawing the fleet already read again, never reading it; the timer stops once
+-- no worktree is working or the sidebar closes. Opening never moves the cursor out of the person's window and never
 -- resizes their windows beyond the split itself; closing only closes the sidebar's windows. A tab
 -- never ends up holding only the sidebar: `:q` on its last other window closes the tab (or quits
 -- Neovim) as it would without it.
@@ -25,6 +27,9 @@ local M = {}
 ---The namespace of the sidebar's highlights.
 M.NAMESPACE = vim.api.nvim_create_namespace('orca-term-sidebar')
 
+---How often the working glyph turns, in milliseconds.
+M.SPIN_MS = 250
+
 ---The sidebar buffer's name and filetype.
 M.BUFFER_NAME = 'orca-term://sidebar'
 M.FILETYPE = 'orca-term-sidebar'
@@ -38,9 +43,11 @@ M.FILETYPE = 'orca-term-sidebar'
 ---@field error? orca_term.Error why the fleet could not be read
 ---@field selected? string the selected worktree's path
 ---@field rendered? orca_term.Rendered what the buffer shows
+---@field frame integer the spinner frame the working glyph shows
+---@field timer? uv.uv_timer_t the timer turning the working glyph, while one is working
 
 ---@type orca_term.SidebarState
-local state = { open = false }
+local state = { open = false, frame = 0 }
 
 ---Whether the sidebar is open.
 ---@return boolean
@@ -113,16 +120,91 @@ local function paint()
   follow_selection()
 end
 
+---Writes again only the lines that differ from `before`, then the colours, leaving every
+---cursor where it is. The spinner changes glyphs only, so the lines keep their number and their
+---byte lengths; anything else is painted whole.
+---@param before orca_term.Rendered
+local function repaint(before)
+  local buf = state.buf
+  local rendered = state.rendered
+  if not (buf and rendered) then
+    return
+  end
+  if #before.lines ~= #rendered.lines then
+    paint()
+    return
+  end
+  vim.bo[buf].modifiable = true
+  for index, line in ipairs(rendered.lines) do
+    if line ~= before.lines[index] then
+      vim.api.nvim_buf_set_lines(buf, index - 1, index, false, { line })
+    end
+  end
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(buf, M.NAMESPACE, 0, -1)
+  for _, span in ipairs(rendered.spans) do
+    vim.api.nvim_buf_set_extmark(buf, M.NAMESPACE, span.line - 1, span.first, {
+      end_col = span.last,
+      hl_group = span.group,
+    })
+  end
+end
+
+---Stops the timer turning the working glyph, if it runs, and goes back to the first frame.
+local function stop_spinning()
+  if state.timer then
+    state.timer:stop()
+    state.timer:close()
+    state.timer = nil
+  end
+  state.frame = 0
+end
+
+---One turn of the working glyph: the next frame of the fleet already read, painted without moving
+---any cursor or the selection. The fleet is not read again.
+local function spin()
+  local before = state.rendered
+  if not (state.timer and state.fleet and before) then
+    return
+  end
+  state.frame = state.frame + 1
+  state.rendered = render.fleet(state.fleet, state.selected, nil, state.frame)
+  repaint(before)
+end
+
+---Starts the timer turning the working glyph while the sidebar is open and a worktree of the
+---fleet last read is working, and stops it otherwise. There is one timer at most.
+local function update_spinning()
+  local wanted = state.open and state.fleet ~= nil and render.spins(state.fleet)
+  if not wanted then
+    stop_spinning()
+    return
+  end
+  if state.timer then
+    return
+  end
+  local timer = assert(vim.uv.new_timer())
+  timer:start(M.SPIN_MS, M.SPIN_MS, vim.schedule_wrap(spin))
+  state.timer = timer
+end
+
+---Whether the working glyph is turning: the sidebar is open and a worktree is working.
+---@return boolean
+function M.spinning()
+  return state.timer ~= nil
+end
+
 ---Renders the fleet last read, keeping the selection, and paints it.
 local function redraw()
   if state.fleet then
-    state.rendered = render.fleet(state.fleet, state.selected)
+    state.rendered = render.fleet(state.fleet, state.selected, nil, state.frame)
     state.selected = state.rendered.selected
   else
     local message = state.error and state.error.message or 'orca-term: the fleet was not read'
     state.rendered = render.error(message)
   end
   paint()
+  update_spinning()
 end
 
 ---Reads the fleet of the current directory's repository from the core, then redraws.
@@ -416,6 +498,7 @@ end
 ---Closes the sidebar in every tab.
 function M.close()
   state.open = false
+  stop_spinning()
   if state.group then
     vim.api.nvim_del_augroup_by_id(state.group)
     state.group = nil
