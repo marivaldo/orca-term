@@ -2,11 +2,14 @@
 --
 -- This is the only module that starts a process (`cargo xtask client-boundary` checks it). It
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
--- client's contract. `worktree ls` is waited for; the commands that may run a setup (`worktree
--- new`, `setup`, `rm`) and `agent start` are not, and hand their result to a callback in Neovim's
--- main loop. `agent attach` is the one command run without `--json`: it runs in a terminal buffer
--- the caller made current, for the person to use, until it detaches or the agent ends. The client
--- never works the fleet out by itself: it shows what the core prints.
+-- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
+-- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`) and `agent
+-- start` are not waited for, and hand their result to a callback in Neovim's main loop. `nvim
+-- register` tells the core where this Neovim listens, so it says when a worktree changes; `nvim
+-- unregister` runs as Neovim exits and is waited for, briefly. `agent attach` is the one command
+-- run without `--json`: it runs in a terminal buffer the caller made current, for the person to
+-- use, until it detaches or the agent ends. The client never works the fleet out by itself: it
+-- shows what the core prints.
 --
 -- Every function returns (or hands its callback) its result, or `nil` and an `orca_term.Error`.
 -- None of them throws.
@@ -91,8 +94,11 @@ local M = {}
 ---The JSON contract this client speaks. A core printing another one is refused.
 M.CONTRACT = 1
 
----How long a core command may take before it is stopped.
+---How long a core command that is waited for may take before it is stopped.
 local TIMEOUT_SECONDS = 10
+
+---How long `nvim unregister` may take: it runs as Neovim exits, which it must not hold up.
+local UNREGISTER_TIMEOUT_SECONDS = 1
 
 ---The repository this client is loaded from: three directories up from this file,
 ---`<root>/lua/orca-term/core.lua`. `cargo build` puts the core binary under `<root>/target/`.
@@ -190,12 +196,32 @@ local function decode(result, binary, shown)
   return document
 end
 
----Runs `orca-term <args> --json` in `cwd`, waits for it, and returns the JSON document it printed.
----@param args string[]
----@param cwd string
+---The document a finished core command printed, or the error it stands for, as `decode` reads
+---it; a command stopped for taking longer than `timeout` seconds is an error of its own.
+---@param result vim.SystemCompleted
+---@param binary string
+---@param shown string the command line, for messages
+---@param timeout? integer the time limit it ran with, in seconds; `nil` when it had none
 ---@return table? document
 ---@return orca_term.Error? err
-local function run(args, cwd)
+local function finished(result, binary, shown, timeout)
+  -- vim.system reports a command stopped for taking too long with exit code 124.
+  if timeout and result.code == 124 then
+    local message = ('`%s` did not finish within %d seconds'):format(shown, timeout)
+    return nil, failure('failed', message)
+  end
+  return decode(result, binary, shown)
+end
+
+---Runs `orca-term <args> --json` in `cwd`, waits for it (`timeout` seconds at most, 10 when
+---`nil`), and returns the JSON document it printed.
+---@param args string[]
+---@param cwd string
+---@param timeout? integer
+---@return table? document
+---@return orca_term.Error? err
+local function run(args, cwd, timeout)
+  timeout = timeout or TIMEOUT_SECONDS
   local binary, find_err = M.find_binary()
   if not binary then
     return nil, find_err
@@ -204,26 +230,22 @@ local function run(args, cwd)
 
   -- vim.system throws when the process cannot start, for example when `cwd` does not exist.
   local started, result = pcall(function()
-    return vim.system(command, { cwd = cwd, text = true }):wait(TIMEOUT_SECONDS * 1000)
+    return vim.system(command, { cwd = cwd, text = true }):wait(timeout * 1000)
   end)
   if not started then
     return nil, failure('failed', ('could not run `%s` in %s: %s'):format(shown, cwd, result))
   end
-  -- vim.system reports a command stopped for taking too long with exit code 124.
-  if result.code == 124 then
-    local message = ('`%s` did not finish within %d seconds'):format(shown, TIMEOUT_SECONDS)
-    return nil, failure('failed', message)
-  end
-  return decode(result, binary, shown)
+  return finished(result, binary, shown, timeout)
 end
 
 ---Runs `orca-term <args> --json` in `cwd` without waiting for it, and hands the document it
----printed, or the error, to `on_done` once it finishes, in Neovim's main loop. There is no time
----limit: a setup may take minutes.
+---printed, or the error, to `on_done` once it finishes, in Neovim's main loop. With no `timeout`
+---(in seconds) there is no time limit: a setup may take minutes.
 ---@param args string[]
 ---@param cwd string
 ---@param on_done fun(document: table?, err: orca_term.Error?)
-local function run_async(args, cwd, on_done)
+---@param timeout? integer
+local function run_async(args, cwd, on_done, timeout)
   local binary, find_err = M.find_binary()
   if not binary then
     vim.schedule(function()
@@ -232,11 +254,12 @@ local function run_async(args, cwd, on_done)
     return
   end
   local command, shown = command_line(binary, args)
+  local options = { cwd = cwd, text = true, timeout = timeout and timeout * 1000 }
 
   -- The exit callback runs outside the main loop, where most of Neovim's API is off limits.
-  local started, problem = pcall(vim.system, command, { cwd = cwd, text = true }, function(result)
+  local started, problem = pcall(vim.system, command, options, function(result)
     vim.schedule(function()
-      on_done(decode(result, binary, shown))
+      on_done(finished(result, binary, shown, timeout))
     end)
   end)
   if not started then
@@ -253,6 +276,14 @@ end
 ---@return orca_term.Error? err
 function M.worktree_ls(cwd)
   return run({ 'worktree', 'ls' }, cwd)
+end
+
+---The fleet of the repository `cwd` is in, without waiting: `orca-term worktree ls --json`,
+---handed to `on_done` in Neovim's main loop. It is stopped after 10 seconds, as `worktree_ls` is.
+---@param cwd string
+---@param on_done fun(fleet: orca_term.Fleet?, err: orca_term.Error?)
+function M.worktree_ls_async(cwd, on_done)
+  run_async({ 'worktree', 'ls' }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---Creates the worktree `name` in the repository `cwd` is in, without waiting:
@@ -302,6 +333,35 @@ end
 function M.agent_start(path, size, cwd, on_done)
   local rows, cols = tostring(size.rows), tostring(size.cols)
   run_async({ 'agent', 'start', path, '--rows', rows, '--cols', cols }, cwd, on_done)
+end
+
+---What `nvim register --json` and `nvim unregister --json` print: only the contract and the core's
+---version.
+---@class orca_term.Registered
+---@field contract integer
+---@field version string
+
+---Registers the Neovim listening at `address` (its `v:servername`, the absolute path of a unix
+---socket) with the repository `cwd` is in, without waiting:
+---`orca-term nvim register <address> --json`. From then on the core fires
+---`User OrcaTermWorktreeChanged` there after every change to a worktree. Registering again
+---changes nothing; a relative address is refused as `usage`.
+---@param address string
+---@param cwd string
+---@param on_done fun(registered: orca_term.Registered?, err: orca_term.Error?)
+function M.nvim_register(address, cwd, on_done)
+  run_async({ 'nvim', 'register', address }, cwd, on_done)
+end
+
+---Unregisters the Neovim listening at `address` from the repository `cwd` is in, and waits for it,
+---1 second at most, since it runs as Neovim exits: `orca-term nvim unregister <address> --json`.
+---An address that was not registered is not an error.
+---@param address string
+---@param cwd string
+---@return orca_term.Registered? unregistered
+---@return orca_term.Error? err
+function M.nvim_unregister(address, cwd)
+  return run({ 'nvim', 'unregister', address }, cwd, UNREGISTER_TIMEOUT_SECONDS)
 end
 
 ---Attaches the current buffer, as a terminal, to the agent of the worktree at `path`:

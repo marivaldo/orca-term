@@ -8,13 +8,18 @@
 -- open the menu of the worktree under the cursor (`.`), all three through `actions.lua`. The
 -- selection follows the current tab when it is a worktree's.
 --
--- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
--- it; it is never polled. While a listed worktree is working, one timer turns its glyph through
--- `render.SPINNER` by drawing the fleet already read again, never reading it; the timer stops once
--- no worktree is working or the sidebar closes. Opening never moves the cursor out of the person's
--- window and never resizes their windows beyond the split itself; closing only closes the
--- sidebar's windows. A tab never ends up holding only the sidebar: `:q` on its last other window
--- closes the tab (or quits Neovim) as it would without it.
+-- The fleet is read when the sidebar opens, when Neovim gains focus, after an action changes it and
+-- when the core says a worktree changed; it is never polled. Opening the sidebar, and Neovim
+-- gaining focus while it is open, registers this Neovim with the core (`nvim register`), which then
+-- fires `User OrcaTermWorktreeChanged` here after every change to a worktree. That event reads the
+-- fleet without waiting, 100 ms later so a burst of events makes one read, one read at a time:
+-- events during a read make one more read after it. Neovim unregisters as it exits; closing the
+-- sidebar does not, and the events are ignored while it is closed. While a listed worktree is
+-- working, one timer turns its glyph through `render.SPINNER` by drawing the fleet already read
+-- again, never reading it; the timer stops once no worktree is working or the sidebar closes.
+-- Opening never moves the cursor out of the person's window and never resizes their windows beyond
+-- the split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
+-- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
 
 local actions = require('orca-term.actions')
 local core = require('orca-term.core')
@@ -29,6 +34,13 @@ M.NAMESPACE = vim.api.nvim_create_namespace('orca-term-sidebar')
 
 ---How often the working glyph turns, in milliseconds.
 M.SPIN_MS = 250
+
+---How long after the core says a worktree changed the fleet is read, in milliseconds. The events of
+---a burst (a hook for every tool an agent runs) arrive within it and make one read.
+M.LIVE_DELAY_MS = 100
+
+---The `User` autocommand the core fires after every change to a worktree.
+M.EVENT = 'OrcaTermWorktreeChanged'
 
 ---The sidebar buffer's name and filetype.
 M.BUFFER_NAME = 'orca-term://sidebar'
@@ -45,9 +57,27 @@ M.FILETYPE = 'orca-term-sidebar'
 ---@field rendered? orca_term.Rendered what the buffer shows
 ---@field frame integer the spinner frame the working glyph shows
 ---@field timer? uv.uv_timer_t the timer turning the working glyph, while one is working
+---How many reads of the fleet have started; a read that ends after a newer one started is dropped.
+---@field reads integer
 
 ---@type orca_term.SidebarState
-local state = { open = false, frame = 0 }
+local state = { open = false, frame = 0, reads = 0 }
+
+---Where this Neovim registered with the core: its address and the directory the core ran in.
+---@class orca_term.Registration
+---@field address string
+---@field cwd string
+
+---What the live updates hold between the core's events.
+---@class orca_term.LiveState
+---@field group? integer their autocommand group, made when the sidebar first opens, never deleted
+---@field timer? uv.uv_timer_t the timer waiting `LIVE_DELAY_MS` to read the fleet after an event
+---@field reading boolean whether a read started by an event is running
+---@field again boolean whether an event came during that read, so one more read follows it
+---@field registered orca_term.Registration[] every registration, undone as Neovim exits
+
+---@type orca_term.LiveState
+local live = { reading = false, again = false, registered = {} }
 
 ---Whether the sidebar is open.
 ---@return boolean
@@ -209,6 +239,7 @@ end
 
 ---Reads the fleet of the current directory's repository from the core, then redraws.
 local function refresh()
+  state.reads = state.reads + 1
   state.fleet, state.error = core.worktree_ls(vim.fn.getcwd())
   redraw()
 end
@@ -440,6 +471,117 @@ local function after_close(closed)
   end)
 end
 
+---Reads the fleet after an event, set below: it and `read_after_event` start each other.
+---@type fun()
+local read_live
+
+---Reads the fleet `LIVE_DELAY_MS` from now, while the sidebar is open: unless a read is already
+---waiting, which the events of a burst share, or running, which one more read then follows.
+local function read_after_event()
+  if not state.open then
+    return
+  end
+  if live.reading then
+    live.again = true
+    return
+  end
+  live.timer = live.timer or assert(vim.uv.new_timer())
+  if not live.timer:is_active() then
+    live.timer:start(M.LIVE_DELAY_MS, 0, vim.schedule_wrap(read_live))
+  end
+end
+
+---Reads the fleet without waiting, then redraws as `refresh()` does. A read that ends after the
+---sidebar closed, or after a newer read started (the sidebar opened again, Neovim gained focus), is
+---dropped. When an event came during the read, one more read follows.
+read_live = function()
+  if not state.open then
+    return
+  end
+  state.reads = state.reads + 1
+  local this_read = state.reads
+  live.reading = true
+  core.worktree_ls_async(vim.fn.getcwd(), function(fleet, err)
+    live.reading = false
+    if state.open and state.reads == this_read then
+      state.fleet, state.error = fleet, err
+      redraw()
+    end
+    if live.again then
+      live.again = false
+      read_after_event()
+    end
+  end)
+end
+
+---Where the core can reach this Neovim: `v:servername` when it is the absolute path of a unix
+---socket, the only kind of address the core takes; `nil` otherwise (no server, or a TCP address).
+---@return string?
+local function server_address()
+  local address = vim.v.servername
+  if type(address) == 'string' and vim.startswith(address, '/') then
+    return address
+  end
+  return nil
+end
+
+---Registers this Neovim with the core, without waiting, from the primary checkout of the fleet
+---last read, and remembers it for `unregister()`. A failure is silent: the sidebar then updates on
+---focus and after actions only. It runs again on `FocusGained`, as the core forgets a Neovim it
+---could not reach (one suspended long enough stops answering); registering again changes nothing.
+local function register()
+  local address = server_address()
+  if not address then
+    return
+  end
+  local cwd = primary_path()
+  core.nvim_register(address, cwd, function(_, err)
+    if err then
+      return
+    end
+    for _, registration in ipairs(live.registered) do
+      if registration.address == address and registration.cwd == cwd then
+        return
+      end
+    end
+    table.insert(live.registered, { address = address, cwd = cwd })
+  end)
+end
+
+---Undoes every registration, waiting for each (1 second at most). Errors are ignored: Neovim is
+---exiting, and the core forgets an address it cannot reach anyway.
+local function unregister()
+  for _, registration in ipairs(live.registered) do
+    core.nvim_unregister(registration.address, registration.cwd)
+  end
+  live.registered = {}
+end
+
+---Makes the autocommands of the live updates, the first time the sidebar opens. Their group
+---outlives the sidebar: closing it unregisters nothing, and `read_after_event` ignores the events
+---while it is closed.
+local function ensure_live_autocmds()
+  if live.group then
+    return
+  end
+  live.group = vim.api.nvim_create_augroup('orca-term-live', { clear = true })
+  vim.api.nvim_create_autocmd('User', {
+    group = live.group,
+    pattern = M.EVENT,
+    desc = 'orca-term: read the fleet again, a worktree changed',
+    callback = function()
+      read_after_event()
+    end,
+  })
+  vim.api.nvim_create_autocmd('VimLeavePre', {
+    group = live.group,
+    desc = 'orca-term: tell the core this Neovim is gone',
+    callback = function()
+      unregister()
+    end,
+  })
+end
+
 ---Shows the sidebar in every tab, and in every tab made later, until it is closed.
 function M.open()
   highlights.define()
@@ -450,6 +592,8 @@ function M.open()
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
     show_in(tab)
   end
+  ensure_live_autocmds()
+  register()
 
   local group = vim.api.nvim_create_augroup('orca-term-sidebar', { clear = true })
   state.group = group
@@ -485,8 +629,11 @@ function M.open()
   })
   vim.api.nvim_create_autocmd('FocusGained', {
     group = group,
-    desc = 'orca-term: read the fleet again',
-    callback = refresh,
+    desc = 'orca-term: read the fleet again, and register with the core again',
+    callback = function()
+      refresh()
+      register()
+    end,
   })
   vim.api.nvim_create_autocmd('ColorScheme', {
     group = group,
@@ -499,6 +646,11 @@ end
 function M.close()
   state.open = false
   stop_spinning()
+  -- A read waiting after an event is dropped; one running is dropped as it ends.
+  if live.timer then
+    live.timer:stop()
+  end
+  live.again = false
   if state.group then
     vim.api.nvim_del_augroup_by_id(state.group)
     state.group = nil
