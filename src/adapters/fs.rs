@@ -128,6 +128,25 @@ pub(crate) fn list_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// The names of the entries of `dir` that are not directories, sorted. Empty when `dir` does not
+/// exist.
+pub(crate) fn list_file_names(dir: &Path) -> Result<Vec<String>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("could not list {}", dir.display())),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("could not list {}", dir.display()))?;
+        if !entry.path().is_dir() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
 /// The first of `dirs` holding an executable regular file named `name`: what a shell finds for
 /// `name` with those directories as PATH.
 pub(crate) fn executable_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {

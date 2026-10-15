@@ -5,6 +5,7 @@ pub(crate) mod env;
 pub(crate) mod fs;
 pub(crate) mod git;
 pub(crate) mod holder;
+pub(crate) mod nvim;
 pub(crate) mod program;
 pub(crate) mod script;
 pub(crate) mod stdin;

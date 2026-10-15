@@ -6,6 +6,9 @@
 //! as one line to `hook.log` in the admin directory, when that directory exists; nothing creates
 //! it. It takes only its own lock, `hook.lock`, waiting at most a second, never the worktree's
 //! lock, so a hook never makes a command busy. It runs no git, to stay fast.
+//!
+//! Once the status is written, and `hook.lock` released, it tells the running Neovims that the
+//! worktree changed (`ops::notify_changed`), which never fails and is bounded in time.
 
 use std::path::Path;
 use std::time::Duration;
@@ -16,6 +19,7 @@ use crate::adapters::{env, fs, stdin};
 use crate::domain::hook::{self, Payload};
 use crate::domain::state::AdminDir;
 use crate::domain::turn::{self, StatusRead};
+use crate::ops::notify_changed;
 
 /// The only agent whose hooks the core understands so far.
 const AGENT: &str = "claude";
@@ -41,8 +45,9 @@ pub(crate) fn run(agent: Option<&str>, admin: Option<&Path>) {
     if !fs::is_dir(admin.path()) {
         return;
     }
-    if let Err(err) = record(agent, &admin) {
-        log(&admin, &err);
+    match record(agent, &admin) {
+        Ok(()) => notify_changed(&admin),
+        Err(err) => log(&admin, &err),
     }
 }
 

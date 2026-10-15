@@ -16,7 +16,8 @@ use crate::domain::sandbox::{self, Platform};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
-    config_layers, derive_state, find_target_admin, lock_worktree, read_fleet, write_agent,
+    config_layers, derive_state, find_target_admin, lock_worktree, notify_changed, read_fleet,
+    write_agent,
 };
 
 /// Starts claude in the worktree `target` names or locates in the repository containing the
@@ -81,6 +82,7 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     };
     let pid = holder::spawn(&holder_args, launch::STRIPPED_VARS)?;
     write_agent(&lock, agent)?;
+    notify_changed(&admin);
     Ok(Started {
         worktree: refreshed(worktree, &admin)?,
         agent,

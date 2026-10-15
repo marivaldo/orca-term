@@ -12,10 +12,10 @@ use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
-use crate::ops::{check_no_holder, find_target, lock_worktree, read_fleet};
+use crate::ops::{Changed, check_no_holder, find_target, lock_worktree, read_fleet};
 
 /// Removes the worktree `target` names or locates in the repository containing the current
-/// directory.
+/// directory, then tells the running Neovims it is gone.
 pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
@@ -23,7 +23,9 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     worktree::check_removable(worktree)?;
     check_no_holder(worktree)?;
     // Held until the worktree is gone, so no setup can start in it meanwhile.
-    let _lock = lock_worktree(&worktree.name, &worktree.path)?;
+    let lock = lock_worktree(&worktree.name, &worktree.path)?;
+    // Found while git's files are still there: the removal takes them away.
+    let changed = Changed::of(lock.admin());
     if removal == Removal::Safe && git::has_changes(&worktree.path)? {
         return Err(TypedError::Dirty {
             name: worktree.name.clone(),
@@ -50,10 +52,14 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
             worktree.path.display()
         )
     })?;
+    let branch = delete_branch(primary, planned);
+    if let Some(changed) = changed {
+        changed.notify();
+    }
     Ok(Removed {
         name: worktree.name.clone(),
         path: worktree.path.clone(),
-        branch: delete_branch(primary, planned),
+        branch,
     })
 }
 

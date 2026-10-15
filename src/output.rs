@@ -17,6 +17,7 @@ use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stoppe
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
+use crate::domain::nvim::Address;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
@@ -354,6 +355,25 @@ fn render_agent_stopped(stopped: &Stopped) -> String {
         StopOutcome::Stopped => format!("stopped the agent of worktree {name}"),
         StopOutcome::NotRunning => format!("no agent is running in worktree {name}"),
     }
+}
+
+/// Prints that the Neovim at `address` is registered: one line, or with `--json` a document
+/// carrying only `contract` and `version`.
+pub(crate) fn nvim_registered(address: &Address, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!("registered Neovim {address}")),
+        Format::Json => out(&json::done()?),
+    }
+    Ok(())
+}
+
+/// Prints that the Neovim at `address` is no longer registered, as [`nvim_registered`] does.
+pub(crate) fn nvim_unregistered(address: &Address, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!("unregistered Neovim {address}")),
+        Format::Json => out(&json::done()?),
+    }
+    Ok(())
 }
 
 /// Says on stderr how `agent attach` ended, once the terminal is the person's again.

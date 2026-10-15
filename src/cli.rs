@@ -10,11 +10,12 @@ use clap::{Parser, Subcommand};
 
 use crate::adapters::terminal::DetachKey;
 use crate::domain::agent::Size;
+use crate::domain::nvim::Address;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    agent_attach, agent_holder, agent_start, agent_stop, hook, worktree_ls, worktree_new,
-    worktree_prune, worktree_rm, worktree_setup,
+    agent_attach, agent_holder, agent_start, agent_stop, hook, nvim_register, nvim_unregister,
+    worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -50,6 +51,34 @@ enum Command {
     Hook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         args: Vec<String>,
+    },
+    /// What a running Neovim runs so the core tells it whenever a worktree changes: `nvim
+    /// register <address>` as it starts, `nvim unregister <address>` as it exits.
+    #[command(hide = true)]
+    Nvim {
+        #[command(subcommand)]
+        command: NvimCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NvimCommand {
+    /// Record a running Neovim's server address in the repository, to be told of every change.
+    Register {
+        /// The Neovim's server address (`v:servername`): the absolute path of its unix socket.
+        // Parsed by clap through `Address`'s `FromStr`: anything else is refused here.
+        address: Address,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a Neovim's server address out of the repository; one not recorded is not an error.
+    Unregister {
+        /// The Neovim's server address (`v:servername`): the absolute path of its unix socket.
+        address: Address,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -163,6 +192,9 @@ impl Cli {
                 AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
             Command::Hook { .. } => false,
+            Command::Nvim { command } => match command {
+                NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
+            },
         };
         Format::from_json_flag(json)
     }
@@ -178,6 +210,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
         }
+        Command::Nvim { command } => run_nvim(command, cli.format()),
     }
 }
 
@@ -296,6 +329,20 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
                 cols: *cols,
             };
             agent_holder::run(admin.clone(), worktree.clone(), size, argv.clone())?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_nvim(command: &NvimCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        NvimCommand::Register { address, .. } => {
+            nvim_register::run(address)?;
+            output::nvim_registered(address, format)?;
+        }
+        NvimCommand::Unregister { address, .. } => {
+            nvim_unregister::run(address)?;
+            output::nvim_unregistered(address, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

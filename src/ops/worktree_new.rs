@@ -12,7 +12,7 @@ use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::include;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{self, Created, WorktreeName};
-use crate::ops::{config_layers, lock_worktree, set_up};
+use crate::ops::{config_layers, lock_worktree, notify_changed, set_up};
 
 /// Creates the worktree `name` in the repository containing the current directory, echoing its
 /// setup's output to `echo`. A failed setup is not an error: the report says the worktree is not
@@ -68,9 +68,10 @@ pub(crate) fn run(name: &WorktreeName, echo: &mut dyn Write) -> Result<Created> 
     })
 }
 
-/// Locks the new worktree, copies the copy list and runs the setup. Returns how many files were
-/// copied and what the setup did. The lock is taken before anything else touches the worktree and
-/// held until its setup ends, so nothing else may use the worktree before it is ready.
+/// Locks the new worktree, tells the running Neovims it exists, copies the copy list and runs the
+/// setup (which tells them again as it starts and ends). Returns how many files were copied and
+/// what the setup did. The lock is taken before anything else touches the worktree and held until
+/// its setup ends, so nothing else may use the worktree before it is ready.
 fn finish(
     name: &WorktreeName,
     primary: &PrimaryCheckout,
@@ -78,6 +79,7 @@ fn finish(
     echo: &mut dyn Write,
 ) -> Result<(usize, SetupReport)> {
     let lock = lock_worktree(name.as_str(), worktree)?;
+    notify_changed(lock.admin());
     let copied = copy_include_list(primary, worktree, &include_list(primary)?)?;
     let setup = set_up(&lock, primary, worktree, echo)?;
     Ok((copied, setup))
