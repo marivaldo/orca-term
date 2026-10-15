@@ -133,6 +133,77 @@ describe('render', function()
     assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, moved + 1))
   end)
 
+  it(
+    "shows the agent's activity on the second line in every agent state, cut to the width",
+    function()
+      local activities = {
+        working = 'Bash: cargo test',
+        waiting = 'Which colour?',
+        finished = 'All done. Second line here.',
+        failed = 'API Error: 400 fake bad request',
+        interrupted = 'SLOW please',
+      }
+      local worktrees = {}
+      for state, activity in pairs(activities) do
+        table.insert(worktrees, worktree(state, { state = state, activity = activity }))
+      end
+      table.insert(worktrees, worktree('quiet', { state = 'idle' }))
+      local rendered = render.fleet(fleet(worktrees), '/src/wt/quiet')
+      for state, activity in pairs(activities) do
+        local name = assert(line_with(rendered, render.glyph(state) .. ' ' .. state), state)
+        assert.are.equal('   ' .. activity, rendered.lines[name + 1])
+      end
+      local quiet = assert(rendered.firsts['/src/wt/quiet'])
+      assert.are.equal(
+        ' ╰────────────────────────────────╯',
+        rendered.lines[quiet + 1]
+      )
+
+      local long = 'Bash: ' .. string.rep('cargo test --workspace ', 5) .. '\nsecond line'
+      local cut = render.fleet(fleet({ worktree('busy', { state = 'working', activity = long }) }))
+      assert_fits(cut, render.WIDTH)
+      local busy = assert(cut.firsts['/src/wt/busy'])
+      assert.are.equal(' │   Bash: cargo test --workspac… │', cut.lines[busy + 1])
+    end
+  )
+
+  it('shows the detail rather than the activity, after the branch when it differs', function()
+    local rendered = render.fleet(
+      fleet({
+        worktree('both', { state = 'failed', detail = 'the detail', activity = 'the activity' }),
+        worktree('moved', { branch = 'other', state = 'finished', activity = 'ok' }),
+      }),
+      '/src/wt/moved'
+    )
+    local both = assert(line_with(rendered, 'both'))
+    assert.are.equal('   the detail', rendered.lines[both + 1])
+    assert.is_nil(line_with(rendered, 'the activity'))
+    local moved = assert(rendered.firsts['/src/wt/moved'])
+    assert.are.equal(' │   ⎇ other · ok                 │', rendered.lines[moved + 1])
+  end)
+
+  it('turns only the working glyph with the spinner frame', function()
+    local worktrees = {}
+    for state in pairs(render.GLYPHS) do
+      table.insert(worktrees, worktree(state, { state = state, activity = 'doing ' .. state }))
+    end
+    local first = render.fleet(fleet(worktrees), '/src/wt/idle')
+    assert.are.same(first, render.fleet(fleet(worktrees), '/src/wt/idle', nil, 0))
+    for frame, glyph in ipairs({ '◐', '◓', '◑', '◒', '◐' }) do
+      local turned = render.fleet(fleet(worktrees), '/src/wt/idle', nil, frame - 1)
+      assert.are.same(first.spans, turned.spans)
+      for index, line in ipairs(first.lines) do
+        if line == ' ◐ working' then
+          assert.are.equal(' ' .. glyph .. ' working', turned.lines[index])
+        else
+          assert.are.equal(line, turned.lines[index])
+        end
+      end
+    end
+    assert.is_true(render.spins(fleet(worktrees)))
+    assert.is_false(render.spins(fleet({ worktree('a', { state = 'finished' }) })))
+  end)
+
   it('draws the card around the selected worktree only', function()
     local rendered = render.fleet(
       fleet({ worktree('a'), worktree('b', { branch = 'other' }), worktree('c') }),

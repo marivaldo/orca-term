@@ -7,22 +7,32 @@
 -- `vim.list_extend`).
 --
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
--- spec/golden/sidebar.txt, with `fix-login` selected:
+-- spec/golden/sidebar.txt, with `pick-colour` selected:
 --
 --   ▾ repo  main
 --
---   NEEDS YOU 2
+--   NEEDS YOU 3
 --   ╭────────────────────────────────╮
---   │ △ fix-login                    │
---   │   setup failed (exit 1): npm … │
+--   │ ? pick-colour                  │
+--   │   Which colour?                │
 --   ╰────────────────────────────────╯
+--   △ fix-login
+--     setup failed (exit 1): npm ERR!…
 --   ! old-spike
 --     directory missing; run orca-ter…
 --
---   RUNNING 1
+--   RUNNING 2
 --   ◌ install-deps
+--   ◐ run-tests
+--     Bash: sleep 6
 --
---   QUIET 2
+--   QUIET 5
+--   ● api-call
+--     API Error: 400 fake bad request
+--   ● greet
+--     ok
+--   ● slow-job
+--     SLOW please
 --   · docs
 --   · spike
 --     ⎇ other-branch
@@ -39,7 +49,7 @@ local M = {}
 M.WIDTH = 36
 
 ---Each state's glyph, from the spec. A state this client does not know yet shows `·`.
----Working spins in the spec; it is static until the core reports agents.
+---Working spins: see `M.SPINNER`.
 ---@type table<string, string>
 M.GLYPHS = {
   working = '◐',
@@ -53,6 +63,10 @@ M.GLYPHS = {
   setting_up = '◌',
   broken = '!',
 }
+
+---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
+---shows it. `sidebar.lua` turns them while a worktree is working.
+M.SPINNER = { '◐', '◓', '◑', '◒' }
 
 ---A highlight on one line: `group` from byte `first` up to (not including) byte `last`.
 ---@class orca_term.Span
@@ -83,6 +97,29 @@ M.GLYPHS = {
 ---@return integer
 local function cells(text)
   return vim.fn.strdisplaywidth(text)
+end
+
+---The glyph of `state` at spinner frame `frame`: only `working` changes with the frame.
+---@param state string
+---@param frame? integer 0 or more; `nil` is frame 0
+---@return string
+function M.glyph(state, frame)
+  if state == 'working' then
+    return M.SPINNER[(frame or 0) % #M.SPINNER + 1]
+  end
+  return M.GLYPHS[state] or '·'
+end
+
+---Whether any worktree of `fleet` is working, so its glyph spins.
+---@param fleet orca_term.Fleet
+---@return boolean
+function M.spins(fleet)
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.state == 'working' then
+      return true
+    end
+  end
+  return false
 end
 
 ---The longest start of `text` that fits in `width` cells, and what is left after it.
@@ -203,12 +240,14 @@ local function header(repo, branch, width)
   return line
 end
 
----What a worktree's second line says: its detail, after its branch when the branch is not named
----like the worktree. An empty string means the worktree has no second line.
+---What a worktree's second line says: its detail or, when it has none, its agent's activity,
+---after its branch when the branch is not named like the worktree. An empty string means the
+---worktree has no second line.
 ---@param worktree orca_term.Worktree
 ---@return string
 local function second_line_text(worktree)
-  local text = worktree.detail and one_line(worktree.detail) or ''
+  local said = worktree.detail or worktree.activity
+  local text = said and one_line(said) or ''
   if worktree.branch ~= worktree.name then
     local branch = '⎇ ' .. (worktree.branch or 'detached')
     if text == '' then
@@ -224,15 +263,16 @@ end
 ---@param worktree orca_term.RankedWorktree
 ---@param needs_you boolean whether it is under "Needs you", which colours its second line
 ---@param budget integer the cells its lines may take
+---@param frame integer the spinner frame
 ---@return orca_term.Line[]
-local function worktree_lines(worktree, needs_you, budget)
+local function worktree_lines(worktree, needs_you, budget, frame)
   local state_group = highlights.state_group(worktree.state)
 
   local name_line = new_line(budget, worktree.path)
   name_line.first = true
   -- The unseen mark goes in this first cell once the core prints it.
   add(name_line, ' ')
-  add(name_line, M.GLYPHS[worktree.state] or '·', state_group)
+  add(name_line, M.glyph(worktree.state, frame), state_group)
   add(name_line, ' ')
   add(name_line, worktree.name)
   -- The agent and the age of the last activity will sit at the right of this line.
@@ -321,12 +361,15 @@ end
 
 ---The sidebar for `fleet`, with the worktree at path `selected` in the card. When no worktree
 ---has that path (it is `nil`, or the worktree is gone), the first worktree shown is selected.
+---A working worktree's glyph is the spinner's frame `frame`.
 ---@param fleet orca_term.Fleet
 ---@param selected? string
 ---@param width? integer
+---@param frame? integer 0 or more; `nil` is frame 0
 ---@return orca_term.Rendered
-function M.fleet(fleet, selected, width)
+function M.fleet(fleet, selected, width, frame)
   width = width or M.WIDTH
+  frame = frame or 0
   local sections = fleet_order.sections(fleet.worktrees)
 
   local order = {}
@@ -368,10 +411,10 @@ function M.fleet(fleet, selected, width)
     for _, worktree in ipairs(section.worktrees) do
       if worktree.path == selected then
         -- Inside the card, a row has 4 cells fewer: ` │` on its left and `│` on its right.
-        local body = worktree_lines(worktree, needs_you, width - 5)
+        local body = worktree_lines(worktree, needs_you, width - 5, frame)
         add_card(built, body, worktree.path, width)
       else
-        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1))
+        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1, frame))
       end
     end
   end

@@ -30,8 +30,14 @@
 ---@field name string
 ---@field path string
 ---@field branch? string
----@field state string `no_agent`, `idle`, `setting_up`, `not_ready` or `broken`
+---`no_agent`, `idle`, `working`, `waiting`, `finished`, `failed`, `interrupted`, `setting_up`,
+---`not_ready` or `broken`
+---@field state string
 ---@field detail? string why the worktree is not ready or broken
+---What its agent is doing (`working`, `waiting`: a tool and its input, a question, or the prompt)
+---or how its latest turn ended (`finished`, `failed`, `interrupted`: the agent's last words, the
+---error, or the prompt); `nil` when there is nothing to say.
+---@field activity? string
 ---@field agent? string the worktree's agent, `claude-code`; `nil` when it has none
 ---@field holder boolean whether the agent's holder is alive right now
 
