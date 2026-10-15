@@ -1,8 +1,8 @@
 -- Seam 2: the sidebar's worktree actions, in headless Neovim against the real binary: `a` creates a
--- worktree without blocking Neovim and lands in its tab, and `.` offers running the setup again,
--- copying the path and removing the worktree, which always asks first, asks again before
--- discarding changes, and closes the worktree's tabs. `vim.ui` and `vim.notify` are stubbed; the
--- core never is.
+-- worktree with no agent without blocking Neovim and lands in its tab (with an agent, see
+-- spec/agent_spec.lua), and `.` offers running the setup again, copying the path and removing the
+-- worktree, which always asks first, asks again before discarding changes, and closes the
+-- worktree's tabs. `vim.ui` and `vim.notify` are stubbed; the core never is.
 
 local support = require('support')
 local sidebar = require('orca-term.sidebar')
@@ -126,11 +126,12 @@ describe('the worktree actions', function()
   describe('a', function()
     it('creates the worktree through the core and lands in its tab', function()
       local repo = repo_with({ 'alpha' })
-      local ui = support.stub_ui({ input = 'gamma' })
+      local ui = support.stub_ui({ input = 'gamma', select = { 'No agent' } })
 
       press_on('a', '· alpha')
 
-      assert.are.same({ 'New worktree name: ' }, ui.prompts)
+      assert.are.same({ 'New worktree name: ', 'Agent for gamma' }, ui.prompts)
+      assert.are.same({ { 'claude-code', 'No agent' } }, ui.shown)
       assert.are.same({
         message = 'orca-term: created worktree gamma',
         level = vim.log.levels.INFO,
@@ -144,7 +145,7 @@ describe('the worktree actions', function()
       local repo = repo_with({})
       local gate = repo.tmp .. '/gate'
       support.set_setup(repo, gated_setup(gate))
-      local ui = support.stub_ui({ input = 'slow' })
+      local ui = support.stub_ui({ input = 'slow', select = { 'No agent' } })
 
       press_on('a', 'no worktrees yet')
 
@@ -161,7 +162,7 @@ describe('the worktree actions', function()
     it('warns with the detail when the setup fails, and still lands in the tab', function()
       local repo = repo_with({})
       support.set_setup(repo, { 'echo boom', 'exit 3' })
-      local ui = support.stub_ui({ input = 'broken-setup' })
+      local ui = support.stub_ui({ input = 'broken-setup', select = { 'No agent' } })
 
       press_on('a', 'no worktrees yet')
 
@@ -176,7 +177,7 @@ describe('the worktree actions', function()
 
     it("shows the core's error for an invalid name, and does nothing for an empty one", function()
       repo_with({ 'alpha' })
-      local ui = support.stub_ui({ input = 'bad/name' })
+      local ui = support.stub_ui({ input = 'bad/name', select = { 'No agent' } })
 
       press_on('a', '· alpha')
 
