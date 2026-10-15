@@ -526,26 +526,27 @@ local function server_address()
 end
 
 ---Registers this Neovim with the core, without waiting, from the primary checkout of the fleet
----last read, and remembers it for `unregister()`. A failure is silent: the sidebar then updates on
----focus and after actions only. It runs again on `FocusGained`, as the core forgets a Neovim it
----could not reach (one suspended long enough stops answering); registering again changes nothing.
+---last read, and remembers it for `unregister()`. It is remembered before the core answers, so
+---Neovim exiting meanwhile still unregisters it; unregistering a registration that failed is
+---harmless. A failure is silent: the sidebar then updates on focus and after actions only. It runs
+---again on `FocusGained`, as the core forgets a Neovim it could not reach (one suspended long
+---enough stops answering); registering again changes nothing.
 local function register()
   local address = server_address()
   if not address then
     return
   end
   local cwd = primary_path()
-  core.nvim_register(address, cwd, function(_, err)
-    if err then
-      return
+  local known = false
+  for _, registration in ipairs(live.registered) do
+    if registration.address == address and registration.cwd == cwd then
+      known = true
     end
-    for _, registration in ipairs(live.registered) do
-      if registration.address == address and registration.cwd == cwd then
-        return
-      end
-    end
+  end
+  if not known then
     table.insert(live.registered, { address = address, cwd = cwd })
-  end)
+  end
+  core.nvim_register(address, cwd, function() end)
 end
 
 ---Undoes every registration, waiting for each (1 second at most). Errors are ignored: Neovim is
