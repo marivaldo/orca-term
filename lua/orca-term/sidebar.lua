@@ -11,10 +11,10 @@
 -- The fleet is read when the sidebar opens, when Neovim gains focus and after an action changes
 -- it; it is never polled. While a listed worktree is working, one timer turns its glyph through
 -- `render.SPINNER` by drawing the fleet already read again, never reading it; the timer stops once
--- no worktree is working or the sidebar closes. Opening never moves the cursor out of the person's window and never
--- resizes their windows beyond the split itself; closing only closes the sidebar's windows. A tab
--- never ends up holding only the sidebar: `:q` on its last other window closes the tab (or quits
--- Neovim) as it would without it.
+-- no worktree is working or the sidebar closes. Opening never moves the cursor out of the person's
+-- window and never resizes their windows beyond the split itself; closing only closes the
+-- sidebar's windows. A tab never ends up holding only the sidebar: `:q` on its last other window
+-- closes the tab (or quits Neovim) as it would without it.
 
 local actions = require('orca-term.actions')
 local core = require('orca-term.core')
