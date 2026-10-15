@@ -7,10 +7,12 @@
 )]
 
 use std::fs::{self, File, TryLockError};
-use std::io::{ErrorKind, Read as _, Write as _};
+use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -51,6 +53,45 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result.with_context(|| format!("could not write {}", path.display()))
+}
+
+/// At most the last `max` bytes of the file at `path`, or `None` when it does not exist.
+pub(crate) fn read_tail(path: &Path, max: u64) -> Result<Option<Vec<u8>>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("could not read {}", path.display())),
+    };
+    let result = (|| {
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(len.saturating_sub(max)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok::<_, std::io::Error>(bytes)
+    })();
+    result
+        .map(Some)
+        .with_context(|| format!("could not read {}", path.display()))
+}
+
+/// Appends `bytes` to the file at `path`, creating the file (never its directory) when missing.
+pub(crate) fn append(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes))
+        .with_context(|| format!("could not append to {}", path.display()))
+}
+
+/// Appends `bytes` to the file at `path` as [`append`] does, emptying the file first when it has
+/// grown past `max` bytes, so it never grows without bound.
+pub(crate) fn append_bounded(path: &Path, bytes: &[u8], max: u64) -> Result<()> {
+    let too_big = fs::metadata(path).is_ok_and(|meta| meta.len() > max);
+    if too_big {
+        File::create(path).with_context(|| format!("could not empty {}", path.display()))?;
+    }
+    append(path, bytes)
 }
 
 /// Creates the directory `path` and every missing parent.
@@ -256,6 +297,22 @@ pub(crate) fn try_lock_file(path: &Path) -> Result<Option<FileLock>> {
     }
 }
 
+/// Takes an exclusive `flock` on the file at `path`, creating the file (never its directory) when
+/// missing, trying again every 20 ms for at most `wait`. `None` when another process still holds
+/// it then.
+pub(crate) fn lock_file_waiting(path: &Path, wait: Duration) -> Result<Option<FileLock>> {
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Some(lock) = try_lock_file(path)? {
+            return Ok(Some(lock));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Whether the file at `path` is locked right now. Only reads: a missing file is a free lock, and
 /// a lock taken to find out is released at once.
 pub(crate) fn lock_status_at(path: &Path) -> Result<LockStatus> {
@@ -344,6 +401,48 @@ mod tests {
         assert_eq!(executable_in(&dirs, "absent"), None);
         assert_eq!(list_dirs(dir.path()).unwrap(), [a, b]);
         assert!(list_dirs(&dir.path().join("none")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tail_is_the_end_of_the_file_and_appends_stay_bounded() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("turns.jsonl");
+        assert_eq!(read_tail(&path, 4).unwrap(), None);
+        append(&path, b"one\n").unwrap();
+        append(&path, b"two\n").unwrap();
+        assert_eq!(read_tail(&path, 4).unwrap().unwrap(), b"two\n");
+        assert_eq!(read_tail(&path, 100).unwrap().unwrap(), b"one\ntwo\n");
+
+        let log = dir.path().join("hook.log");
+        append_bounded(&log, b"0123456789", 8).unwrap();
+        append_bounded(&log, b"ab", 8).unwrap();
+        assert_eq!(
+            fs::read(&log).unwrap(),
+            b"ab",
+            "emptied once past the bound"
+        );
+        append_bounded(&log, b"cd", 8).unwrap();
+        assert_eq!(fs::read(&log).unwrap(), b"abcd");
+        assert!(
+            append(&dir.path().join("none/x"), b"x").is_err(),
+            "no directory is made"
+        );
+    }
+
+    // As above, taking the lock once it is free is left to the black-box tests (`tests/hooks.rs`).
+    #[test]
+    fn a_lock_held_elsewhere_is_waited_for_then_given_up() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.lock");
+        let held = try_lock_file(&path).unwrap().unwrap();
+        let started = Instant::now();
+        assert!(
+            lock_file_waiting(&path, Duration::from_millis(100))
+                .unwrap()
+                .is_none()
+        );
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        drop(held);
     }
 
     #[test]

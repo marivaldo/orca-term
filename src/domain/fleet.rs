@@ -47,6 +47,9 @@ pub(crate) struct Worktree {
     pub(crate) path: PathBuf,
     pub(crate) branch: Option<Branch>,
     pub(crate) state: State,
+    /// What the agent is doing or said last, in one line, beside a state from its hooks
+    /// (working, waiting, finished, failed, interrupted); `None` otherwise.
+    pub(crate) activity: Option<String>,
     /// The agent recorded for the worktree, by name (`claude-code`), or `None`.
     pub(crate) agent: Option<String>,
     /// Whether the worktree's holder is alive right now.
@@ -74,6 +77,7 @@ impl Fleet {
                 path: wt.path,
                 branch: wt.branch,
                 state: State::NoAgent,
+                activity: None,
                 agent: None,
                 holder: HolderStatus::Gone,
             })
@@ -95,7 +99,15 @@ impl Worktree {
     pub(crate) fn is_gone(&self) -> bool {
         match &self.state {
             State::Broken(reason) => reason.is_gone(),
-            State::NoAgent | State::Idle | State::SettingUp | State::NotReady(_) => false,
+            State::NoAgent
+            | State::Idle
+            | State::Working
+            | State::Waiting
+            | State::Finished
+            | State::Failed
+            | State::Interrupted
+            | State::SettingUp
+            | State::NotReady(_) => false,
         }
     }
 }

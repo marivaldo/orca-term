@@ -205,6 +205,76 @@ function M.listed(repo, name)
   error('no worktree named ' .. name)
 end
 
+---Where the recordings of claude's hooks are, shared with tests/hooks.rs.
+M.HOOK_FIXTURES = M.root .. '/tests/fixtures/claude-hooks'
+
+---`text` with every `from` replaced by `to`, both taken as plain text (not gsub patterns).
+---@param text string
+---@param from string
+---@param to string
+---@return string
+local function replace(text, from, to)
+  local out = ''
+  local start = 1
+  while true do
+    local first, last = text:find(from, start, true)
+    if not first then
+      return out .. text:sub(start)
+    end
+    out = out .. text:sub(start, first - 1) .. to
+    start = last + 1
+  end
+end
+
+---Acts as claude does, as tests/hooks.rs does: plays the hooks `first` to `last` (1-based, both
+---included; from the first and to the last when `nil`) of the recording `fixture` against the
+---worktree at `worktree`, whose agent was started by the core. For each hook (a line: the event, a space, the payload), it runs every handler the
+---worktree's `claude-settings.json` registers for the event whose matcher takes the payload's
+---tool, exactly as written: the command with its arguments, the payload on stdin, the worktree as
+---the directory. The recording's `{{worktree}}`, `{{transcripts}}` and `{{denied}}` become paths of
+---the repository's own. Fails the spec when a handler does not exit 0.
+---@param repo spec.Repo
+---@param worktree string
+---@param fixture string a file name in `M.HOOK_FIXTURES`
+---@param first? integer
+---@param last? integer
+function M.play_hooks(repo, worktree, fixture, first, last)
+  local admin = vim.trim(M.run({
+    'git',
+    '-C',
+    worktree,
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-path',
+    'orca-term',
+  }))
+  local settings = vim.json.decode(table.concat(vim.fn.readfile(admin .. '/claude-settings.json')))
+  local hooks = vim.tbl_filter(function(line)
+    return line ~= ''
+  end, vim.fn.readfile(M.HOOK_FIXTURES .. '/' .. fixture))
+  for index = first or 1, last or #hooks do
+    local event, payload = hooks[index]:match('^(%S+) (.*)$')
+    payload = replace(payload, '{{worktree}}', worktree)
+    payload = replace(payload, '{{transcripts}}', repo.tmp .. '/transcripts')
+    payload = replace(payload, '{{denied}}', repo.tmp .. '/denied')
+    local tool = vim.json.decode(payload).tool_name
+    for _, entry in ipairs(settings.hooks[event] or {}) do
+      local matcher = entry.matcher or '*'
+      if matcher == '*' or matcher == '' or matcher == tool then
+        for _, handler in ipairs(entry.hooks) do
+          local command = vim.list_extend({ handler.command }, handler.args)
+          local result =
+            vim.system(command, { stdin = payload, cwd = worktree, text = true }):wait()
+          assert(
+            result.code == 0,
+            ('%s: the %s hook exited %d: %s'):format(fixture, event, result.code, result.stderr)
+          )
+        end
+      end
+    end
+  end
+end
+
 ---Stops every agent of `repo` whose holder is alive, so no spec leaves a process behind. Never
 ---fails: it runs while a failed spec is cleaned up.
 ---@param repo spec.Repo

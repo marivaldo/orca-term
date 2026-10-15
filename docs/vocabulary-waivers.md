@@ -17,3 +17,4 @@ lint.
 - `thread`: Rust's `std::thread`, never a session.
 - `plugin`: Neovim's `plugin/` directory, and the Lua plugin that is the Neovim client; never the core.
 - `server`: `lua-language-server`, the name of LuaLS's binary; never the core or a holder.
+- `assistant`: claude's hook payload field `last_assistant_message`, which the core reads; never the agent.

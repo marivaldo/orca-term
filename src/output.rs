@@ -408,6 +408,7 @@ mod tests {
             script: None,
             log: None,
             state: State::NoAgent,
+            activity: None,
             agent: None,
         }
     }
@@ -418,6 +419,7 @@ mod tests {
             path: PathBuf::from(format!("/l/{name}")),
             branch: Some(Branch::new(name)),
             state,
+            activity: None,
             agent: None,
             holder: HolderStatus::Gone,
         }
@@ -436,6 +438,7 @@ mod tests {
                 exit: Exit::Code(1),
                 last_line: Some("boom".to_owned()),
             }),
+            activity: None,
             agent: None,
         }
     }
@@ -491,6 +494,27 @@ mod tests {
              b     b       idle      /l/b  claude-code (stopped)\n\
              c     c       no agent  /l/c"
         );
+    }
+
+    #[test]
+    fn the_table_names_the_agent_states_without_their_activity() {
+        let with = |name: &str, state| {
+            let mut worktree = worktree(name, state);
+            worktree.agent = Some("claude-code".to_owned());
+            worktree.activity = Some("Bash: npm test".to_owned());
+            worktree
+        };
+        let table = render_fleet_table(&fleet(vec![
+            with("a", State::Working),
+            with("b", State::Waiting),
+            with("c", State::Finished),
+            with("d", State::Failed),
+            with("e", State::Interrupted),
+        ]));
+        for state in ["working", "waiting", "finished", "failed", "interrupted"] {
+            assert!(table.contains(state), "{table}");
+        }
+        assert!(!table.contains("npm test"), "{table}");
     }
 
     #[test]

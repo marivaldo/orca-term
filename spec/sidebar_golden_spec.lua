@@ -1,5 +1,7 @@
 -- Seam 2, golden: the sidebar as Neovim shows it, for a real repository holding a worktree in
--- every state the core reports today, read by the real binary. The buffer's text and its
+-- every state the core reports today, read by the real binary. The agents are the fake claude of
+-- `support.agent_repo()`, and their states come from recordings of claude's hooks played through
+-- the handlers their settings register (`support.play_hooks`). The buffer's text and its
 -- highlights are compared with spec/golden/sidebar.txt.
 --
 -- The golden file holds the buffer's lines, then one highlight per line as
@@ -64,11 +66,30 @@ describe('the sidebar, golden', function()
 
   it('renders every state the core reports today', function()
     support.load_client()
-    local repo = support.repo()
+    local repo = support.agent_repo()
+    -- The setup scripts below need `touch` and `sleep`, which the fake claude's PATH leaves out;
+    -- its own directory stays first, so the fake claude is the one found.
+    support.set_env('PATH', repo.bin .. ':/usr/bin:/bin')
 
     -- no_agent: plain `worktree new`. `spike` then moves to a branch of another name.
     for _, name in ipairs({ 'install-deps', 'docs', 'old-spike', 'spike' }) do
       support.run({ support.binary, 'worktree', 'new', name }, repo.root)
+    end
+
+    -- The agent states: an agent started by the core, then the hooks of a recording, played up to
+    -- the hook that leaves the worktree in that state.
+    local agents = {
+      { name = 'run-tests', fixture = 'tui-queuetool-2.1.300.log', last = 3 }, -- working
+      { name = 'pick-colour', fixture = 'tui-ask-2.1.300.log', last = 4 }, -- waiting
+      { name = 'greet', fixture = 'p-hello-2.1.300.log' }, -- finished
+      { name = 'api-call', fixture = 'p-stopfailure-2.1.300.log' }, -- failed
+      { name = 'slow-job', fixture = 'tui-kill-2.1.300.log' }, -- interrupted
+    }
+    for _, agent in ipairs(agents) do
+      support.run({ support.binary, 'worktree', 'new', agent.name }, repo.root)
+      support.run({ support.binary, 'agent', 'start', agent.name }, repo.root)
+      local path = support.worktree_path(repo, agent.name)
+      support.play_hooks(repo, path, agent.fixture, 1, agent.last)
     end
     support.run(
       { 'git', 'switch', '--quiet', '-c', 'other-branch' },

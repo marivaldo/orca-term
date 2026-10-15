@@ -41,7 +41,8 @@ the adapters, and returns a domain value that `output` prints.
 ### edge
 
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`,
-  `agent start|attach|stop`, and the hidden `agent holder`, the holder process itself), the
+  `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
+  hidden `hook claude`, which claude runs for every hook event), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm` and `prune`, of `agent start` and `stop` (and, on stderr, the
@@ -80,6 +81,10 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/agent_stop.rs`: `agent stop`: find the target, nothing to do when no holder is alive, else
   ask the holder to stop and wait for `agent.lock` to be released (at most 10 s).
 - `ops/agent_holder.rs`: the hidden `agent holder`: the holder process, `adapters/holder/process.rs`.
+- `ops/hook.rs`: the hidden `hook claude --admin <dir> <event>`: read the payload from stdin,
+  take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event to
+  `status.json` and `turns.jsonl`, and exit 0 without printing whatever happens; what went wrong
+  is appended to `hook.log`, emptied first once past 256 KiB. It runs no git, to stay fast.
 
 ### adapters
 
@@ -94,6 +99,7 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
   `PATH`.
 - `adapters/program.rs`: running a program for its `--version`.
+- `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
   (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, and asking it to
   stop. The socket is bound and connected by its bare name after a change of directory into the
@@ -135,9 +141,17 @@ the adapters, and returns a domain value that `output` prints.
   size, and the reports of `agent start`, `stop` and `attach`.
 - `domain/launch.rs`: claude's launch: the command line (`--settings <file>
   --permission-mode acceptEdits`), the settings file that turns its sandbox on and denies our
-  state (ADR 0007), the version floor (2.1.285), the variables stripped from its environment, and
-  the guard that refuses a launch bypassing permissions. The forbidden flags and modes are
-  listed here and nowhere else.
+  state (ADR 0007) and registers the hooks, the version floor (2.1.285), the variables stripped
+  from its environment, and the guard that refuses a launch bypassing permissions. The
+  forbidden flags and modes are listed here and nowhere else.
+- `domain/hook.rs`: what claude's hook payloads report and how each event changes a worktree's
+  live status: a prompt opens a turn, `Stop` finishes it, `StopFailure` fails it, a new prompt or
+  a session start or end interrupts the open one; queued prompts are told apart by `prompt_id`,
+  subagents (payloads with `agent_id`) never open or close a turn, and events of a turn that
+  already ended are ignored. Tools set the activity, permission requests and questions wait.
+- `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes) and the turn log
+  (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
+  sessions), with texts kept to one capped line.
 - `domain/sandbox.rs`: whether claude's sandbox can run here: `sandbox-exec` on macOS, `bwrap`
   and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`.
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
@@ -173,7 +187,7 @@ validate"):
   worktree's path by mistake.
 - `State` (`domain/state.rs`): `NoAgent`, `Idle`, `SettingUp`, `NotReady(NotReadyReason)` or
   `Broken(BrokenReason)`. A ready worktree is `Idle` when an agent is recorded (whether or not
-  its holder is alive, until hooks report turns) and `NoAgent` otherwise. `NotReadyReason` is
+  its holder is alive) with no turn reported yet, and `NoAgent` otherwise. `NotReadyReason` is
   `Interrupted` (a setup recorded as running whose lock nobody holds) or `Failed` with its `Exit`
   and the last line of its log. `BrokenReason` says the directory is missing, git marks it
   prunable, or the state file cannot be read. Broken wins over every other state.
@@ -261,6 +275,20 @@ validate"):
   and settings whose `permissions.defaultMode` bypasses, before any holder is started; the
   literals exist in that file alone (`cargo xtask launch-guard`). Without the sandbox's tools on
   PATH (`sandbox-exec`; `bwrap` and `socat`) nothing is launched: the typed `no_sandbox`.
+- **Hooks report the live status, and never reach claude.** The settings register one
+  synchronous handler for SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest,
+  PostToolUse, PostToolUseFailure, Stop, StopFailure and SessionEnd: `/bin/sh -c '"$0" hook
+  claude --admin "$1" "$2" >/dev/null 2>&1; exit 0'` in exec form, with orca-term's absolute path
+  and the worktree's admin directory, a timeout of 5 s. It is wrapped because claude reads a
+  hook's exit status 2 as a refusal (it rejects the prompt, or keeps working after `Stop`) and
+  its stdout on some events as extra context, so whatever orca-term does, even missing or
+  crashing, reaches claude as a silent success. Hooks run outside claude's sandbox (measured), so
+  they can write the admin directory, while the agent's own Bash cannot (`denyWrite`). In the
+  admin directory `status.json` is replaced atomically, `turns.jsonl` only grows, `hook.lock`
+  serialises a worktree's hooks, and `hook.log` stays under 256 KiB. `worktree ls` derives the
+  agent state on read: an open turn is `working` or `waiting` while the holder lives and
+  `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
+  `idle` after a fresh session; `--json` carries the `activity`.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
@@ -302,6 +330,14 @@ validate"):
 - **The real sandbox boundary is not exercised by the tests**: a fake claude enforces nothing.
   Seam 1 asserts the generated settings and command line; the boundary with the real claude waits
   for the live checks of #44.
+- **Esc fires no hook**, nor does Esc on a permission dialog or declining a question, so the turn
+  shows `working` or `waiting` until the next prompt, the session's end or the holder's death.
+- **Hooks can be silenced**: a person's or repository's `disableAllHooks: true`, or managed
+  `allowManagedHooksOnly`, leaves the status where it was.
+- **An approved long command reads `waiting`** until it finishes, since claude reports no
+  approval before the tool's end.
+- **The hook path is baked at launch**: moving the orca-term binary stops the status until the
+  agent is started again.
 
 ## Guards
 
@@ -390,7 +426,10 @@ what they print.
   creates a worktree and `.` opens the menu of the worktree under the cursor (through
   `actions.lua`). A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
   other window it closes the tab's sidebar first, and on `WinClosed` it closes a tab left with
-  only the sidebar (unless it is the last tab).
+  only the sidebar (unless it is the last tab). The second line of each worktree shows its
+  activity; while a listed worktree is working, one timer turns its glyph through
+  `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
+  nothing works or the sidebar closes.
 - `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
   (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
   time, never remembered. `go_to` enters it and focuses its main window (not the sidebar), or

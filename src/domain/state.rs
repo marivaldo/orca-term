@@ -5,8 +5,9 @@
 //! ignoring the rest; writing refuses a file whose schema is newer than this core supports, so an
 //! older core never clobbers what a newer one wrote.
 //!
-//! A worktree's state is derived on read from what `worktree.json` records and from volatile
-//! facts checked at that moment: whether the worktree's lock is held, and the setup log. Nothing
+//! A worktree's state is derived on read from what `worktree.json` records, the live status the
+//! agent's hooks keep (`status.json`, `domain/turn.rs`), and volatile facts checked at that
+//! moment: whether the worktree's lock and the holder's lock are held, and the setup log. Nothing
 //! is rewritten on the read path.
 
 use std::fmt;
@@ -15,7 +16,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::agent::HolderStatus;
 use crate::domain::setup::{self, Exit, SetupRecord};
+use crate::domain::turn::{Outcome, Phase, Status};
 
 /// The newest schema this core reads and writes.
 pub(crate) const SUPPORTED_SCHEMA: u64 = 1;
@@ -43,6 +46,19 @@ pub(crate) const AGENT_SOCKET_FILE: &str = "agent.sock";
 
 /// The settings claude is launched with, rebuilt on every start.
 const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
+
+/// The live status the agent's hooks keep (`domain/turn.rs`).
+const STATUS_FILE: &str = "status.json";
+
+/// The turn log the agent's hooks append to (`domain/turn.rs`).
+const TURN_LOG_FILE: &str = "turns.jsonl";
+
+/// The lock each hook run takes, waiting briefly, while it changes the status and the turn log.
+/// Commands never take it.
+const HOOK_LOCK_FILE: &str = "hook.lock";
+
+/// What went wrong in the hooks, one line each, kept small.
+const HOOK_LOG_FILE: &str = "hook.log";
 
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +109,26 @@ impl AdminDir {
     pub(crate) fn claude_settings(&self) -> PathBuf {
         self.0.join(CLAUDE_SETTINGS_FILE)
     }
+
+    /// The hooks' live status, `status.json`.
+    pub(crate) fn status_file(&self) -> PathBuf {
+        self.0.join(STATUS_FILE)
+    }
+
+    /// The hooks' turn log, `turns.jsonl`.
+    pub(crate) fn turn_log(&self) -> PathBuf {
+        self.0.join(TURN_LOG_FILE)
+    }
+
+    /// The hooks' lock, `hook.lock`.
+    pub(crate) fn hook_lock(&self) -> PathBuf {
+        self.0.join(HOOK_LOCK_FILE)
+    }
+
+    /// The hooks' error log, `hook.log`.
+    pub(crate) fn hook_log(&self) -> PathBuf {
+        self.0.join(HOOK_LOG_FILE)
+    }
 }
 
 /// Whether a worktree's lock is held right now, by this or another process.
@@ -107,9 +143,20 @@ pub(crate) enum LockStatus {
 pub(crate) enum State {
     /// The worktree is ready, and no agent is attached to it.
     NoAgent,
-    /// The worktree is ready and has an agent, which is not in a turn. Until hooks report turns,
-    /// every worktree with an agent is idle, whether or not its holder is alive.
+    /// The worktree is ready and has an agent, which is not in a turn: no turn yet, or the
+    /// latest one belongs to an earlier session.
     Idle,
+    /// The agent is in a turn, working.
+    Working,
+    /// The agent is in a turn, waiting for the person: a permission dialog or a question.
+    Waiting,
+    /// The agent's latest turn of the current session finished.
+    Finished,
+    /// The agent's latest turn of the current session ended on an API error.
+    Failed,
+    /// The agent's latest turn ended without its end being seen: the person pressed Esc and sent
+    /// another prompt, the session ended, or the agent died mid-turn.
+    Interrupted,
     /// The worktree's setup is running.
     SettingUp,
     /// The worktree exists but its setup did not finish, for the reason given; it stays so until
@@ -125,6 +172,11 @@ impl State {
         match self {
             Self::NoAgent => "no agent",
             Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
             Self::SettingUp => "setting up",
             Self::NotReady(_) => "not ready",
             Self::Broken(_) => "broken",
@@ -134,7 +186,14 @@ impl State {
     /// Why the worktree is in its state, when there is something to say.
     pub(crate) fn detail(&self) -> Option<String> {
         match self {
-            Self::NoAgent | Self::Idle | Self::SettingUp => None,
+            Self::NoAgent
+            | Self::Idle
+            | Self::Working
+            | Self::Waiting
+            | Self::Finished
+            | Self::Failed
+            | Self::Interrupted
+            | Self::SettingUp => None,
             Self::NotReady(reason) => Some(reason.to_string()),
             Self::Broken(reason) => Some(reason.to_string()),
         }
@@ -180,12 +239,54 @@ pub(crate) fn setup_running(lock: LockStatus) -> State {
     }
 }
 
-/// The state of a ready worktree: idle when an agent is recorded, no agent otherwise.
-pub(crate) fn ready(agent: Option<&str>) -> State {
-    match agent {
-        Some(_) => State::Idle,
-        None => State::NoAgent,
+/// The state of a ready worktree whose agent is `agent` (`None`: no agent), with the activity
+/// shown beside it. With an agent, the state comes from the hooks' live status (`None` before any
+/// hook reported, or when `status.json` cannot be used) and whether its holder is alive:
+///
+/// - a turn is open: `working` or `waiting` while the holder lives, showing what the agent does;
+///   `interrupted` once it is gone (the agent died mid-turn), showing the turn's prompt;
+/// - no turn is open: the latest turn's outcome when it belongs to the current session, showing
+///   what the agent said last (an interrupted turn shows its prompt); otherwise `idle`, as a
+///   fresh session reads.
+pub(crate) fn ready(
+    agent: Option<&str>,
+    status: Option<&Status>,
+    holder: HolderStatus,
+) -> (State, Option<String>) {
+    if agent.is_none() {
+        return (State::NoAgent, None);
     }
+    let Some(status) = status else {
+        return (State::Idle, None);
+    };
+    if let Some(turn) = &status.turn {
+        return match (holder, turn.phase) {
+            (HolderStatus::Gone, _) => (State::Interrupted, shown(&turn.prompt)),
+            (HolderStatus::Alive, Phase::Waiting) => (State::Waiting, shown(&turn.activity)),
+            (HolderStatus::Alive, Phase::Working) => (State::Working, shown(&turn.activity)),
+        };
+    }
+    match &status.latest {
+        Some(closed) if closed.session == status.session => {
+            let activity = closed.detail.as_deref().unwrap_or(&closed.prompt);
+            (outcome_state(closed.outcome), shown(activity))
+        }
+        _ => (State::Idle, None),
+    }
+}
+
+/// The state a closed turn's outcome shows as.
+fn outcome_state(outcome: Outcome) -> State {
+    match outcome {
+        Outcome::Finished => State::Finished,
+        Outcome::Failed => State::Failed,
+        Outcome::Interrupted => State::Interrupted,
+    }
+}
+
+/// An activity to show, `None` when there is no text.
+fn shown(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// The state of a worktree whose setup failed as `exit`, with `log` as its setup log.
@@ -376,6 +477,7 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Seen> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::turn::{ClosedTurn, OpenTurn};
 
     const PATH: &str = "/admin/orca-term/worktree.json";
 
@@ -406,10 +508,128 @@ mod tests {
 
     #[test]
     fn a_ready_worktree_is_idle_only_with_an_agent() {
-        assert_eq!(ready(Some("claude-code")), State::Idle);
-        assert_eq!(ready(None), State::NoAgent);
+        let agent = Some("claude-code");
+        assert_eq!(ready(agent, None, HolderStatus::Alive), (State::Idle, None));
+        assert_eq!(ready(agent, None, HolderStatus::Gone), (State::Idle, None));
+        let any = Status::default();
+        assert_eq!(
+            ready(None, Some(&any), HolderStatus::Alive),
+            (State::NoAgent, None)
+        );
+        assert_eq!(
+            ready(agent, Some(&any), HolderStatus::Alive),
+            (State::Idle, None)
+        );
         assert_eq!(State::Idle.label(), "idle");
         assert_eq!(State::Idle.detail(), None);
+    }
+
+    fn open_turn(phase: Phase) -> Status {
+        Status {
+            session: Some("s1".to_owned()),
+            turn: Some(OpenTurn {
+                number: 2,
+                session: Some("s1".to_owned()),
+                prompt_id: Some("p2".to_owned()),
+                prompt: "fix the login".to_owned(),
+                started_at: 1,
+                phase,
+                activity: "Bash: npm test".to_owned(),
+            }),
+            ..Status::default()
+        }
+    }
+
+    fn closed_turn(outcome: Outcome, session: &str, detail: Option<&str>) -> Status {
+        Status {
+            session: Some("s1".to_owned()),
+            latest: Some(ClosedTurn {
+                number: 1,
+                session: Some(session.to_owned()),
+                prompt_id: Some("p1".to_owned()),
+                prompt: "fix the login".to_owned(),
+                outcome,
+                detail: detail.map(str::to_owned),
+                error: None,
+                ended_at: 2,
+            }),
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn an_open_turn_is_working_or_waiting_while_the_holder_lives() {
+        let agent = Some("claude-code");
+        let activity = Some("Bash: npm test".to_owned());
+        assert_eq!(
+            ready(agent, Some(&open_turn(Phase::Working)), HolderStatus::Alive),
+            (State::Working, activity.clone())
+        );
+        assert_eq!(
+            ready(agent, Some(&open_turn(Phase::Waiting)), HolderStatus::Alive),
+            (State::Waiting, activity)
+        );
+    }
+
+    #[test]
+    fn an_open_turn_whose_holder_is_gone_is_interrupted_showing_its_prompt() {
+        for phase in [Phase::Working, Phase::Waiting] {
+            assert_eq!(
+                ready(
+                    Some("claude-code"),
+                    Some(&open_turn(phase)),
+                    HolderStatus::Gone
+                ),
+                (State::Interrupted, Some("fix the login".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn a_closed_turn_of_the_current_session_shows_its_outcome() {
+        let agent = Some("claude-code");
+        for (outcome, state) in [
+            (Outcome::Finished, State::Finished),
+            (Outcome::Failed, State::Failed),
+            (Outcome::Interrupted, State::Interrupted),
+        ] {
+            for holder in [HolderStatus::Alive, HolderStatus::Gone] {
+                let status = closed_turn(outcome, "s1", Some("All done."));
+                assert_eq!(
+                    ready(agent, Some(&status), holder),
+                    (state.clone(), Some("All done.".to_owned()))
+                );
+            }
+        }
+        let interrupted = closed_turn(Outcome::Interrupted, "s1", None);
+        assert_eq!(
+            ready(agent, Some(&interrupted), HolderStatus::Alive),
+            (State::Interrupted, Some("fix the login".to_owned())),
+            "with no detail, the turn's prompt"
+        );
+    }
+
+    #[test]
+    fn a_closed_turn_of_an_earlier_session_reads_idle() {
+        let status = closed_turn(Outcome::Finished, "s0", Some("All done."));
+        assert_eq!(
+            ready(Some("claude-code"), Some(&status), HolderStatus::Alive),
+            (State::Idle, None)
+        );
+    }
+
+    #[test]
+    fn the_agent_states_have_labels_and_no_detail() {
+        for (state, label) in [
+            (State::Working, "working"),
+            (State::Waiting, "waiting"),
+            (State::Finished, "finished"),
+            (State::Failed, "failed"),
+            (State::Interrupted, "interrupted"),
+        ] {
+            assert_eq!(state.label(), label);
+            assert_eq!(state.detail(), None);
+        }
     }
 
     #[test]
@@ -548,6 +768,22 @@ mod tests {
         assert_eq!(
             admin.claude_settings(),
             PathBuf::from("/repo/.git/worktrees/fix/orca-term/claude-settings.json")
+        );
+        assert_eq!(
+            admin.status_file(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/status.json")
+        );
+        assert_eq!(
+            admin.turn_log(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/turns.jsonl")
+        );
+        assert_eq!(
+            admin.hook_lock(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/hook.lock")
+        );
+        assert_eq!(
+            admin.hook_log(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/hook.log")
         );
     }
 

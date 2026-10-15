@@ -245,7 +245,13 @@ pub(crate) fn check_can_set_up(worktree: &Worktree) -> Result<()> {
 /// (its setup failed or was interrupted). The agent would run in a worktree that is not usable.
 pub(crate) fn check_can_run_agent(worktree: &Worktree) -> Result<()> {
     let reason = match &worktree.state {
-        State::NoAgent | State::Idle => return Ok(()),
+        State::NoAgent
+        | State::Idle
+        | State::Working
+        | State::Waiting
+        | State::Finished
+        | State::Failed
+        | State::Interrupted => return Ok(()),
         State::SettingUp => "its setup is running".to_owned(),
         State::NotReady(reason) => format!("it is not ready ({reason})"),
         State::Broken(reason) => format!("it is broken ({reason})"),
@@ -380,11 +386,14 @@ mod tests {
             path: PathBuf::from("/l/fix"),
             branch: None,
             state,
+            activity: None,
             agent: None,
             holder: HolderStatus::Gone,
         };
         check_can_run_agent(&with(State::NoAgent)).unwrap();
         check_can_run_agent(&with(State::Idle)).unwrap();
+        check_can_run_agent(&with(State::Interrupted)).unwrap();
+        check_can_run_agent(&with(State::Finished)).unwrap();
         let err = check_can_run_agent(&with(State::SettingUp)).unwrap_err();
         assert_eq!(
             err.to_string(),
