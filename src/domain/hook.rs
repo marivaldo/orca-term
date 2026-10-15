@@ -17,6 +17,20 @@ use serde_json::Value;
 
 use crate::domain::turn::{self, ClosedTurn, OpenTurn, Outcome, Phase, Status, TurnRecord};
 
+/// The events a hook is registered for, each with its matcher (`*`: every tool), in the order
+/// the settings list them.
+pub(crate) const REGISTERED: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("PreToolUse", Some("*")),
+    ("PermissionRequest", Some("*")),
+    ("PostToolUse", Some("*")),
+    ("PostToolUseFailure", Some("*")),
+    ("Stop", None),
+    ("StopFailure", None),
+    ("SessionEnd", None),
+];
+
 /// How the prompt claude submits after compacting a session starts. It continues the turn in
 /// progress, so it opens none.
 const COMPACTION_PROMPT: &str = "This session is being continued from a previous ";

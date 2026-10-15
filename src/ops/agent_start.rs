@@ -1,6 +1,7 @@
 //! Ops: `agent start`, which launches claude in a worktree inside a detached holder (ADR 0009),
-//! under claude's native sandbox with everything allowed inside the worktree (ADR 0007). Starting
-//! an agent that already runs is not an error: the report says so.
+//! under claude's native sandbox with everything allowed inside the worktree (ADR 0007), with
+//! hooks that call this orca-term back on every turn event. Starting an agent that already runs
+//! is not an error: the report says so.
 
 use anyhow::{Context, Result};
 
@@ -59,7 +60,8 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     let common = fs::canonicalize(&git::common_dir(&fleet.primary)?)?;
     let admin_dirs = prepare_admin_dirs(&common)?;
     let admin = AdminDir::new(fs::canonicalize(admin.path())?);
-    let settings = launch::claude_settings(&common, &admin_dirs, &writable.value);
+    let hooks = hook_target(&admin)?;
+    let settings = launch::claude_settings(&common, &admin_dirs, &writable.value, &hooks);
     let argv = launch::claude_argv(&claude.display().to_string(), &admin.claude_settings());
     // The guard: no launch bypasses permissions, whatever the code above produced.
     launch::check_launch(&argv, &settings)?;
@@ -100,6 +102,15 @@ fn prepare_admin_dirs(common: &std::path::Path) -> Result<Vec<std::path::PathBuf
         admin_dirs.push(admin_dir);
     }
     Ok(admin_dirs)
+}
+
+/// Where the agent's hooks report: this orca-term, by its resolved absolute path, and the
+/// worktree's admin directory `admin`.
+fn hook_target(admin: &AdminDir) -> Result<launch::HookTarget> {
+    Ok(launch::HookTarget {
+        orca_term: fs::canonicalize(&env::current_exe()?)?,
+        admin: admin.path().to_owned(),
+    })
 }
 
 /// `worktree` with its state read again from `admin`.
