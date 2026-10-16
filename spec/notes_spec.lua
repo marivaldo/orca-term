@@ -366,10 +366,10 @@ describe('notes', function()
     vim.cmd('checktime')
     wait_drawn(review.buf, { '5:✎', '5:✎ third' })
 
-    -- Its line deleted: the note goes as the whole file, drawn above line 1.
+    -- Its line deleted: the note goes as the whole file, drawn below line 1.
     vim.fn.writefile({ 'n1', 'n2', 'a1', 'a2', 'a4', 'a5' }, added)
     vim.cmd('checktime')
-    wait_drawn(review.buf, { '1^:✎ third' })
+    wait_drawn(review.buf, { '1:✎ file: third' })
   end)
 
   it('draws again when the core says a note changed', function()

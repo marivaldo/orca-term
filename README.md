@@ -61,8 +61,8 @@ In the review (and only there), on the right-hand side, the worktree's file:
   first: notes go on the file on disk, so a buffer with unsaved changes is refused.
 - Each note shows as `✎` beside its line (a range's other lines get `┆`), its text below it, at its
   line in the file on disk now: when the agent adds lines above it, it moves down; when its line is
-  changed or deleted, it becomes a note on the whole file, shown above line 1. The file list shows
-  `✎N` after each file with notes.
+  changed or deleted, it becomes a note on the whole file. A note on the whole file shows below
+  line 1, as `✎ file: <text>`. The file list shows `✎N` after each file with notes.
 - `gN` (or `:OrcaTerm notes`, also from the worktree's tab) lists the notes: `Send all (N)` first,
   then each note, which you can send alone, edit or delete (deleting asks nothing, as in Orca).
 
@@ -73,8 +73,6 @@ Limits:
 
 - Notes show only in the review orca-term opens (`d`), not in a diffview opened by hand, nor when
   the file is edited in the worktree's tab.
-- A note on the whole file is drawn above line 1, which Neovim shows only once the window is
-  scrolled up past line 1 (`<C-y>` on line 1).
 - `gn` works on the files the review lists; a file git does not track is not listed, but a note
   added on it with `orca-term note add` shows in the list and is sent with the others.
 

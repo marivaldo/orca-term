@@ -732,8 +732,8 @@ what they print.
   notes as `note ls` last printed them. `draw()` draws them in one namespace (`NAMESPACE`) at their
   `current` anchor, the line in the file on disk now: on the right-hand window's buffer a sign
   `✎` (`render.NOTE`) on a note's line (on a range's first line, `┆` on its others) and its body as
-  `virt_lines` below its last line, prefixed `✎ `, or `virt_lines_above` line 1 for a whole-file
-  note; in the file panel `✎N` at the end of each file's line (`virt_text`). All in
+  `virt_lines` below its last line, prefixed `✎ `, or below line 1, prefixed `✎ file: `, for a
+  whole-file note; in the file panel `✎N` at the end of each file's line (`virt_text`). All in
   `OrcaTermNote`. It puts buffer-local keys on those buffers and on the base side's: `gn` (normal
   and visual) and `gN`. Every other buffer it marked loses its extmarks and keys, so outside
   orca-term's review tab nothing of the notes is left: it is drawn on `User DiffviewDiffBufRead`,
@@ -842,8 +842,6 @@ Its known limits:
   stays closed.
 - `:OrcaTerm review` and `:OrcaTerm notes` read the fleet, waiting for it, to find the current
   tab's worktree.
-- A whole-file note is drawn above line 1 (`virt_lines_above`), which Neovim shows only once the
-  window is scrolled up past line 1 (`<C-y>` there): opened at the top, the review does not show it.
 - Notes are drawn only in orca-term's review tabs, on the right-hand side and the file panel: not
   in a diffview opened by hand, not on the base side, not in the worktree's tab. `gn` adds notes
   only on the files the review lists (a file git does not track is not listed); a note on any

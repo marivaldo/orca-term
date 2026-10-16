@@ -11,7 +11,7 @@
 -- at a time, edit or delete them; `:OrcaTerm notes` lists them too, from the worktree's tab
 -- (`actions.lua`). Each note is drawn with extmarks in one namespace, at its line in the file on disk
 -- now (the core's `current` anchor): a sign on its line (the other lines of a range get a fainter
--- one) and its body below, or above line 1 for a whole-file note; the file panel shows `✎N` after
+-- one) and its body below, or below line 1 for a whole-file note; the file panel shows `✎N` after
 -- each file with notes.
 --
 -- The right-hand buffer is the file's own buffer, which `gf` also edits in the worktree's tab, so
@@ -116,13 +116,16 @@ function M.item(note)
   return where(note) .. '  ' .. cut(note.body, M.BODY_CELLS)
 end
 
----A note's body as virtual lines: the first after `✎ `, the others under it.
+---A note's body as virtual lines: the first after `✎ ` (`✎ file: ` for a whole-file note), the
+---others under it.
 ---@param body string
+---@param whole_file? boolean
 ---@return [string, string][][]
-local function body_lines(body)
+local function body_lines(body, whole_file)
   local lines = {}
+  local first = render.NOTE .. (whole_file and ' file: ' or ' ')
   for index, text in ipairs(vim.split(body, '\n', { plain = true })) do
-    local prefix = index == 1 and (render.NOTE .. ' ') or '  '
+    local prefix = index == 1 and first or '  '
     local flat = text:gsub('%c', ' ')
     table.insert(lines, { { prefix .. flat, 'OrcaTermNote' } })
   end
@@ -131,15 +134,15 @@ end
 
 ---Draws `note` on the file's buffer `buf` at its line in the file on disk now: a sign on its first
 ---line, a fainter one on the other lines of a range, and its body below its last line. A whole-file
----note (one whose line is gone too) is drawn above line 1.
+---note (one whose line is gone too) is drawn below line 1, after `✎ file: `, with no sign: above
+---line 1, Neovim would show it only once the window is scrolled up past the top.
 ---@param buf integer
 ---@param note orca_term.Note
 local function draw_note(buf, note)
   local current = note.current
   if current.scope == 'file' then
     vim.api.nvim_buf_set_extmark(buf, M.NAMESPACE, 0, 0, {
-      virt_lines = body_lines(note.body),
-      virt_lines_above = true,
+      virt_lines = body_lines(note.body, true),
     })
     return
   end
