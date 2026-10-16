@@ -1,14 +1,14 @@
 -- orca-term's sidebar: the fleet in a left split of every tab, toggled by `:OrcaTerm sidebar`.
 --
--- This module, `tabs.lua`, `terminal.lua` and `review.lua` are the only ones that touch windows
--- and buffers (`cargo xtask client-boundary` checks it). It gets the fleet from `live.lua`, has
--- `render.lua` turn it into lines and colours, and paints them into one buffer that every tab shows
--- in its own window. Its keys, local to that buffer, move the selection (`j`, `k`), open a worktree
--- (`<CR>`: its tab, and its agent's terminal when it has an agent), create a worktree (`a`), open
--- the menu of the worktree under the cursor (`.`), toggle its unseen mark (`u`) and open its review
--- (`d`), all five through `actions.lua`. The selection follows the current tab when it is a
--- worktree's. The sidebar is never shown in a review tab (`review.lua`), where diffview lays out
--- the whole tab.
+-- This module, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` are the only ones that
+-- touch windows and buffers (`cargo xtask client-boundary` checks it). It gets the fleet from
+-- `live.lua`, has `render.lua` turn it into lines and colours, and paints them into one buffer that
+-- every tab shows in its own window. Its keys, local to that buffer, move the selection (`j`, `k`),
+-- open a worktree (`<CR>`: its tab, and its agent's terminal when it has an agent), create a
+-- worktree (`a`), open the menu of the worktree under the cursor (`.`), toggle its unseen mark
+-- (`u`) and open its review (`d`), all five through `actions.lua`. The selection follows the
+-- current tab when it is a worktree's. The sidebar is never shown in a review tab (`review.lua`),
+-- where diffview lays out the whole tab.
 --
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains

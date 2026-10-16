@@ -1,9 +1,9 @@
 -- orca-term's review tabs: a worktree's review shown in diffview.nvim, in a tab of its own.
 --
--- This module, `sidebar.lua`, `tabs.lua` and `terminal.lua` are the only ones that touch windows,
--- tabs and buffers (`cargo xtask client-boundary` checks it), and this is the only module that
--- calls diffview.nvim. diffview has no type annotations LuaLS knows, so its modules and views are
--- plain `table`s here, and only the few fields and functions named below are used.
+-- This module, `sidebar.lua`, `tabs.lua`, `terminal.lua` and `notes.lua` are the only ones that
+-- touch windows, tabs and buffers (`cargo xtask client-boundary` checks it), and this is the only
+-- module that calls diffview.nvim. diffview has no type annotations LuaLS knows, so its modules and
+-- views are plain `table`s here, and only the few fields and functions named below are used.
 --
 -- A review compares the review's base (the commit the worktree forked from, which the core's
 -- `worktree review` prints) with the worktree's files on disk: `DiffviewOpen <base>`, run with
@@ -16,7 +16,9 @@
 -- In orca-term's review tabs (only those), `gf` in diffview's file panel and diff windows edits the
 -- file in the worktree's tab instead of diffview's previous tab.
 --
--- The autocommands of `gf` are made by the first review opened, never at startup.
+-- The autocommands of `gf` are made by the first review opened, never at startup. The notes drawn
+-- in orca-term's review tabs are `notes.lua`'s; this module tells it what a review shows
+-- (`shown()`, `file_in_panel()`), so that diffview is called from here only.
 
 local M = {}
 
@@ -126,6 +128,97 @@ function M.find(path)
     end
   end
   return nil
+end
+
+---What orca-term's review in the current tab shows, for the notes drawn on it (`notes.lua`).
+---@class orca_term.ReviewShown
+---@field worktree string the worktree's path
+---The right-hand window, when it shows the worktree's file on disk: the window, its buffer (the
+---file's own buffer, which `gf` edits too) and the file's path, relative to the worktree's root
+---@field file? { win: integer, buf: integer, path: string }
+---@field bases integer[] the buffers of the other diff windows, the review's base
+---@field panel? integer the file panel's buffer, when it is loaded
+---@field rows { path: string, row: integer }[] each file the panel shows, on its 0-based line
+
+---The lines of the file panel holding a file, from the components diffview rendered: a file
+---inside a folded directory takes no line and is left out.
+---@param panel table diffview's file panel
+---@return { path: string, row: integer }[]
+local function panel_rows(panel)
+  local rows = {}
+  local root = panel.components and panel.components.comp
+  if not root then
+    return rows
+  end
+  root:deep_some(function(comp)
+    if comp.name == 'file' and comp.context and comp.lend > comp.lstart then
+      table.insert(rows, { path = comp.context.path, row = comp.lstart })
+    end
+    return false
+  end)
+  return rows
+end
+
+---The right-hand window `main` of a review's layout, when it shows the worktree's file on disk
+---(diffview's `LOCAL` revision), with its buffer and the file's path; `nil` while it shows anything
+---else, such as the empty buffer of a file the change deleted.
+---@param main table diffview's window
+---@return { win: integer, buf: integer, path: string }?
+local function file_on_disk(main)
+  local file = main.file
+  if not (file and file.bufnr and main.id and vim.api.nvim_win_is_valid(main.id)) then
+    return nil
+  end
+  local local_rev = require('diffview.vcs.rev').RevType.LOCAL
+  if file.rev.type ~= local_rev or vim.api.nvim_win_get_buf(main.id) ~= file.bufnr then
+    return nil
+  end
+  return { win = main.id, buf = file.bufnr, path = file.path }
+end
+
+---What orca-term's review in the current tab shows: its worktree, the right-hand window's file, the
+---base side's buffers and the file panel. `nil` when the current tab is not orca-term's review (a
+---diffview opened by hand is not), or its view has no layout yet.
+---@return orca_term.ReviewShown?
+function M.shown()
+  local tab = vim.api.nvim_get_current_tabpage()
+  local path = M.worktree_of(tab)
+  local view = view_in(tab)
+  local layout = view and view.cur_layout
+  if not (path and view and layout) then
+    return nil
+  end
+  local main = layout:get_main_win()
+  local bases = {}
+  for _, win in ipairs(layout.windows or {}) do
+    if win ~= main and win.id and vim.api.nvim_win_is_valid(win.id) then
+      table.insert(bases, vim.api.nvim_win_get_buf(win.id))
+    end
+  end
+  local panel = view.panel
+  local panel_buf = panel and panel.bufid
+  if panel_buf and not vim.api.nvim_buf_is_loaded(panel_buf) then
+    panel_buf = nil
+  end
+  return {
+    worktree = path,
+    file = main and file_on_disk(main),
+    bases = bases,
+    panel = panel_buf,
+    rows = panel and panel_rows(panel) or {},
+  }
+end
+
+---The path (relative to the worktree's root) of the file under the cursor in the file panel of the
+---current tab's review, or `nil` on a directory or a line that is no file.
+---@return string?
+function M.file_in_panel()
+  local view = view_in(vim.api.nvim_get_current_tabpage())
+  if not (view and view.infer_cur_file) then
+    return nil
+  end
+  local file = view:infer_cur_file()
+  return file and file.path
 end
 
 ---Whether `win` is a window to edit a file in: not floating, not the sidebar, not an agent's
@@ -292,14 +385,17 @@ function M.open(path, base)
     }
   end
 
+  local notes = require('orca-term.notes')
   local existing = M.find(path)
   if existing then
     vim.api.nvim_set_current_tabpage(existing)
     dv.emit('refresh_files')
+    notes.refresh()
     return nil
   end
 
   ensure_autocmds()
+  notes.start()
   local before = vim.api.nvim_get_current_tabpage()
   opening = true
   -- diffview reads `-C`'s value through expand(), which would expand a `$`, `%` or `#` in the path:
@@ -317,6 +413,7 @@ function M.open(path, base)
   end
   vim.t[view.tabpage][M.MARK] = resolved(path)
   on_diffview_event()
+  notes.refresh()
   return nil
 end
 
