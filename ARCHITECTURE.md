@@ -469,7 +469,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. `spec/live_spec.lua`
   starts child Neovims to check the registration, the live updates across tabs and Neovims, a
   stale address and a burst of events; `spec/live_store_spec.lua` starts one to check that the
-  live fleet hands one read to every subscriber. See "Neovim client" below.
+  live fleet hands one read to every subscriber. `spec/strip_spec.lua` compares the status strip,
+  as a statusline expression and as Neovim draws it, with `spec/golden/strip.txt`, and starts
+  child Neovims to check its live update and its lualine component, with lualine.nvim pinned in
+  `.rocks/lualine.nvim` by `just lua-rocks`. See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -511,12 +514,19 @@ what they print.
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
   name. No line reaches
-  past the width.
+  past the width. It also counts the fleet for the status strip: `counts(fleet)` gives the
+  worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
+  `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
+  then a state the client does not know yet, by name), leaving out the states no worktree is in,
+  and how many are unseen; `strip(fleet)` turns them into items `{ text, group }` such as
+  `{ text = '?1', group = 'OrcaTermStateWaiting' }`, the unseen count last as `•N` in
+  `OrcaTermUnseen`. The working glyph does not spin there.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
   `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state and `OrcaTermUnseen`),
   defined as default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*`
   (`OrcaTermUnseen` to `DiagnosticWarn`) so a person's own definition wins; `OrcaTermUnseenName`,
-  the unseen worktree's name, is a default of its own, only bold.
+  the unseen worktree's name, is a default of its own, only bold. The sidebar, while open, and the
+  status strip, once started, define them again after every `:colorscheme`.
 - `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
   no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
   that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
@@ -530,6 +540,30 @@ what they print.
   `User OrcaTermWorktreeChanged` (`EVENT`) calls `read_soon()`, and `FocusGained` reads the fleet,
   waiting, and registers again; both are ignored while nobody is subscribed. These autocommands
   live in the `orca-term-live` group, made at the first subscription and never deleted.
+- `lua/orca-term/strip.lua`: the status strip, the fleet's health for a statusline while the
+  sidebar is closed. `statusline()` returns the strip as a statusline expression (each item as
+  `%#Group#text%*`, a space between items), for `%{%v:lua.require'orca-term.strip'.statusline()%}`;
+  `items()` returns the items, for the lualine component; `counts()` returns the counts, for a
+  statusline of one's own. Each returns what was kept from the fleet last read, or the empty
+  string (no item, zero counts) when there is no worktree, the fleet could not be read or was not
+  read yet; the strip never shows an error. The first call of any of them only schedules the start
+  (`vim.schedule`), since a statusline is drawn under textlock: the start defines the highlight
+  groups, makes the `orca-term-strip` autocommand group (`ColorScheme` defines them again,
+  `DirChanged` of the global or a tab directory reads the fleet again, `read_soon()`), subscribes
+  to `live.lua` as `strip`, shows the fleet already kept (when the sidebar read it) and reads it
+  again without waiting. Every fleet the live fleet keeps is turned into the strip once, through
+  `render.strip`; then `redrawstatus!`, `redrawtabline` and, when lualine is loaded,
+  `require('lualine').refresh()` draw it. After a read, when the fleet's primary checkout is not
+  the one it registered from, it subscribes again, which registers this Neovim from there. It stays
+  subscribed for the rest of the session, open sidebar or not, and touches no window or buffer.
+- `lua/lualine/components/orca-term.lua`: the strip as a lualine component, `lualine_x = {
+  'orca-term' }`; lualine finds it by name. It extends `lualine.component`: `init` (run again by
+  lualine after every `:colorscheme`) defines the highlight groups and creates one lualine
+  highlight per strip group with only that group's foreground (links followed), which lualine
+  completes with the section's background; `update_status` draws `strip.items()` in them, back to
+  the section's colour after each item, and returns the empty string when the strip is empty, so
+  lualine hides the component and its separators. The first draw starts the strip through
+  `strip.lua`: the live logic is not repeated.
 - `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
   the fleet through `live.lua` on open and when an action asks (`refresh()`), and subscribes to it
@@ -591,6 +625,11 @@ Its rules:
   always asks for confirmation (twice when it would discard changes).
 - **The client never computes state.** The fleet, each worktree's state and every decision come
   from the core's JSON; the client renders them. No logic is bound to the Neovim process.
+- **The status strip never blocks a statusline and never touches the layout.** Drawing it only
+  returns what was kept: it never waits and never starts a process, and its first call only
+  schedules the start. Neither requiring nor starting it changes `statusline`, `tabline`,
+  `winbar`, `laststatus`, `showtabline` or lualine's config: the person places it.
+  `spec/strip_spec.lua` checks both.
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
   commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
@@ -602,3 +641,9 @@ Its known limits:
 - A person who changes tab while the agent is starting gets no terminal until their next `<CR>`.
 - A Neovim whose server is not a unix socket path (no server, or TCP) is never registered: its
   sidebar updates on focus and after actions only.
+- The status strip shows the fleet of `getcwd()`: it reads again when the global or a tab's
+  directory changes, not on a window's `:lcd` nor when entering a tab whose directory is in
+  another repository.
+- In a plain statusline, each strip item ends with `%*`, which goes back to the statusline's own
+  colour (`StatusLine`), not to a colour set by an item placed before the strip.
+- The working glyph does not spin in the strip: it is always `◐`.

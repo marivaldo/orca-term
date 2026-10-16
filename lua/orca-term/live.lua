@@ -1,8 +1,8 @@
 -- orca-term's live fleet: the fleet last read, kept up to date for whoever subscribes to it.
 --
--- A subscriber (the sidebar, for now) gives a name and a function, which is called with the fleet
--- after every read that is kept. The first subscription makes the autocommands below; every
--- subscription registers this Neovim with the core (`nvim register`), which then fires
+-- A subscriber (the sidebar, the status strip) gives a name and a function, which is called with
+-- the fleet after every read that is kept. The first subscription makes the autocommands below;
+-- every subscription registers this Neovim with the core (`nvim register`), which then fires
 -- `User OrcaTermWorktreeChanged` here after every change to a worktree. That event reads the
 -- fleet without waiting, 100 ms later so a burst of events makes one read, one read at a time:
 -- events during a read make one more read after it. Every subscriber gets the fleet of that one

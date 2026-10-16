@@ -136,8 +136,9 @@ local function ensure_started()
   vim.schedule(start)
 end
 
----The strip as a statusline expression, such as `%#OrcaTermStateWaiting#?1%* %#OrcaTermUnseen#•2%*`,
----or the empty string when there is no worktree, the fleet could not be read or was not read yet.
+---The strip as a statusline expression, such as
+---`%#OrcaTermStateWaiting#?1%* %#OrcaTermUnseen#•2%*`, or the empty string when there is no
+---worktree, the fleet could not be read or was not read yet.
 ---Use it as `%{%v:lua.require'orca-term.strip'.statusline()%}`. The first call starts the strip.
 ---@return string
 function M.statusline()
