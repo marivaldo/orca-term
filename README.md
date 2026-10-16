@@ -17,7 +17,9 @@ built in small slices, each a GitHub issue under that spec.
 
 Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the current repository,
 and `orca-term agent start|attach|stop <worktree>` run claude in one of them, inside claude's own
-sandbox, held by a detached process that any terminal can attach to.
+sandbox, held by a detached process that any terminal can attach to. `orca-term note
+add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
+agent as one prompt, in Orca's format.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs

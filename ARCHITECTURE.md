@@ -43,13 +43,15 @@ the adapters, and returns a domain value that `output` prints.
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
   opens a review,
-  `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
+  `agent start|attach|stop`, `note add|ls|edit|rm|send`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen` and `review`, of `agent start` and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
+  of the note commands (a note's lines as made and, when they moved, `(now line 5)`; the prompt a
+  send pasted),
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
@@ -61,6 +63,12 @@ the adapters, and returns a domain value that `output` prints.
   and `unseen` print the worktree and its mark; `worktree review` prints the worktree object
   (now seen), `base` (the review's base, a full commit id) and `against` (the default branch it
   was taken from, `main` or `origin/main`). The text table adds `(unseen)` to a marked row.
+  Each worktree also carries `notes`, how many notes are pending on it, and the text table adds a
+  `NOTES` column when some worktree has any. `note add` and `note edit` print the worktree's
+  `name` and `path` and the `note` (`id`, `path`, `anchor`, `current`, `body`, `rev`, `created`;
+  an anchor is `{"scope":"line","line":N}`, `{"scope":"lines","start":S,"end":E}` or
+  `{"scope":"file"}`); `note ls` the same with `notes`, in id order; `note rm` the `id` removed;
+  `note send` the `prompt` pasted, the ids `sent` and those `kept` (edited while being sent).
 
 ### ops
 
@@ -68,7 +76,10 @@ the adapters, and returns a domain value that `output` prints.
   agent and holder, finding the worktree a command names, taking a worktree's lock, refusing a
   change under a live holder, writing `worktree.json` (the setup or the agent, keeping the other),
   reading the config files, running a worktree's setup, the registry of running Neovims
-  (`nvim_registry`), and telling them a worktree changed: `Changed` finds the common dir and the
+  (`nvim_registry`), the notes' shared steps (`find_noted`, `read_notes`, `change_notes`, which
+  holds `notes.lock` from the read to the write and then removes the kept contents no note refers
+  to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
+  `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
   worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
   and `notify_changed`, which every command calls after it writes a worktree's state.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
@@ -106,6 +117,18 @@ the adapters, and returns a domain value that `output` prints.
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event to
   `status.json` and `turns.jsonl`, and exit 0 without printing whatever happens; what went wrong
   is appended to `hook.log`, emptied first once past 256 KiB. It runs no git, to stay fast.
+- `ops/note_add.rs`: `note add`: check the body and the path, find the target (refusing the
+  primary checkout and a worktree whose directory is gone), refuse a path that leaves the worktree
+  through a symlink, read the file for a note on lines and check the lines fit, then, under
+  `notes.lock`, keep the file's content under its blob id and record the note; notify.
+- `ops/note_ls.rs`: `note ls`: the pending notes, each with its anchor translated to the file now.
+  Only reads.
+- `ops/note_edit.rs`, `ops/note_rm.rs`: `note edit` (a new body, the revision bumped) and `note rm`,
+  each under `notes.lock`; notify.
+- `ops/note_send.rs`: `note send`: read the notes to send (all, or the ids given), refuse with no
+  pending notes and, as the typed `no_holder`, with no live holder; translate each anchor, build
+  Orca's prompt, type it into the agent through the holder (the paste, 50 ms, then Enter), and only
+  then, under `notes.lock`, consume the notes sent whose revision did not change; notify.
 - `ops/nvim_register.rs`: the hidden `nvim register <address>`: write the address's file in the
   registry (idempotent; creating the file is the only write, so no lock).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
@@ -114,7 +137,8 @@ the adapters, and returns a domain value that `output` prints.
 ### adapters
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
-  `default_branch`, `is_merged`, `merge_base`, ...) or change (`worktree_add`, `delete_branch`, ...).
+  `default_branch`, `is_merged`, `merge_base`, `blob_id` of some content, `diff_files` between two
+  files, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, finding an executable in the PATH directories,
@@ -127,8 +151,9 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/program.rs`: running a program for its `--version`.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
-  (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, and asking it to
-  stop. The socket is bound and connected by its bare name after a change of directory into the
+  (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, typing into the
+  agent's terminal as one more client (`type_input`: two input frames with a pause between, no
+  size, no stop, never reading the replay), and asking it to stop. The socket is bound and connected by its bare name after a change of directory into the
   admin directory, since a unix socket address holds about 100 bytes.
 - `adapters/holder/process.rs`: the holder process: a session of its own (`setsid`), the
   `flock` on `agent.lock` (retried for half a second, since `ls` probes it), the socket, the PTY
@@ -193,6 +218,18 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
+- `domain/note.rs`: notes: `notes.json` (`next_id` and the pending notes, each with its `id`,
+  `path`, `anchor`, `body`, `rev`, `created` and, on lines, the `copy` of the file's content it
+  was made against; its schema rules and bytes; a file this core cannot use is refused, never
+  written over), what a note's path, lines and body may be, how many lines a file has, choosing
+  the notes to send and consuming them (a note whose revision changed is kept), and the reports of
+  the note commands.
+- `domain/note/translate.rs`: line translation: the hunks of a diff with no context lines, and a
+  note's anchor mapped over them to the file now (a line moves by the hunks before it, a line
+  inside a hunk's old side is gone, and a note whose lines are gone is on the whole file).
+- `domain/note/prompt.rs`: Orca's prompt, identical (`File:`, `Line:`/`Lines:`/`Scope: file`,
+  `User comment:` with the body escaped; blocks joined by a blank line), and the bytes that paste
+  it: a bracketed paste with every ESC replaced by `␛`, then Enter alone after 50 ms.
 - `domain/review.rs`: a worktree's review: `Commit`, a full commit id checked as git prints it
   (with its seven-character short form), what `worktree review` found (`Reviewed`), and its
   refusals (a worktree whose directory is gone, a history unrelated to the default branch).
@@ -238,7 +275,8 @@ validate"):
 - `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
   `claude-settings.json`, the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
-  and the person's `seen.json`.
+  and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
+  contents kept for notes on lines).
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -253,6 +291,12 @@ validate"):
   `nvim register|unregister` (a relative one is refused as a usage error).
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
   decoder and the replay buffer.
+- `NotePath`, `LineRange`, `Anchor` and `BlobId` (`domain/note.rs`): a note's path (relative to
+  the worktree, `/`-separated, no `..`), a range of two or more lines (`S-E`, parsed by clap for
+  `--lines`), where a note is attached (`Line`, `Lines` or `File`), and the git blob id naming a
+  kept content. `Note`, `Notes` and `PendingNote` are a note as recorded, every pending note of a
+  worktree, and a note with its anchor translated to the file now; `Noted`, `Listed`, `Unnoted`
+  and `NotesSent` the reports of the note commands.
 - `Platform` (`domain/sandbox.rs`): macOS, Linux or other, which decides the sandbox tools.
 - `LockStatus` (`domain/state.rs`): `Held` or `Free`, what the read-only probe of a worktree's
   lock found.
@@ -262,8 +306,10 @@ validate"):
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
-  `BusyReason`: the lock is held, or the agent is running), `NoSandbox` and `Dirty` (a worktree
-  `worktree rm` keeps because it has modified or untracked files).
+  `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
+  `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
+  (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
+  to start it).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -362,7 +408,8 @@ validate"):
   read, independent of the state.
 - **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
   starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
-  exit (the holder, once its files are gone) and `worktree rm`, the command calls
+  exit (the holder, once its files are gone), `worktree rm` and every note write (`note add`,
+  `edit`, `rm`, `send`), the command calls
   `ops::notify_changed`, which sends every address in the registry the request firing
   `User OrcaTermWorktreeChanged` with the worktree's path, and waits for its answer before hanging
   up: Neovim drops a queued call whose caller has already gone (measured on 0.11 on Linux). All
@@ -370,6 +417,15 @@ validate"):
   reads or answers cannot hold the command up (it misses that change); notifying never fails the
   write before it. A Neovim that is gone has its file pruned; any other failure
   is skipped and the file kept. `worktree ls` sends nothing.
+- **Notes are the person's, kept until sent.** Only the note commands write `notes.json`, each
+  under `notes.lock` (waiting at most 2 s for another), replacing it whole; reading takes no lock.
+  Ids are never reused and every edit bumps `rev`. A note on lines keeps a copy of its file's
+  content under `notes/<blob id>`, written before the note under the same lock and removed by the
+  first change after no note refers to it. `note send` reads the notes once, types the prompt into
+  the agent through its holder, and only once both writes went through consumes the notes it sent
+  whose `rev` is unchanged; it never holds the lock while typing, so a note edited meanwhile is
+  kept, as in Orca. With no live holder nothing is typed and nothing consumed (`no_holder`).
+  Translation never writes, and `worktree ls` only reads `notes.json` to count the pending notes.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
@@ -378,14 +434,15 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`) or `other`.
+  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`) or `other`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
   holds or whose agent is running; 4 for `session_gone`, a recorded session `agent start`
   cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
-  or untracked files.
+  or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
+  running.
 
 ## Known limits of the agent holder
 
@@ -435,6 +492,16 @@ validate"):
   a worktree fails as `session_gone` and asks for a fresh session.
 - **A transcript present but unusable to claude** passes the check, and claude exits at once: the
   terminal shows claude's own message and the attach ends.
+- **Line translation is against the content kept when the note was made** until turns are
+  bounded by snapshots (#38): not blame over the chain of turn snapshots. A line edited, even
+  trivially, counts as gone, and a note goes as the whole file.
+- **`note send` does not wait for the agent's prompt**: Orca waits for its TUI to be idle and
+  sendable before it pastes; the core pastes at once, so a prompt sent while claude works is
+  queued by claude, and one sent while a dialog is open lands in the dialog. Keys the person types
+  in an attached terminal during the 50 ms between the paste and the Enter land between them.
+- **A send whose notes could not be consumed after the paste** (another note command holding
+  `notes.lock` for more than 2 s) reports the error and leaves the notes pending: sending again
+  sends them twice.
 - **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
   once saying no session was found with that id, which is why the core checks the transcript
   first and reports `session_gone` instead.
@@ -467,7 +534,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   directory and environment variable names, echoes what is typed and exits on request), symlinks
   to the real `git` and `bash`, and fake `sandbox-exec`, `bwrap` and `socat`; attaches over
   pipes, where the end of stdin detaches; and stops every holder when a test ends. It needs no
-  claude, no sandbox and no network. `tests/notify.rs` registers fake Neovims (unix sockets the
+  claude, no sandbox and no network. `tests/notes.rs` drives the note commands with the same
+  fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
+  `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
