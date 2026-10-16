@@ -325,6 +325,27 @@ function M.worktree_path(repo, name)
   return M.listed(repo, name).path
 end
 
+---The addresses of the running Neovims registered with the repository's core, sorted: what the
+---files of its registry, `<git common dir>/orca-term/nvim/`, hold.
+---@param repo spec.Repo
+---@return string[]
+function M.registry(repo)
+  local dir = repo.root .. '/.git/orca-term/nvim'
+  local addresses = {}
+  if vim.fn.isdirectory(dir) == 0 then
+    return addresses
+  end
+  for _, name in ipairs(vim.fn.readdir(dir)) do
+    -- A registry file is named with 16 hex digits; anything else is a file being written.
+    if name:match('^%x+$') and #name == 16 then
+      local address = table.concat(vim.fn.readfile(dir .. '/' .. name), '\n')
+      table.insert(addresses, vim.trim(address))
+    end
+  end
+  table.sort(addresses)
+  return addresses
+end
+
 ---Makes `dir` Neovim's current directory until `cleanup()`.
 ---@param dir string
 function M.cd(dir)
@@ -333,8 +354,13 @@ function M.cd(dir)
 end
 
 ---Loads the client the way Neovim does at startup, then calls setup() with the binary `cargo
----build` made, so a stale release build is never picked up.
+---build` made, so a stale release build is never picked up. The spec's own Neovim stops listening,
+---so it never registers with the core and the core's events never redraw its sidebar behind a
+---spec's back; the live updates are covered in child Neovims, by spec/live_spec.lua.
 function M.load_client()
+  for _, address in ipairs(vim.fn.serverlist()) do
+    vim.fn.serverstop(address)
+  end
   vim.opt.runtimepath:prepend(M.root)
   vim.cmd.runtime('plugin/orca-term.lua')
   require('orca-term').setup({ binary = M.binary })

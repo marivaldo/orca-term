@@ -123,6 +123,10 @@ struct StoppedView<'a> {
     status: &'static str,
 }
 
+/// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
+#[derive(Debug, Serialize)]
+struct DoneView {}
+
 /// Any command's failure with `--json`: `kind` is `other` unless the failure is typed.
 #[derive(Debug, Serialize)]
 struct ErrorView {
@@ -241,6 +245,11 @@ pub(crate) fn stopped(stopped: &Stopped) -> serde_json::Result<String> {
             StopOutcome::NotRunning => "not_running",
         },
     })
+}
+
+/// A command that did its job and has nothing to report, as one JSON document.
+pub(crate) fn done() -> serde_json::Result<String> {
+    document(DoneView {})
 }
 
 /// A failure as one JSON document, with the kind the client tells failures apart by.

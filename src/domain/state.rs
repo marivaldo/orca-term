@@ -11,7 +11,7 @@
 //! is rewritten on the read path.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -129,6 +129,63 @@ impl AdminDir {
     pub(crate) fn hook_log(&self) -> PathBuf {
         self.0.join(HOOK_LOG_FILE)
     }
+
+    /// git's `commondir` file beside this directory, in git's per-worktree admin directory
+    /// (`<common>/worktrees/<id>`): it names the git common dir.
+    pub(crate) fn commondir_file(&self) -> Option<PathBuf> {
+        self.0.parent().map(|git_dir| git_dir.join(COMMONDIR_FILE))
+    }
+
+    /// git's `gitdir` file beside this directory: it names the worktree's `.git` file.
+    pub(crate) fn gitdir_file(&self) -> Option<PathBuf> {
+        self.0.parent().map(|git_dir| git_dir.join(GITDIR_FILE))
+    }
+}
+
+/// git's file, in a worktree's git admin directory, naming the git common dir.
+const COMMONDIR_FILE: &str = "commondir";
+
+/// git's file, in a worktree's git admin directory, naming the worktree's `.git` file.
+const GITDIR_FILE: &str = "gitdir";
+
+/// The git common dir named by the `commondir` file at `file`, whose text is `text`: a path
+/// relative to the file's directory (git writes `../..`), or absolute. `None` when it names
+/// nothing.
+pub(crate) fn common_dir_from(file: &Path, text: &str) -> Option<PathBuf> {
+    path_in_git_file(file, text)
+}
+
+/// The worktree's path named by the `gitdir` file at `file`, whose text is `text`: the path of
+/// the worktree's `.git` file, absolute (or relative to the file's directory, when git is set to
+/// write relative paths). The worktree is that path without its `/.git`, which is the path
+/// `git worktree list`, and so `worktree ls`, prints. `None` when it names nothing.
+pub(crate) fn worktree_path_from(file: &Path, text: &str) -> Option<PathBuf> {
+    let dot_git = path_in_git_file(file, text)?;
+    match dot_git.file_name() {
+        Some(name) if name == ".git" => dot_git.parent().map(Path::to_path_buf),
+        _ => Some(dot_git),
+    }
+}
+
+/// The path written on the first line of the git file at `file`, resolved against the file's
+/// directory, with `.` and `..` taken out by hand (no symlink is resolved).
+fn path_in_git_file(file: &Path, text: &str) -> Option<PathBuf> {
+    let line = text.lines().next()?.trim_end_matches('\r');
+    if line.is_empty() {
+        return None;
+    }
+    let joined = file.parent()?.join(line);
+    let mut resolved = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => resolved.push(other),
+        }
+    }
+    Some(resolved)
 }
 
 /// Whether a worktree's lock is held right now, by this or another process.
@@ -816,5 +873,40 @@ mod tests {
     fn a_corrupt_file_is_reported_with_its_path() {
         let err = read(Path::new(PATH), Some(b"{not json")).unwrap_err();
         assert!(format!("{err:#}").starts_with("could not parse /admin/orca-term/worktree.json: "));
+    }
+
+    #[test]
+    fn gits_files_beside_the_admin_dir_name_the_common_dir_and_the_worktree() {
+        let admin = AdminDir::new(PathBuf::from("/r/.git/worktrees/fix/orca-term"));
+        let commondir = admin.commondir_file().unwrap();
+        let gitdir = admin.gitdir_file().unwrap();
+        assert_eq!(commondir, Path::new("/r/.git/worktrees/fix/commondir"));
+        assert_eq!(gitdir, Path::new("/r/.git/worktrees/fix/gitdir"));
+
+        assert_eq!(
+            common_dir_from(&commondir, "../..\n"),
+            Some(PathBuf::from("/r/.git"))
+        );
+        assert_eq!(
+            common_dir_from(&commondir, "/elsewhere/.git\r\n"),
+            Some(PathBuf::from("/elsewhere/.git"))
+        );
+        assert_eq!(common_dir_from(&commondir, ""), None);
+        assert_eq!(common_dir_from(&commondir, "\n"), None);
+
+        assert_eq!(
+            worktree_path_from(&gitdir, "/w/repo/fix/.git\n"),
+            Some(PathBuf::from("/w/repo/fix"))
+        );
+        assert_eq!(
+            worktree_path_from(&gitdir, "../../../../w/fix/.git\n"),
+            Some(PathBuf::from("/w/fix")),
+            "relative to the file's directory, with worktree.useRelativePaths"
+        );
+        assert_eq!(
+            worktree_path_from(&gitdir, "/w/odd\n"),
+            Some(PathBuf::from("/w/odd"))
+        );
+        assert_eq!(worktree_path_from(&gitdir, ""), None);
     }
 }

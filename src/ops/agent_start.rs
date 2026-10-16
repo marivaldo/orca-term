@@ -16,7 +16,8 @@ use crate::domain::sandbox::{self, Platform};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
-    config_layers, derive_state, find_target_admin, lock_worktree, read_fleet, write_agent,
+    config_layers, derive_state, find_target_admin, lock_worktree, notify_changed, read_fleet,
+    write_agent,
 };
 
 /// Starts claude in the worktree `target` names or locates in the repository containing the
@@ -81,6 +82,7 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     };
     let pid = holder::spawn(&holder_args, launch::STRIPPED_VARS)?;
     write_agent(&lock, agent)?;
+    notify_changed(&admin);
     Ok(Started {
         worktree: refreshed(worktree, &admin)?,
         agent,
@@ -89,12 +91,13 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     })
 }
 
-/// Creates `refs/orca-term` and every worktree's `orca-term` directory under `common` before the
-/// launch, and returns the latter: the sandbox denies writes to them by name, and on Linux a
-/// denied path that does not exist would be stood in for by a placeholder file. Canonical paths,
-/// since `common` is.
+/// Creates `refs/orca-term`, the `orca-term` directory (where the registry of running Neovims
+/// lives) and every worktree's `orca-term` directory under `common` before the launch, and
+/// returns the last: the sandbox denies writes to them by name, and on Linux a denied path that
+/// does not exist would be stood in for by a placeholder file. Canonical paths, since `common` is.
 fn prepare_admin_dirs(common: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     fs::create_dir_all(&common.join("refs").join(ADMIN_DIR_NAME))?;
+    fs::create_dir_all(&common.join(ADMIN_DIR_NAME))?;
     let mut admin_dirs = Vec::new();
     for worktree_dir in fs::list_dirs(&common.join("worktrees"))? {
         let admin_dir = worktree_dir.join(ADMIN_DIR_NAME);

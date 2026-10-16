@@ -42,7 +42,8 @@ the adapters, and returns a domain value that `output` prints.
 
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`,
   `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
-  hidden `hook claude`, which claude runs for every hook event), the
+  hidden `hook claude`, which claude runs for every hook event, and the hidden
+  `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm` and `prune`, of `agent start` and `stop` (and, on stderr, the
@@ -61,7 +62,10 @@ the adapters, and returns a domain value that `output` prints.
 - `ops.rs`: what several commands share: reading the fleet and deriving each worktree's state,
   agent and holder, finding the worktree a command names, taking a worktree's lock, refusing a
   change under a live holder, writing `worktree.json` (the setup or the agent, keeping the other),
-  reading the config files, and running a worktree's setup.
+  reading the config files, running a worktree's setup, the registry of running Neovims
+  (`nvim_registry`), and telling them a worktree changed: `Changed` finds the common dir and the
+  worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
+  and `notify_changed`, which every command calls after it writes a worktree's state.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
   lock it, copy the copy list, run the setup.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
@@ -85,13 +89,18 @@ the adapters, and returns a domain value that `output` prints.
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event to
   `status.json` and `turns.jsonl`, and exit 0 without printing whatever happens; what went wrong
   is appended to `hook.log`, emptied first once past 256 KiB. It runs no git, to stay fast.
+- `ops/nvim_register.rs`: the hidden `nvim register <address>`: write the address's file in the
+  registry (idempotent; creating the file is the only write, so no lock).
+- `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
+  one not recorded is not an error.
 
 ### adapters
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `is_merged`, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
-  directories, resolving paths through symlinks, finding an executable in the PATH directories,
+  directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
+  missing), resolving paths through symlinks, finding an executable in the PATH directories,
   and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
   `agent.lock`, and the read-only probes `ls` uses for both.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
@@ -114,6 +123,10 @@ the adapters, and returns a domain value that `output` prints.
   the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
   a second later) so the agent redraws for the new terminal. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
+- `adapters/nvim.rs`: a running Neovim's server socket: `send` connects, writes one message and
+  hangs up, on a thread of its own, within 200 ms, and only says whether it was `Delivered`, the
+  Neovim is `Gone` (no socket, or nobody listening) or it was `Skipped` (anything else); it never
+  fails.
 - `adapters/terminal.rs`: the terminal of `agent attach`: raw mode (restored on the way out,
   followed by a reset of the screen modes an agent leaves behind), the size sent on connect and on
   every `SIGWINCH`, what is typed forwarded as input (Ctrl-\ detaches unless `--no-detach-key`),
@@ -135,7 +148,13 @@ the adapters, and returns a domain value that `output` prints.
   path expansion.
 - `domain/state.rs`: a worktree's state and why it is broken or not ready, derived from
   `worktree.json`, the lock and the setup log; its admin directory and the files in it; and the
-  `worktree.json` schema rules and bytes.
+  `worktree.json` schema rules and bytes; and the git common dir and the worktree's path read
+  from git's `commondir` and `gitdir` files beside the admin directory.
+- `domain/nvim.rs`: the running Neovims of a repository: the registry,
+  `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
+  address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
+  unix socket, `v:servername`); and the msgpack-RPC request, encoded by hand, that fires
+  `User OrcaTermWorktreeChanged` with the worktree's path.
 - `domain/agent.rs`: the agent a worktree runs (`Agent::ClaudeCode`, recorded as `claude-code`,
   run as `claude`), whether its holder is alive, the holder's record (`agent.json`), a terminal
   size, and the reports of `agent start`, `stop` and `attach`.
@@ -199,6 +218,8 @@ validate"):
   and socket path, volatile), and a terminal size.
 - `StartOutcome`, `Started`, `StopOutcome`, `Stopped`, `AttachEnd` (`domain/agent.rs`): what the
   agent commands did and report.
+- `Address` (`domain/nvim.rs`): a Neovim's server address, an absolute path, parsed by clap for
+  `nvim register|unregister` (a relative one is refused as a usage error).
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
   decoder and the replay buffer.
 - `Platform` (`domain/sandbox.rs`): macOS, Linux or other, which decides the sandbox tools.
@@ -267,7 +288,8 @@ validate"):
   `.claude/settings*.json` unable to loosen it, on claude 2.1.285 or newer, the floor `agent
   start` checks), every weakening key pinned, the network open, writes denied to every worktree's
   `orca-term` admin directory (each one listed, plus the `*` glob), `refs/orca-term` and
-  `orca-term.yaml` in the git common dir, through both the sandbox's `denyWrite` and `Edit(...)`
+  `orca-term.yaml` and the `orca-term` directory (the Neovim registry) in the git common dir,
+  pre-created before the launch, through both the sandbox's `denyWrite` and `Edit(...)`
   deny rules; the only configurable part is `sandbox.writable` in `orca-term.yaml`, extra
   writable paths, the highest config layer replacing the lower ones and printed with its source.
   `launch::check_launch` refuses, by whole argument and parsed value, `--dangerously-skip-permissions`,
@@ -289,6 +311,16 @@ validate"):
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
   `idle` after a fresh session; `--json` carries the `activity`.
+- **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
+  starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
+  exit (the holder, once its files are gone) and `worktree rm`, the command calls
+  `ops::notify_changed`, which sends every address in the registry the request firing
+  `User OrcaTermWorktreeChanged` with the worktree's path, and waits for its answer before hanging
+  up: Neovim drops a queued call whose caller has already gone (measured on 0.11 on Linux). All
+  Neovims are told at once, one thread each, within 200 ms in all, so one that never accepts,
+  reads or answers cannot hold the command up (it misses that change); notifying never fails the
+  write before it. A Neovim that is gone has its file pruned; any other failure
+  is skipped and the file kept. `worktree ls` sends nothing.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
@@ -338,6 +370,13 @@ validate"):
   approval before the tool's end.
 - **The hook path is baked at launch**: moving the orca-term binary stops the status until the
   agent is started again.
+- **A full socket backlog reads as gone on macOS**: a Neovim suspended through about 128 events
+  refuses the connection, so its address is pruned; it updates again once it regains focus with
+  the sidebar open, which registers it again.
+- **A holder killed outright notifies nobody**: the sidebar shows the change on the next focus.
+- **A Neovim that does not answer within 200 ms misses that change** (suspended, or busy in a
+  blocking command): the core hangs up and Neovim drops the call. The next change or focus reads
+  the fleet again. Every hook of a worktree then waits those 200 ms.
 
 ## Guards
 
@@ -367,7 +406,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   directory and environment variable names, echoes what is typed and exits on request), symlinks
   to the real `git` and `bash`, and fake `sandbox-exec`, `bwrap` and `socat`; attaches over
   pipes, where the end of stdin detaches; and stops every holder when a test ends. It needs no
-  claude, no sandbox and no network.
+  claude, no sandbox and no network. `tests/notify.rs` registers fake Neovims (unix sockets the
+  test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
+  never reads holds nothing up, and `worktree ls` sends nothing.
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
   each domain and edge module. Adapters keep the few tests that need a real directory.
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
@@ -375,7 +416,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `spec/support.lua`. The sidebar's text and highlights are compared with
   `spec/golden/sidebar.txt` (`UPDATE_GOLDEN=1 just lua-test` rewrites it). The person's answers
   and the notifications go through `support.stub_ui` (stubs of `vim.ui.input`, `vim.ui.select` and
-  `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. See "Neovim client"
+  `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. `spec/live_spec.lua`
+  starts child Neovims to check the registration, the live updates across tabs and Neovims, a
+  stale address and a burst of events. See "Neovim client"
   below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
@@ -401,7 +444,9 @@ what they print.
   result reaches a callback through `vim.schedule`. Each gives the document, or `nil` and an error
   `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
   client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
-  throws. `agent_start` (with the terminal's size) runs without blocking too. `agent_attach` is
+  throws. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
+  events. `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
+  while Neovim exits. `agent_start` (with the terminal's size) runs without blocking too. `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
@@ -418,8 +463,8 @@ what they print.
   to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` so a person's own definition wins.
 - `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
-  the fleet through `core.lua` on open, on `FocusGained` and when an action asks (`refresh()`),
-  paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
+  the fleet through `core.lua` on open, on `FocusGained`, when an action asks (`refresh()`) and
+  when the core says a worktree changed, never polling, and paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
   on `TabEnter` and on `DirChanged` of a tab, the worktree whose directory is the tab's becomes
   the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
   the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
@@ -429,7 +474,12 @@ what they print.
   only the sidebar (unless it is the last tab). The second line of each worktree shows its
   activity; while a listed worktree is working, one timer turns its glyph through
   `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
-  nothing works or the sidebar closes.
+  nothing works or the sidebar closes. Opening the sidebar, and `FocusGained` while it is open,
+  registers this Neovim (`v:servername`, when it is a unix socket path) with the core; it
+  unregisters on `VimLeavePre`, and closing the sidebar unregisters nothing. On
+  `User OrcaTermWorktreeChanged` it reads the fleet without waiting 100 ms later, so a burst makes
+  one read, with one read in flight at a time (events during it make one more read after it) and
+  none while the sidebar is closed. These autocommands live in the `orca-term-live` group.
 - `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
   (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
   time, never remembered. `go_to` enters it and focuses its main window (not the sidebar), or
@@ -479,3 +529,5 @@ Its known limits:
 - If quitting is refused for another reason after `ExitPre` detached the terminals (a buffer with
   unsaved changes), they stay detached until the next `<CR>` attaches again.
 - A person who changes tab while the agent is starting gets no terminal until their next `<CR>`.
+- A Neovim whose server is not a unix socket path (no server, or TCP) is never registered: its
+  sidebar updates on focus and after actions only.

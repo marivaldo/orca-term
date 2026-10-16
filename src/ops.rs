@@ -1,12 +1,15 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
-//! a worktree, writing its state, probing its holder and running its setup.
+//! a worktree, writing its state, probing its holder, running its setup and telling the running
+//! Neovims that a worktree changed.
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
 pub(crate) mod hook;
+pub(crate) mod nvim_register;
+pub(crate) mod nvim_unregister;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
@@ -14,16 +17,18 @@ pub(crate) mod worktree_rm;
 pub(crate) mod worktree_setup;
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
 use crate::adapters::fs::{self, WorktreeLock};
-use crate::adapters::{env, git, script};
+use crate::adapters::nvim::Sent;
+use crate::adapters::{self, env, git, script};
 use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::nvim::{self, Address};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
 use crate::domain::turn::{self, Status};
@@ -267,6 +272,7 @@ pub(crate) fn set_up(
     let layers = config_layers(primary, worktree, &env::config_env())?;
     let Some(script) = config::resolve_setup(&layers) else {
         write_state(lock, None)?;
+        notify_changed(lock.admin());
         let derived = derive_state(lock.admin())?;
         return Ok(SetupReport {
             outcome: SetupOutcome::NoScript,
@@ -278,11 +284,13 @@ pub(crate) fn set_up(
         });
     };
     write_state(lock, Some(SetupRecord::Running))?;
+    notify_changed(lock.admin());
     let log_path = lock.admin().setup_log();
     let mut log = fs::create_truncated(&log_path)?;
     let vars = setup::environment(&primary.path, worktree);
     let outcome = script::run_setup(&script.value, worktree, &vars, &mut log, echo)?;
     write_state(lock, outcome.record())?;
+    notify_changed(lock.admin());
     let derived = derive_state(lock.admin())?;
     Ok(SetupReport {
         outcome,
@@ -292,4 +300,78 @@ pub(crate) fn set_up(
         activity: derived.activity,
         agent: derived.agent,
     })
+}
+
+/// The registry of running Neovims of the repository containing the current directory, in its
+/// git common dir: the same from the primary checkout and from every worktree.
+pub(crate) fn nvim_registry() -> Result<PathBuf> {
+    let cwd = env::current_dir()?;
+    let primary = git::primary_checkout(&cwd)?;
+    Ok(nvim::registry_dir(&git::common_dir(&primary)?))
+}
+
+/// A worktree whose state was just written, as the running Neovims are told about it: the git
+/// common dir of its repository, which holds their registry, and the worktree's path as
+/// `worktree ls` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Changed {
+    common: PathBuf,
+    worktree: PathBuf,
+}
+
+impl Changed {
+    /// The worktree whose admin directory is `admin`, found from git's own files beside it
+    /// (`commondir` and `gitdir`) without running git, so that a hook stays fast. `None` when
+    /// they cannot be read: then nobody is told, which is never an error.
+    pub(crate) fn of(admin: &AdminDir) -> Option<Self> {
+        let commondir = admin.commondir_file()?;
+        let gitdir = admin.gitdir_file()?;
+        let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
+        let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
+        Some(Self {
+            common: state::common_dir_from(&commondir, &commondir_text)?,
+            worktree: state::worktree_path_from(&gitdir, &gitdir_text)?,
+        })
+    }
+
+    /// Tells every Neovim registered in the repository that this worktree changed, firing
+    /// `User OrcaTermWorktreeChanged` there with its path. A Neovim that is gone has its file
+    /// removed from the registry; any other failure is skipped. It never fails, and all the
+    /// Neovims together take a bounded time (`adapters/nvim.rs`), so the write that came before is
+    /// never held up.
+    pub(crate) fn notify(&self) {
+        let registry = nvim::registry_dir(&self.common);
+        let Ok(names) = fs::list_file_names(&registry) else {
+            return;
+        };
+        // Each registry file, with the Neovim address it holds.
+        let mut entries = Vec::new();
+        let mut sockets = Vec::new();
+        for name in names.iter().filter(|name| nvim::is_entry_name(name)) {
+            let entry = registry.join(name);
+            let address = fs::read_optional(&entry)
+                .ok()
+                .flatten()
+                .and_then(|bytes| Address::from_entry(&bytes));
+            if let Some(address) = address {
+                sockets.push(address.as_path().to_owned());
+                entries.push(entry);
+            }
+        }
+        let message = nvim::worktree_changed(&self.worktree.to_string_lossy());
+        let sent = adapters::nvim::send_all(&sockets, &message);
+        for (entry, sent) in entries.iter().zip(sent) {
+            if sent == Sent::Gone {
+                let _ = fs::remove_if_exists(entry);
+            }
+        }
+    }
+}
+
+/// Tells the running Neovims that the worktree whose admin directory is `admin` changed: what
+/// every command does after it writes a worktree's state. Never fails.
+pub(crate) fn notify_changed(admin: &AdminDir) {
+    if let Some(changed) = Changed::of(admin) {
+        changed.notify();
+    }
 }
