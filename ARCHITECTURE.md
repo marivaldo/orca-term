@@ -468,8 +468,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   and the notifications go through `support.stub_ui` (stubs of `vim.ui.input`, `vim.ui.select` and
   `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. `spec/live_spec.lua`
   starts child Neovims to check the registration, the live updates across tabs and Neovims, a
-  stale address and a burst of events. See "Neovim client"
-  below.
+  stale address and a burst of events; `spec/live_store_spec.lua` starts one to check that the
+  live fleet hands one read to every subscriber. See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -517,10 +517,24 @@ what they print.
   defined as default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*`
   (`OrcaTermUnseen` to `DiagnosticWarn`) so a person's own definition wins; `OrcaTermUnseenName`,
   the unseen worktree's name, is a default of its own, only bold.
+- `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
+  no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
+  that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
+  `read()` reads the fleet of the current directory through `core.lua`, waiting for it, and hands
+  it to every subscriber; `read_soon()` reads it without waiting `DELAY_MS` (100 ms) later, so a
+  burst makes one read, with one read in flight at a time (events during it make one more read
+  after it); `fleet()` gives the fleet last kept. A read that ends after a newer one started is
+  dropped, and so is every read once nobody is subscribed. Every subscription registers this
+  Neovim (`v:servername`, when it is a unix socket path) with the core, from the primary checkout
+  of the fleet last kept; it unregisters on `VimLeavePre`, and unsubscribing unregisters nothing.
+  `User OrcaTermWorktreeChanged` (`EVENT`) calls `read_soon()`, and `FocusGained` reads the fleet,
+  waiting, and registers again; both are ignored while nobody is subscribed. These autocommands
+  live in the `orca-term-live` group, made at the first subscription and never deleted.
 - `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
-  the fleet through `core.lua` on open, on `FocusGained`, when an action asks (`refresh()`) and
-  when the core says a worktree changed, never polling, and paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
+  the fleet through `live.lua` on open and when an action asks (`refresh()`), and subscribes to it
+  while open, so it is drawn again on `FocusGained` and when the core says a worktree changed,
+  never polling; it paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
   on `TabEnter` and on `DirChanged` of a tab, the worktree whose directory is the tab's becomes
   the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
   the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
@@ -530,12 +544,9 @@ what they print.
   only the sidebar (unless it is the last tab). The second line of each worktree shows its
   activity; while a listed worktree is working, one timer turns its glyph through
   `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
-  nothing works or the sidebar closes. Opening the sidebar, and `FocusGained` while it is open,
-  registers this Neovim (`v:servername`, when it is a unix socket path) with the core; it
-  unregisters on `VimLeavePre`, and closing the sidebar unregisters nothing. On
-  `User OrcaTermWorktreeChanged` it reads the fleet without waiting 100 ms later, so a burst makes
-  one read, with one read in flight at a time (events during it make one more read after it) and
-  none while the sidebar is closed. These autocommands live in the `orca-term-live` group.
+  nothing works or the sidebar closes. Opening the sidebar subscribes to `live.lua` after its first
+  read, which registers this Neovim from that fleet's primary checkout; closing it unsubscribes, so
+  the core's events read nothing for it while it is closed.
 - `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
   (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
   time, never remembered. `go_to` enters it and focuses its main window (not the sidebar), or
