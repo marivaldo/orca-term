@@ -16,14 +16,17 @@ describe('loading the client', function()
   it('defines :OrcaTerm, completing its subcommands', function()
     support.load_client()
     assert.are.equal(2, vim.fn.exists(':OrcaTerm'))
-    assert.are.same({ 'jump', 'sidebar', 'worktree' }, vim.fn.getcompletion('OrcaTerm ', 'cmdline'))
+    assert.are.same(
+      { 'jump', 'review', 'sidebar', 'worktree' },
+      vim.fn.getcompletion('OrcaTerm ', 'cmdline')
+    )
     assert.are.same({ 'worktree' }, vim.fn.getcompletion('OrcaTerm wo', 'cmdline'))
     assert.are.same({}, vim.fn.getcompletion('OrcaTerm worktree ', 'cmdline'))
   end)
 
   it('defines the <Plug> maps a person can bind keys to', function()
     support.load_client()
-    local wanted = { '<Plug>(OrcaTermSidebar)', '<Plug>(OrcaTermJump)' }
+    local wanted = { '<Plug>(OrcaTermSidebar)', '<Plug>(OrcaTermJump)', '<Plug>(OrcaTermReview)' }
     for n = 1, 9 do
       table.insert(wanted, ('<Plug>(OrcaTermWorktree%d)'):format(n))
     end
