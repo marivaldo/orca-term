@@ -12,6 +12,8 @@
 //!
 //! Times are Unix milliseconds. Turns are numbered across the whole worktree, never per session.
 
+use std::path::PathBuf;
+
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +87,11 @@ pub(crate) struct Status {
     /// The current session: the agent's id for it, from the latest hook that named one.
     #[serde(default)]
     pub(crate) session: Option<String>,
+    /// The current session's transcript, the file claude keeps it in
+    /// (`~/.claude/projects/<dir>/<session>.jsonl`), from the latest hook of the main agent that
+    /// named one. Added within schema 1: a file written before it reads as `None`.
+    #[serde(default)]
+    pub(crate) transcript: Option<PathBuf>,
     /// The turn in progress, if any.
     #[serde(default)]
     pub(crate) turn: Option<OpenTurn>,
@@ -343,6 +350,7 @@ mod tests {
     fn the_status_is_written_with_its_schema_and_read_back() {
         let status = Status {
             session: Some("s1".to_owned()),
+            transcript: Some(PathBuf::from("/home/me/.claude/projects/-w-fix/s1.jsonl")),
             turn: Some(open(2)),
             queued: Some("and then".to_owned()),
             latest: Some(closed(1)),
@@ -351,7 +359,9 @@ mod tests {
         let bytes = status_bytes(&status).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(
-            text.starts_with(r#"{"schema":1,"session":"s1","turn":{"number":2,"#),
+            text.starts_with(
+                r#"{"schema":1,"session":"s1","transcript":"/home/me/.claude/projects/-w-fix/s1.jsonl","turn":{"number":2,"#
+            ),
             "{text}"
         );
         assert!(text.contains(r#""phase":"working""#), "{text}");
@@ -382,6 +392,19 @@ mod tests {
             read_status(Some(br#"{"schema":1,"future":true}"#)).usable(),
             Some(Status::default()),
             "unknown fields are ignored"
+        );
+    }
+
+    #[test]
+    fn a_status_written_before_the_transcript_still_reads() {
+        let old = br#"{"schema":1,"session":"s1","turn":null,"queued":null,"latest":null,"updated_at":5}"#;
+        assert_eq!(
+            read_status(Some(old)).usable(),
+            Some(Status {
+                session: Some("s1".to_owned()),
+                updated_at: 5,
+                ..Status::default()
+            })
         );
     }
 
