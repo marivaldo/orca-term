@@ -39,14 +39,22 @@ M.SUBSCRIBER = 'strip'
 ---@field line string the strip as a statusline expression
 ---@field registered_from? string the primary checkout this Neovim last registered from
 
----@type orca_term.StripState
-local state = {
-  scheduled = false,
-  started = false,
-  items = {},
-  counts = { states = {}, unseen = 0 },
-  line = '',
-}
+---The name of the strip's autocommand group.
+local GROUP = 'orca-term-strip'
+
+---The strip as it is before its start.
+---@return orca_term.StripState
+local function new_state()
+  return {
+    scheduled = false,
+    started = false,
+    items = {},
+    counts = { states = {}, unseen = 0 },
+    line = '',
+  }
+end
+
+local state = new_state()
 
 ---`items` as a statusline expression: each item as `%#Group#text`, then `%*` (back to the
 ---statusline's own colour), with a space between items. No item is the empty string.
@@ -60,11 +68,21 @@ local function statusline_of(items)
   return table.concat(parts, ' ')
 end
 
----Draws every statusline and the tabline again, and lualine's when it is loaded, so they show the
----strip just kept.
+---Draws every statusline and the tabline again, and has lualine draw its own when it is loaded,
+---so they show the strip just kept.
+---
+---Neovim draws only for a UI: with none attached (`nvim --headless`, `nvim -l`, an embedded Neovim
+---before its UI attaches) nobody sees a statusline, and a redraw there writes what the screen
+---would show, such as the mode message `-- INSERT --`, straight to the terminal. So the
+---statuslines are drawn again only when a UI is attached. lualine is told either way: it only
+---updates the statusline options, which a UI draws when it attaches. A redraw that fails (where
+---Neovim allows none) is skipped rather than raised into the live fleet's callback: the next one
+---catches up.
 local function redraw()
-  vim.cmd.redrawstatus({ bang = true })
-  vim.cmd.redrawtabline()
+  if #vim.api.nvim_list_uis() > 0 then
+    pcall(vim.cmd.redrawstatus, { bang = true })
+    pcall(vim.cmd.redrawtabline)
+  end
   if package.loaded.lualine then
     pcall(function()
       require('lualine').refresh()
@@ -80,6 +98,7 @@ local function on_fleet(fleet, err)
   if err then
     fleet = nil
   end
+  local shown = state.line
   state.items = render.strip(fleet)
   state.counts = render.counts(fleet)
   state.line = statusline_of(state.items)
@@ -90,7 +109,10 @@ local function on_fleet(fleet, err)
     state.registered_from = fleet.primary.path
     live.subscribe(M.SUBSCRIBER, on_fleet)
   end
-  redraw()
+  -- Most reads change nothing the strip shows (an agent's activity, say): nothing to draw then.
+  if state.line ~= shown then
+    redraw()
+  end
 end
 
 ---Starts the strip, once: defines the colours (again after every `:colorscheme`), subscribes to
@@ -103,7 +125,7 @@ local function start()
   end
   state.started = true
   highlights.define()
-  local group = vim.api.nvim_create_augroup('orca-term-strip', { clear = true })
+  local group = vim.api.nvim_create_augroup(GROUP, { clear = true })
   vim.api.nvim_create_autocmd('ColorScheme', {
     group = group,
     desc = "orca-term: define the status strip's colours again",
@@ -133,7 +155,12 @@ local function ensure_started()
     return
   end
   state.scheduled = true
-  vim.schedule(start)
+  vim.schedule(function()
+    -- `_reset()` may have come in between: then the start is no longer wanted.
+    if state.scheduled then
+      start()
+    end
+  end)
 end
 
 ---The strip as a statusline expression, such as
@@ -161,6 +188,15 @@ end
 function M.counts()
   ensure_started()
   return state.counts
+end
+
+---Forgets the strip, as if it never started: unsubscribes it from the live fleet, deletes its
+---autocommands and drops what it kept, and a start still scheduled does nothing. For the specs,
+---which share one Neovim; the next call starts the strip again.
+function M._reset()
+  live.unsubscribe(M.SUBSCRIBER)
+  pcall(vim.api.nvim_del_augroup_by_name, GROUP)
+  state = new_state()
 end
 
 return M
