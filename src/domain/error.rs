@@ -42,6 +42,14 @@ pub(crate) enum TypedError {
         session: String,
         reason: GoneReason,
     },
+    /// No holder is alive in the worktree, so its pending notes have no agent to be sent to.
+    /// Nothing was sent and every note stays pending.
+    #[error(
+        "worktree {name} at {} has no running agent to send notes to; start it with \
+         `orca-term agent start {name}`, then send again (the notes stay pending)",
+        path.display()
+    )]
+    NoHolder { name: String, path: PathBuf },
 }
 
 /// Why a recorded session cannot be resumed.
@@ -120,6 +128,7 @@ impl TypedError {
             Self::NoSandbox { .. } => "no_sandbox",
             Self::Dirty { .. } => "dirty",
             Self::SessionGone { .. } => "session_gone",
+            Self::NoHolder { .. } => "no_holder",
         }
     }
 
@@ -130,6 +139,7 @@ impl TypedError {
             Self::NoSandbox { .. } => 5,
             Self::Dirty { .. } => 6,
             Self::SessionGone { .. } => 4,
+            Self::NoHolder { .. } => 7,
         }
     }
 }
@@ -253,6 +263,21 @@ mod tests {
         assert!(!err.contains('\n'), "{err}");
         assert!(err.contains("session a bxxx"), "{err}");
         assert!(!err.contains(&"x".repeat(127)), "{err}");
+    }
+
+    #[test]
+    fn a_worktree_with_no_holder_has_its_own_kind_and_exit_code() {
+        let err = anyhow::Error::new(TypedError::NoHolder {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/w/repo/fix"),
+        });
+        assert_eq!(kind(&err), "no_holder");
+        assert_eq!(exit_code(&err), 7);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix at /w/repo/fix has no running agent to send notes to; start it with \
+             `orca-term agent start fix`, then send again (the notes stay pending)"
+        );
     }
 
     #[test]

@@ -17,16 +17,20 @@ built in small slices, each a GitHub issue under that spec.
 
 Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the current repository,
 and `orca-term agent start|attach|stop <worktree>` run claude in one of them, inside claude's own
-sandbox, held by a detached process that any terminal can attach to.
+sandbox, held by a detached process that any terminal can attach to. `orca-term note
+add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
+agent as one prompt, in Orca's format.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
 its setup again, copies its path or removes it (always asking first), `u` toggles its unseen
-mark `•`, which a worktree gets when its agent's turn ends, and `d` opens its review.
-`:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth and `:OrcaTerm review`
-opens the review of the worktree whose tab you are in; bind keys to `<Plug>(OrcaTermSidebar)`,
-`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)` and `<Plug>(OrcaTermWorktree1)` to
-`<Plug>(OrcaTermWorktree9)`, since the client sets no global key.
+mark `•`, which a worktree gets when its agent's turn ends, and `d` opens its review. A row
+shows `✎N` when the worktree has notes waiting to be sent.
+`:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
+opens the review of the worktree whose tab you are in and `:OrcaTerm notes` lists its notes; bind
+keys to `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
+`<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
+client sets no global key.
 
 ## Review
 
@@ -42,6 +46,35 @@ back to that tab and refreshes it. Opening the review clears the worktree's unse
 review, `gf` on a file (in the file list or in the diff) edits it in the worktree's tab, on the
 same line when the cursor is in the right-hand side; when that tab shows only the agent's
 terminal, the file opens beside it. Close the review with `:DiffviewClose`, or `:tabclose`.
+
+## Notes
+
+A note is a remark for the worktree's agent on a line, a range of lines or a whole file of its
+review. Notes wait until you send them; sending types them into the agent as one prompt, in Orca's
+format (`File:`, then `Line:`, `Lines:` or `Scope: file`, then `User comment:`), and consumes them.
+
+In the review (and only there), on the right-hand side, the worktree's file:
+
+- `gn` adds a note on the cursor's line, asking what it says (`Note for the agent: `); in visual
+  mode, on the selected lines. `gn` on a file in the file list adds a note on the whole file. The
+  left-hand side is the review's base: `gn` there only says notes go on the right. Write the file
+  first: notes go on the file on disk, so a buffer with unsaved changes is refused.
+- Each note shows as `✎` beside its line (a range's other lines get `┆`), its text below it, at its
+  line in the file on disk now: when the agent adds lines above it, it moves down; when its line is
+  changed or deleted, it becomes a note on the whole file. A note on the whole file shows below
+  line 1, as `✎ file: <text>`. The file list shows `✎N` after each file with notes.
+- `gN` (or `:OrcaTerm notes`, also from the worktree's tab) lists the notes: `Send all (N)` first,
+  then each note, which you can send alone, edit or delete (deleting asks nothing, as in Orca).
+
+Sending needs the worktree's agent running; when it is not, press `<CR>` on the worktree in the
+sidebar to start it, then send again. The notes stay pending until then.
+
+Limits:
+
+- Notes show only in the review orca-term opens (`d`), not in a diffview opened by hand, nor when
+  the file is edited in the worktree's tab.
+- `gn` works on the files the review lists; a file git does not track is not listed, but a note
+  added on it with `orca-term note add` shows in the list and is sent with the others.
 
 ## Status strip
 

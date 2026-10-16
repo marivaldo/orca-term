@@ -1,13 +1,18 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
-//! a worktree, writing its state, probing its holder, running its setup and telling the running
-//! Neovims that a worktree changed.
+//! a worktree, writing its state, probing its holder, running its setup, reading and changing its
+//! notes and telling the running Neovims that a worktree changed.
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
 pub(crate) mod hook;
+pub(crate) mod note_add;
+pub(crate) mod note_edit;
+pub(crate) mod note_ls;
+pub(crate) mod note_rm;
+pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
 pub(crate) mod worktree_ls;
@@ -20,8 +25,9 @@ pub(crate) mod worktree_setup;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::adapters::fs::{self, WorktreeLock};
 use crate::adapters::nvim::Sent;
@@ -30,6 +36,8 @@ use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::note::translate;
+use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
 use crate::domain::seen::{self, Seen};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
@@ -53,6 +61,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.agent = derived.agent;
         worktree.holder = derived.holder;
         worktree.unseen = derived.unseen;
+        worktree.notes = derived.notes;
     }
     Ok(fleet)
 }
@@ -69,6 +78,8 @@ pub(crate) struct Derived {
     pub(crate) holder: HolderStatus,
     /// Whether the worktree is unseen (`domain/seen.rs`).
     pub(crate) unseen: bool,
+    /// How many notes are pending on it (`domain/note.rs`).
+    pub(crate) notes: usize,
 }
 
 impl Derived {
@@ -79,6 +90,7 @@ impl Derived {
             agent: None,
             holder: HolderStatus::Gone,
             unseen: false,
+            notes: 0,
         }
     }
 }
@@ -99,12 +111,20 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
     }
 }
 
-/// The state of the worktree whose admin directory is `admin`, and whether it is unseen. Only
-/// reads.
+/// The state of the worktree whose admin directory is `admin`, whether it is unseen and how many
+/// notes are pending on it. Only reads.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     let mut derived = derive_agent_state(admin)?;
     derived.unseen = read_unseen(admin, derived.holder);
+    derived.notes = read_note_count(admin);
     Ok(derived)
+}
+
+/// How many notes are pending on the worktree whose admin directory is `admin`. Only reads, and
+/// never fails: a `notes.json` that cannot be used counts none.
+fn read_note_count(admin: &AdminDir) -> usize {
+    let bytes = fs::read_optional(&admin.notes_file()).ok().flatten();
+    note::read(bytes.as_deref()).count()
 }
 
 /// Whether the worktree whose admin directory is `admin`, whose holder is `holder`, is unseen:
@@ -137,6 +157,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 agent: recorded.agent,
                 holder: HolderStatus::Gone,
                 unseen: false,
+                notes: 0,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -163,6 +184,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         agent: recorded.agent,
         holder,
         unseen: false,
+        notes: 0,
     })
 }
 
@@ -314,6 +336,7 @@ pub(crate) fn set_up(
             activity: derived.activity,
             agent: derived.agent,
             unseen: derived.unseen,
+            notes: derived.notes,
         });
     };
     write_state(lock, Some(SetupRecord::Running))?;
@@ -333,6 +356,7 @@ pub(crate) fn set_up(
         activity: derived.activity,
         agent: derived.agent,
         unseen: derived.unseen,
+        notes: derived.notes,
     })
 }
 
@@ -408,4 +432,108 @@ pub(crate) fn notify_changed(admin: &AdminDir) {
     if let Some(changed) = Changed::of(admin) {
         changed.notify();
     }
+}
+
+/// How long a note command waits for another one to finish changing the same worktree's notes.
+const NOTES_LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// The worktree `target` names or locates in the repository containing the current directory,
+/// for a note command, with its admin directory. Refuses the primary checkout, an unknown worktree
+/// and one whose directory is gone.
+pub(crate) fn find_noted(target: &Target) -> Result<(Worktree, AdminDir)> {
+    let cwd = env::current_dir()?;
+    let fleet = read_fleet(&cwd)?;
+    let worktree = find_target(&fleet, &cwd, target)?;
+    note::check_can_note(worktree)?;
+    let admin = git::admin_dir(&worktree.path)?;
+    Ok((worktree.clone(), admin))
+}
+
+/// The pending notes in `admin`, none when `notes.json` does not exist. Refuses a file this core
+/// cannot use. Only reads: `notes.json` is only ever replaced whole, so no lock is needed.
+pub(crate) fn read_notes(admin: &AdminDir) -> Result<Notes> {
+    let bytes = fs::read_optional(&admin.notes_file())?;
+    note::read(bytes.as_deref()).usable()
+}
+
+/// Changes the pending notes of the worktree `name`, whose admin directory is `admin`, through
+/// `change`, and returns what it returns. Holds `notes.lock` from the read to the write (waiting
+/// for another note command at most [`NOTES_LOCK_WAIT`]), replaces `notes.json` whole, then
+/// removes the kept contents no note refers to any more. Nothing is written when `change` fails.
+pub(crate) fn change_notes<T>(
+    admin: &AdminDir,
+    name: &str,
+    change: impl FnOnce(&mut Notes) -> Result<T>,
+) -> Result<T> {
+    // A worktree made by hand with git has no admin directory of ours yet.
+    fs::create_dir_all(admin.path())?;
+    let _lock = fs::lock_file_waiting(&admin.notes_lock(), NOTES_LOCK_WAIT)?.ok_or_else(|| {
+        anyhow!(
+            "another orca-term command is changing the notes of worktree {name}; try again once \
+             it finishes"
+        )
+    })?;
+    let mut notes = read_notes(admin)?;
+    let result = change(&mut notes)?;
+    fs::write_atomically(&admin.notes_file(), &note::to_bytes(&notes)?)?;
+    remove_unused_copies(admin, &notes)?;
+    Ok(result)
+}
+
+/// Removes every kept content in `admin` that none of `notes` refers to. Only files named by a
+/// blob id are touched.
+fn remove_unused_copies(admin: &AdminDir, notes: &Notes) -> Result<()> {
+    let in_use = notes.copies_in_use();
+    let dir = admin.note_copies();
+    for name in fs::list_file_names(&dir)? {
+        if let Ok(blob) = BlobId::parse(&name)
+            && !in_use.contains(&blob)
+        {
+            fs::remove_if_exists(&dir.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Keeps `content`, a file of the worktree at `worktree` as it is now, in `admin` under its git
+/// blob id, once whatever number of notes refer to it, and returns that id. Call it under
+/// `notes.lock`, so a copy is never removed before the note referring to it is written.
+pub(crate) fn keep_copy(worktree: &Path, admin: &AdminDir, content: &[u8]) -> Result<BlobId> {
+    let blob = git::blob_id(worktree, content)?;
+    let path = admin.note_copies().join(blob.as_str());
+    if !fs::is_file(&path) {
+        fs::create_dir_all(&admin.note_copies())?;
+        fs::write_atomically(&path, content)?;
+    }
+    Ok(blob)
+}
+
+/// `note` with its anchor translated to the file of the worktree at `worktree` as it is now.
+pub(crate) fn pending(worktree: &Path, admin: &AdminDir, note: &Note) -> Result<PendingNote> {
+    Ok(PendingNote {
+        current: current_anchor(worktree, admin, note)?,
+        note: note.clone(),
+    })
+}
+
+/// Where `note`'s anchor is in the file of the worktree at `worktree` now: its kept content is
+/// compared with the file on disk, and the lines mapped over the differences
+/// (`domain/note/translate.rs`). A note whose file is gone, or whose kept content is, is on the
+/// whole file.
+fn current_anchor(worktree: &Path, admin: &AdminDir, note: &Note) -> Result<Anchor> {
+    if !note.anchor.is_on_lines() {
+        return Ok(Anchor::File);
+    }
+    let Some(copy) = &note.copy else {
+        return Ok(Anchor::File);
+    };
+    let file = note.path.in_worktree(worktree);
+    let kept = admin.note_copies().join(copy.as_str());
+    if !fs::is_file(&file) || !fs::is_file(&kept) {
+        return Ok(Anchor::File);
+    }
+    let diff = git::diff_files(worktree, &kept, &file)?;
+    let hunks = translate::parse_hunks(&String::from_utf8_lossy(&diff))
+        .with_context(|| format!("cannot translate note {} on {}", note.id, note.path))?;
+    Ok(translate::translate(note.anchor, &hunks))
 }

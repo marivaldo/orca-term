@@ -42,6 +42,7 @@ describe('core', function()
         state = 'no_agent',
         holder = false,
         unseen = false,
+        notes = 0,
       },
     }, fleet.worktrees)
   end)

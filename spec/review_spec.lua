@@ -8,7 +8,7 @@
 -- diffview.nvim comes from .rocks/diffview.nvim, pinned by `just lua-rocks` (`just lua-test`
 -- refuses to run without it), added to the runtimepath for this file. It stays loaded for the
 -- specs after this one, as a plugin would, but every spec closes every diffview view and review
--- tab it opened and deletes the autocommand group of the review's `gf`.
+-- tab it opened and deletes the autocommand groups of the review's `gf` and of its notes.
 
 local support = require('support')
 local render = require('orca-term.render')
@@ -210,6 +210,7 @@ describe('the review', function()
       lib.dispose_view(view)
     end
     pcall(vim.api.nvim_del_augroup_by_name, 'orca-term-review')
+    require('orca-term.notes')._reset()
     support.reset_editor()
     -- The worktree's files, opened by diffview or by `gf`, go with the fixture.
     for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -338,6 +339,10 @@ describe('the review', function()
         gf = vim.fn.maparg('gf', 'n', false, true)
       end)
       assert.is_falsy(tostring(gf.desc):find('orca%-term'))
+      -- Nor are the notes' keys there.
+      for _, map in ipairs(vim.api.nvim_buf_get_keymap(panel, 'n')) do
+        assert.are_not.equal('gn', map.lhs)
+      end
     end
   )
 

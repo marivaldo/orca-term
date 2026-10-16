@@ -43,13 +43,15 @@ the adapters, and returns a domain value that `output` prints.
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
   opens a review,
-  `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
+  `agent start|attach|stop`, `note add|ls|edit|rm|send`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen` and `review`, of `agent start` and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
+  of the note commands (a note's lines as made and, when they moved, `(now line 5)`; the prompt a
+  send pasted),
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
@@ -61,6 +63,12 @@ the adapters, and returns a domain value that `output` prints.
   and `unseen` print the worktree and its mark; `worktree review` prints the worktree object
   (now seen), `base` (the review's base, a full commit id) and `against` (the default branch it
   was taken from, `main` or `origin/main`). The text table adds `(unseen)` to a marked row.
+  Each worktree also carries `notes`, how many notes are pending on it, and the text table adds a
+  `NOTES` column when some worktree has any. `note add` and `note edit` print the worktree's
+  `name` and `path` and the `note` (`id`, `path`, `anchor`, `current`, `body`, `rev`, `created`;
+  an anchor is `{"scope":"line","line":N}`, `{"scope":"lines","start":S,"end":E}` or
+  `{"scope":"file"}`); `note ls` the same with `notes`, in id order; `note rm` the `id` removed;
+  `note send` the `prompt` pasted, the ids `sent` and those `kept` (edited while being sent).
 
 ### ops
 
@@ -68,7 +76,10 @@ the adapters, and returns a domain value that `output` prints.
   agent and holder, finding the worktree a command names, taking a worktree's lock, refusing a
   change under a live holder, writing `worktree.json` (the setup or the agent, keeping the other),
   reading the config files, running a worktree's setup, the registry of running Neovims
-  (`nvim_registry`), and telling them a worktree changed: `Changed` finds the common dir and the
+  (`nvim_registry`), the notes' shared steps (`find_noted`, `read_notes`, `change_notes`, which
+  holds `notes.lock` from the read to the write and then removes the kept contents no note refers
+  to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
+  `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
   worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
   and `notify_changed`, which every command calls after it writes a worktree's state.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
@@ -106,6 +117,18 @@ the adapters, and returns a domain value that `output` prints.
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event to
   `status.json` and `turns.jsonl`, and exit 0 without printing whatever happens; what went wrong
   is appended to `hook.log`, emptied first once past 256 KiB. It runs no git, to stay fast.
+- `ops/note_add.rs`: `note add`: check the body and the path, find the target (refusing the
+  primary checkout and a worktree whose directory is gone), refuse a path that leaves the worktree
+  through a symlink, read the file for a note on lines and check the lines fit, then, under
+  `notes.lock`, keep the file's content under its blob id and record the note; notify.
+- `ops/note_ls.rs`: `note ls`: the pending notes, each with its anchor translated to the file now.
+  Only reads.
+- `ops/note_edit.rs`, `ops/note_rm.rs`: `note edit` (a new body, the revision bumped) and `note rm`,
+  each under `notes.lock`; notify.
+- `ops/note_send.rs`: `note send`: read the notes to send (all, or the ids given), refuse with no
+  pending notes and, as the typed `no_holder`, with no live holder; translate each anchor, build
+  Orca's prompt, type it into the agent through the holder (the paste, 50 ms, then Enter), and only
+  then, under `notes.lock`, consume the notes sent whose revision did not change; notify.
 - `ops/nvim_register.rs`: the hidden `nvim register <address>`: write the address's file in the
   registry (idempotent; creating the file is the only write, so no lock).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
@@ -114,7 +137,8 @@ the adapters, and returns a domain value that `output` prints.
 ### adapters
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
-  `default_branch`, `is_merged`, `merge_base`, ...) or change (`worktree_add`, `delete_branch`, ...).
+  `default_branch`, `is_merged`, `merge_base`, `blob_id` of some content, `diff_files` between two
+  files, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, finding an executable in the PATH directories,
@@ -127,8 +151,9 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/program.rs`: running a program for its `--version`.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
-  (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, and asking it to
-  stop. The socket is bound and connected by its bare name after a change of directory into the
+  (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, typing into the
+  agent's terminal as one more client (`type_input`: two input frames with a pause between, no
+  size, no stop, never reading the replay), and asking it to stop. The socket is bound and connected by its bare name after a change of directory into the
   admin directory, since a unix socket address holds about 100 bytes.
 - `adapters/holder/process.rs`: the holder process: a session of its own (`setsid`), the
   `flock` on `agent.lock` (retried for half a second, since `ls` probes it), the socket, the PTY
@@ -193,6 +218,18 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
+- `domain/note.rs`: notes: `notes.json` (`next_id` and the pending notes, each with its `id`,
+  `path`, `anchor`, `body`, `rev`, `created` and, on lines, the `copy` of the file's content it
+  was made against; its schema rules and bytes; a file this core cannot use is refused, never
+  written over), what a note's path, lines and body may be, how many lines a file has, choosing
+  the notes to send and consuming them (a note whose revision changed is kept), and the reports of
+  the note commands.
+- `domain/note/translate.rs`: line translation: the hunks of a diff with no context lines, and a
+  note's anchor mapped over them to the file now (a line moves by the hunks before it, a line
+  inside a hunk's old side is gone, and a note whose lines are gone is on the whole file).
+- `domain/note/prompt.rs`: Orca's prompt, identical (`File:`, `Line:`/`Lines:`/`Scope: file`,
+  `User comment:` with the body escaped; blocks joined by a blank line), and the bytes that paste
+  it: a bracketed paste with every ESC replaced by `␛`, then Enter alone after 50 ms.
 - `domain/review.rs`: a worktree's review: `Commit`, a full commit id checked as git prints it
   (with its seven-character short form), what `worktree review` found (`Reviewed`), and its
   refusals (a worktree whose directory is gone, a history unrelated to the default branch).
@@ -238,7 +275,8 @@ validate"):
 - `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
   `claude-settings.json`, the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
-  and the person's `seen.json`.
+  and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
+  contents kept for notes on lines).
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -253,6 +291,12 @@ validate"):
   `nvim register|unregister` (a relative one is refused as a usage error).
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
   decoder and the replay buffer.
+- `NotePath`, `LineRange`, `Anchor` and `BlobId` (`domain/note.rs`): a note's path (relative to
+  the worktree, `/`-separated, no `..`), a range of two or more lines (`S-E`, parsed by clap for
+  `--lines`), where a note is attached (`Line`, `Lines` or `File`), and the git blob id naming a
+  kept content. `Note`, `Notes` and `PendingNote` are a note as recorded, every pending note of a
+  worktree, and a note with its anchor translated to the file now; `Noted`, `Listed`, `Unnoted`
+  and `NotesSent` the reports of the note commands.
 - `Platform` (`domain/sandbox.rs`): macOS, Linux or other, which decides the sandbox tools.
 - `LockStatus` (`domain/state.rs`): `Held` or `Free`, what the read-only probe of a worktree's
   lock found.
@@ -262,8 +306,10 @@ validate"):
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
-  `BusyReason`: the lock is held, or the agent is running), `NoSandbox` and `Dirty` (a worktree
-  `worktree rm` keeps because it has modified or untracked files).
+  `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
+  `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
+  (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
+  to start it).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -362,7 +408,8 @@ validate"):
   read, independent of the state.
 - **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
   starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
-  exit (the holder, once its files are gone) and `worktree rm`, the command calls
+  exit (the holder, once its files are gone), `worktree rm` and every note write (`note add`,
+  `edit`, `rm`, `send`), the command calls
   `ops::notify_changed`, which sends every address in the registry the request firing
   `User OrcaTermWorktreeChanged` with the worktree's path, and waits for its answer before hanging
   up: Neovim drops a queued call whose caller has already gone (measured on 0.11 on Linux). All
@@ -370,6 +417,15 @@ validate"):
   reads or answers cannot hold the command up (it misses that change); notifying never fails the
   write before it. A Neovim that is gone has its file pruned; any other failure
   is skipped and the file kept. `worktree ls` sends nothing.
+- **Notes are the person's, kept until sent.** Only the note commands write `notes.json`, each
+  under `notes.lock` (waiting at most 2 s for another), replacing it whole; reading takes no lock.
+  Ids are never reused and every edit bumps `rev`. A note on lines keeps a copy of its file's
+  content under `notes/<blob id>`, written before the note under the same lock and removed by the
+  first change after no note refers to it. `note send` reads the notes once, types the prompt into
+  the agent through its holder, and only once both writes went through consumes the notes it sent
+  whose `rev` is unchanged; it never holds the lock while typing, so a note edited meanwhile is
+  kept, as in Orca. With no live holder nothing is typed and nothing consumed (`no_holder`).
+  Translation never writes, and `worktree ls` only reads `notes.json` to count the pending notes.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
@@ -378,14 +434,15 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`) or `other`.
+  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`) or `other`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
   holds or whose agent is running; 4 for `session_gone`, a recorded session `agent start`
   cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
-  or untracked files.
+  or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
+  running.
 
 ## Known limits of the agent holder
 
@@ -435,6 +492,16 @@ validate"):
   a worktree fails as `session_gone` and asks for a fresh session.
 - **A transcript present but unusable to claude** passes the check, and claude exits at once: the
   terminal shows claude's own message and the attach ends.
+- **Line translation is against the content kept when the note was made** until turns are
+  bounded by snapshots (#38): not blame over the chain of turn snapshots. A line edited, even
+  trivially, counts as gone, and a note goes as the whole file.
+- **`note send` does not wait for the agent's prompt**: Orca waits for its TUI to be idle and
+  sendable before it pastes; the core pastes at once, so a prompt sent while claude works is
+  queued by claude, and one sent while a dialog is open lands in the dialog. Keys the person types
+  in an attached terminal during the 50 ms between the paste and the Enter land between them.
+- **A send whose notes could not be consumed after the paste** (another note command holding
+  `notes.lock` for more than 2 s) reports the error and leaves the notes pending: sending again
+  sends them twice.
 - **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
   once saying no session was found with that id, which is why the core checks the transcript
   first and reports `session_gone` instead.
@@ -467,7 +534,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   directory and environment variable names, echoes what is typed and exits on request), symlinks
   to the real `git` and `bash`, and fake `sandbox-exec`, `bwrap` and `socat`; attaches over
   pipes, where the end of stdin detaches; and stops every holder when a test ends. It needs no
-  claude, no sandbox and no network. `tests/notify.rs` registers fake Neovims (unix sockets the
+  claude, no sandbox and no network. `tests/notes.rs` drives the note commands with the same
+  fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
+  `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
@@ -485,7 +554,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   child Neovims to check its live update and its lualine component, with lualine.nvim pinned in
   `.rocks/lualine.nvim` by `just lua-rocks`. `spec/review_spec.lua` opens real reviews in
   diffview.nvim, pinned in `.rocks/diffview.nvim` by `just lua-rocks` and added to the runtimepath
-  for that file only, which closes every view and review tab it opens. See "Neovim client" below.
+  for that file only, which closes every view and review tab it opens; `spec/notes_spec.lua` does
+  the same to add, draw, list, send, edit and delete notes there, its fake claude recording every
+  line it reads (`support.claude_input`). See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -496,9 +567,10 @@ Neovim 0.11 or later. The client is thin: it runs the core's commands with `--js
 what they print.
 
 - `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
-  `review`, `worktree N`), with completion of the subcommands, and the `<Plug>(OrcaTermSidebar)`,
-  `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)` and `<Plug>(OrcaTermWorktree1)` to
-  `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
+  `review`, `notes`, `worktree N`), with completion of the subcommands, and the
+  `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
+  `<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and
+  nothing else.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
@@ -514,6 +586,12 @@ what they print.
   events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting;
   `worktree_review(target, cwd, on_done)` runs `worktree review` without waiting (10 s at most),
   handing over the worktree (now seen), the review's `base` and the branch it was found `against`.
+  The note commands run without waiting (10 s at most): `note_add(target, path, lines, body, cwd,
+  on_done)` (`lines` the first and the last line, equal for one line, `nil` for the whole file; the
+  body passed as `--body=<body>`), `note_ls`, `note_edit`, `note_rm` and `note_send(target, ids,
+  cwd, on_done)` (every pending note when `ids` is empty), typed as `orca_term.Note` (its `anchor`
+  as made and its `current` one, the line in the file on disk now) and one class per document; a
+  send with no running agent fails as `no_holder`. Every worktree carries `notes`, its pending count.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
   `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
@@ -528,7 +606,9 @@ what they print.
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. No line reaches
+  name. At the right end of a worktree's name line sit its icons, so far its pending notes `✎N`
+  (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; zero
+  notes shows nothing. No line reaches
   past the width. It also counts the fleet for the status strip: `counts(fleet)` gives the
   worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
   `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
@@ -537,11 +617,13 @@ what they print.
   `{ text = '?1', group = 'OrcaTermStateWaiting' }`, the unseen count last as `•N` in
   `OrcaTermUnseen`. The working glyph does not spin there.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
-  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state and `OrcaTermUnseen`),
-  defined as default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*`
-  (`OrcaTermUnseen` to `DiagnosticWarn`) so a person's own definition wins; `OrcaTermUnseenName`,
-  the unseen worktree's name, is a default of its own, only bold. The sidebar, while open, and the
-  status strip, once started, define them again after every `:colorscheme`.
+  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
+  `OrcaTermBadge` for a row's icons and `OrcaTermNote` for the notes in a review), defined as
+  default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` (`OrcaTermUnseen` to
+  `DiagnosticWarn`, `OrcaTermBadge` to `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
+  person's own definition wins; `OrcaTermUnseenName`, the unseen worktree's name, is a default of
+  its own, only bold. The sidebar, while open, the status strip, once started, and the notes, once a
+  review opened, define them again after every `:colorscheme`.
 - `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
   no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
   that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
@@ -637,7 +719,46 @@ what they print.
   worktree's file) the cursor lands on the same line. A file not on disk (the change deleted it) is
   told and opens nothing. On a buffer diffview shares with a tab orca-term did not open, the same
   map falls back to diffview's own `gf` there, or to Neovim's elsewhere. `close_all(path)` closes
-  the worktree's review tabs, letting diffview close its view and tab.
+  the worktree's review tabs, letting diffview close its view and tab. For the notes, `shown()`
+  says what orca-term's review in the current tab shows (`nil` in any other tab, a diffview opened
+  by hand included): its worktree, the right-hand window when it shows the worktree's file on disk
+  (diffview's `LOCAL` revision: the window, the file's own buffer and its relative path), the
+  buffers of the base side, the file panel's buffer and the panel's line of each file (from the
+  components diffview rendered; a file in a folded directory has none); `file_in_panel()` gives
+  the file under the cursor in the panel. Opening a review starts the notes (`notes.start()`) and
+  lists them (`notes.refresh()`), and so does going back to one already open.
+- `lua/orca-term/notes.lua`: the notes in orca-term's review tabs, with no buffer of their own. It
+  asks `review.lua` what the current tab shows, never diffview itself, and keeps each worktree's
+  notes as `note ls` last printed them. `draw()` draws them in one namespace (`NAMESPACE`) at their
+  `current` anchor, the line in the file on disk now: on the right-hand window's buffer a sign
+  `✎` (`render.NOTE`) on a note's line (on a range's first line, `┆` on its others) and its body as
+  `virt_lines` below its last line, prefixed `✎ `, or below line 1, prefixed `✎ file: `, for a
+  whole-file note; in the file panel `✎N` at the end of each file's line (`virt_text`). All in
+  `OrcaTermNote`. It puts buffer-local keys on those buffers and on the base side's: `gn` (normal
+  and visual) and `gN`. Every other buffer it marked loses its extmarks and keys, so outside
+  orca-term's review tab nothing of the notes is left: it is drawn on `User DiffviewDiffBufRead`,
+  `DiffviewDiffBufWinEnter` and `DiffviewViewClosed`, drawn and listed again on
+  `DiffviewViewEnter`, and taken off every buffer on `DiffviewViewLeave` (diffview's `tab_leave`,
+  where it removes its own keys); the right-hand buffer is the file's own, which `gf` edits in the
+  worktree's tab, and diffview removes only the keys it set. The file panel's buffer is watched
+  with `nvim_buf_attach`, since diffview replaces its lines on each redraw, which moves the
+  extmarks; it is drawn again just after. `refresh()` lists the current review's notes again
+  through `note ls` without waiting (a listing overtaken by a newer one is dropped) and draws them:
+  after every note action, when a marked buffer is reloaded or written (`FileChangedShellPost`,
+  `BufWritePost`), and on every fleet the live fleet keeps, to which it subscribes as `notes` while
+  a review tab is current (so the core's `User OrcaTermWorktreeChanged` reaches it, and this Neovim
+  is registered). `gn` in the right-hand window adds a note on the cursor's line, in visual mode on
+  the selected lines (one line is a line note), in the file panel on the whole file under the
+  cursor; on the base side it says notes go on the right-hand side; it refuses a buffer with unsaved
+  changes, since the core anchors on the file on disk. The body is asked with `vim.ui.input`
+  (`PROMPT`, `Note for the agent: `); an empty or cancelled answer adds nothing. `list(path)`
+  (`gN`, and `:OrcaTerm notes` through `actions.lua`) asks with `vim.ui.select`: `Send all (N)`,
+  then each note as `path:N  body` (`path:S-E`, `path`; the body on one line, cut to 60 cells),
+  which asks `Send`, `Edit` (the body offered as `default`), `Delete` (no confirmation, as Orca) or
+  `Cancel`. With no pending notes it says so. Sending tells `sent N notes to <worktree>`; a
+  `no_holder` refusal says to press `<CR>` on the worktree in the sidebar to start its agent. After
+  every change the notes are listed again and the sidebar reads the fleet again (its `✎N`).
+  `_reset()` forgets it all, for the specs.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
@@ -651,6 +772,8 @@ what they print.
   and, unless the core refused, the worktree's tab through `tabs.lua` and the review through
   `review.lua`), `review_current` (`:OrcaTerm review`: the worktree whose tab is current, or
   whose review tab is; anywhere else it says it needs a worktree's tab),
+  `notes_current` (`:OrcaTerm notes`: the notes of the same worktree, through `notes.lua`;
+  anywhere else it says it needs a worktree's tab or its review),
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
@@ -663,11 +786,12 @@ Its rules:
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
-- **Only `sidebar.lua`, `tabs.lua`, `terminal.lua` and `review.lua` touch windows, tabs and
-  buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain functions of
-  the fleet, tested without a window; the sidebar only paints them, and `actions.lua` moves between
-  tabs only through `tabs.lua`, opens terminals only through `terminal.lua` and reviews only
-  through `review.lua`, the one module that calls diffview.nvim.
+- **Only `sidebar.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` touch windows,
+  tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
+  functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
+  moves between tabs only through `tabs.lua`, opens terminals only through `terminal.lua`, reviews
+  only through `review.lua`, the one module that calls diffview.nvim (`notes.lua` asks it what a
+  review shows), and lists notes only through `notes.lua`.
   `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd` that splits
   or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else, and any
   `vim.api` or `vim.cmd` in the pure modules.
@@ -687,6 +811,10 @@ Its rules:
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
   commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
+- **Notes never leak out of the review.** The notes' extmarks and their `gn` and `gN` are only on
+  the buffers of orca-term's review tab while it is current: leaving it takes them off every buffer,
+  the file's own included, so editing the same file in the worktree's tab has Neovim's own `gn` and
+  no note drawn; entering the review puts them back. `spec/notes_spec.lua` checks it.
 
 Its known limits:
 
@@ -712,4 +840,15 @@ Its known limits:
   disk (diffview restores their windows as it closes, and Neovim says `E211` for a file that is
   gone). When the core then refuses (a busy worktree, or a cancelled forced removal), the review
   stays closed.
-- `:OrcaTerm review` reads the fleet, waiting for it, to find the current tab's worktree.
+- `:OrcaTerm review` and `:OrcaTerm notes` read the fleet, waiting for it, to find the current
+  tab's worktree.
+- Notes are drawn only in orca-term's review tabs, on the right-hand side and the file panel: not
+  in a diffview opened by hand, not on the base side, not in the worktree's tab. `gn` adds notes
+  only on the files the review lists (a file git does not track is not listed); a note on any
+  other file, added with `orca-term note add`, is still listed by `gN` and sent.
+- While the right-hand buffer has unsaved changes, the notes drawn move with its text, but `gn` is
+  refused until it is written; once written (or reloaded), they are drawn where the core says.
+- After hiding and showing the file panel again (`:DiffviewToggleFiles`), its `✎N` and keys come
+  back on diffview's next event there, as `gf` does.
+- `gn` and `gN` take the place of Neovim's own `gn` (select the next match) and `gN` in the
+  review's buffers, while the review tab is current.

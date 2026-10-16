@@ -142,8 +142,8 @@ end
 M.SANDBOX_TOOLS = { 'sandbox-exec', 'bwrap', 'socat' }
 
 ---The fake `claude`, as in tests/support/agent.rs: answers `--version`, records its arguments in
----`$ORCA_TERM_FAKE_CLAUDE_LOG.argv`, says it is ready, echoes every line typed, and ends on
----`SIGHUP` as claude does. The idle timeout ends a leaked one on its own. Bash builtins and
+---`$ORCA_TERM_FAKE_CLAUDE_LOG.argv`, says it is ready, echoes every line typed and records it in
+---`$ORCA_TERM_FAKE_CLAUDE_LOG.input`, and ends on `SIGHUP` as claude does. The idle timeout ends a leaked one on its own. Bash builtins and
 ---absolute paths only: its PATH holds nothing else.
 local FAKE_CLAUDE = {
   '#!/bin/bash',
@@ -153,6 +153,7 @@ local FAKE_CLAUDE = {
   'echo "fake claude ready"',
   'while IFS= read -r -t 120 line; do',
   '  echo "you said: $line"',
+  '  printf \'%s\\n\' "$line" >> "$ORCA_TERM_FAKE_CLAUDE_LOG.input"',
   'done',
   'exit 0',
 }
@@ -198,6 +199,18 @@ function M.claude_argv(repo)
   local raw = file:read('*a')
   file:close()
   return vim.split(raw, '\0', { plain = true, trimempty = true })
+end
+
+---The lines typed into the fake claude of `repo` so far, as its terminal handed them over (a
+---bracketed paste keeps its escape sequences), or an empty list before anything is typed.
+---@param repo spec.AgentRepo
+---@return string[]
+function M.claude_input(repo)
+  local path = repo.log .. '.input'
+  if vim.fn.filereadable(path) == 0 then
+    return {}
+  end
+  return vim.fn.readfile(path)
 end
 
 ---Removes the fake sandbox tools from the PATH of `repo`, so starting an agent fails as
@@ -423,6 +436,7 @@ end
 ---What the stubbed `vim.ui` and `vim.notify` saw.
 ---@class spec.Ui
 ---@field prompts string[] every prompt asked, in order
+---@field defaults string[] the answer each `vim.ui.input` offered to change, `''` for none
 ---@field shown string[][] the items each `vim.ui.select` offered, as shown to the person
 ---@field notes { message: string, level: integer }[] every notification, in order
 
@@ -433,11 +447,12 @@ end
 ---@param answers { input?: string, select?: string[] }
 ---@return spec.Ui
 function M.stub_ui(answers)
-  local ui = { prompts = {}, shown = {}, notes = {} }
+  local ui = { prompts = {}, defaults = {}, shown = {}, notes = {} }
   local queue = vim.deepcopy(answers.select or {})
   ---@diagnostic disable-next-line: duplicate-set-field
   vim.ui.input = function(opts, on_confirm)
     table.insert(ui.prompts, opts.prompt)
+    table.insert(ui.defaults, opts.default or '')
     on_confirm(answers.input)
   end
   ---@diagnostic disable-next-line: duplicate-set-field
@@ -499,7 +514,7 @@ end
 ---are the fake claude of `agent_repo()`, and their states come from recordings of claude's hooks
 ---played through the handlers their settings register (`play_hooks`). A turn that ends leaves its
 ---worktree unseen; the core's `worktree seen` and `worktree unseen` clear and set the mark of
----others. The repository's directory is named `repo`.
+---others. Two worktrees have pending notes. The repository's directory is named `repo`.
 ---
 ---`install-deps` stays *setting up* until `release()` is called: call it in a `finally`, so its
 ---setup ends even when the spec fails.
@@ -539,6 +554,12 @@ function M.every_state_repo()
   M.run({ M.binary, 'worktree', 'seen', 'reviewed' }, repo.root)
   M.run({ M.binary, 'worktree', 'unseen', 'nudged' }, repo.root)
   M.run({ 'git', 'switch', '--quiet', '-c', 'other-branch' }, M.worktree_path(repo, 'spike'))
+
+  -- Pending notes: two on `docs`, one on `pick-colour` (the selected worktree, in the card). A note
+  -- on a whole file needs no file on disk.
+  for _, note in ipairs({ { 'docs', 'one' }, { 'docs', 'two' }, { 'pick-colour', 'one' } }) do
+    M.run({ M.binary, 'note', 'add', note[1], 'notes.txt', '--body=' .. note[2] }, repo.root)
+  end
 
   -- not_ready: a setup that fails.
   M.set_setup(repo, { 'echo "npm ERR! missing script: build"', 'exit 1' })

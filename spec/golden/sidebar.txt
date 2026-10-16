@@ -2,7 +2,7 @@
 
  NEEDS YOU 7
  ╭────────────────────────────────╮
- │ ? pick-colour                  │
+ │ ? pick-colour               ✎1 │
  │   Which colour?                │
  ╰────────────────────────────────╯
 •● api-call
@@ -26,7 +26,7 @@
  ● reviewed
    ok
  ○ standby
- · docs
+ · docs                          ✎2
  · spike
    ⎇ other-branch
 
@@ -38,7 +38,8 @@
 4:1-103 OrcaTermBorder
 5:1-4 OrcaTermBorder
 5:5-6 OrcaTermStateWaiting
-5:36-39 OrcaTermBorder
+5:33-37 OrcaTermBadge
+5:38-41 OrcaTermBorder
 6:1-4 OrcaTermBorder
 6:7-20 OrcaTermStateWaiting
 6:36-39 OrcaTermBorder
@@ -71,5 +72,6 @@
 27:3-5 OrcaTermMuted
 28:1-4 OrcaTermStateIdle
 29:1-3 OrcaTermStateNoAgent
+29:34-38 OrcaTermBadge
 30:1-3 OrcaTermStateNoAgent
 31:3-19 OrcaTermMuted

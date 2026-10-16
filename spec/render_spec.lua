@@ -294,6 +294,41 @@ describe('render', function()
     end
   )
 
+  it(
+    "flushes a worktree's pending notes ✎N to the right of its name line, and shows none for zero",
+    function()
+      local long = 'a-name-long-enough-to-reach-the-notes'
+      local rendered = render.fleet(
+        fleet({
+          worktree('docs', { notes = 2 }),
+          worktree('quiet', { notes = 0 }),
+          worktree(long, { notes = 12 }),
+          worktree('picked', { notes = 1 }),
+        }),
+        '/src/wt/picked'
+      )
+      assert_fits(rendered, render.WIDTH)
+
+      local docs = assert(rendered.firsts['/src/wt/docs'])
+      assert.are.equal(' · docs                          ✎2', rendered.lines[docs])
+      assert.are.equal(render.WIDTH - 1, vim.fn.strdisplaywidth(rendered.lines[docs]))
+      local badge = rendered.spans[assert(span_index(rendered, docs, 'OrcaTermBadge'))]
+      assert.are.equal('✎2', rendered.lines[docs]:sub(badge.first + 1, badge.last))
+
+      local quiet = assert(rendered.firsts['/src/wt/quiet'])
+      assert.are.equal(' · quiet', rendered.lines[quiet])
+      assert.is_nil(span_index(rendered, quiet, 'OrcaTermBadge'))
+
+      -- The name gives way to the notes, cut with `…`, a space before them.
+      local cut = assert(rendered.firsts['/src/wt/' .. long])
+      assert.are.equal(' · a-name-long-enough-to-reach… ✎12', rendered.lines[cut])
+
+      -- Inside the card, the notes end before its right border.
+      local picked = assert(rendered.firsts['/src/wt/picked'])
+      assert.are.equal(' │ · picked                    ✎1 │', rendered.lines[picked])
+    end
+  )
+
   it('selects the first worktree shown when the selected one is gone', function()
     local rendered = render.fleet(
       fleet({ worktree('quiet'), worktree('urgent', { state = 'broken' }) }),

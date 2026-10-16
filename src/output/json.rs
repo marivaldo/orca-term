@@ -11,6 +11,7 @@ use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::launch::SessionId;
+use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
@@ -42,7 +43,8 @@ struct PrimaryView<'a> {
 /// One worktree: `activity` is what its agent is doing or said last, beside a state from its
 /// hooks (`working`, `waiting`, `finished`, `failed`, `interrupted`), else null; `agent` is its
 /// recorded agent's name or null, `holder` whether a holder is alive, `unseen` whether its latest
-/// turn ended after the person last reviewed it (or the person marked it so).
+/// turn ended after the person last reviewed it (or the person marked it so), `notes` how many
+/// notes are pending on it.
 #[derive(Debug, Serialize)]
 struct WorktreeView<'a> {
     name: &'a str,
@@ -54,6 +56,7 @@ struct WorktreeView<'a> {
     agent: Option<&'a str>,
     holder: bool,
     unseen: bool,
+    notes: usize,
 }
 
 /// `worktree new --json`: the worktree as `worktree ls` shows it, and what was done to make it.
@@ -149,6 +152,67 @@ struct ReviewedView<'a> {
     against: String,
 }
 
+/// `note add --json` and `note edit --json`: the worktree, and the note as it is now.
+#[derive(Debug, Serialize)]
+struct NotedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    note: NoteView<'a>,
+}
+
+/// `note ls --json`: the worktree, and its pending notes in id order.
+#[derive(Debug, Serialize)]
+struct ListedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    notes: Vec<NoteView<'a>>,
+}
+
+/// `note rm --json`: the worktree, and the id of the note removed.
+#[derive(Debug, Serialize)]
+struct UnnotedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    id: u64,
+}
+
+/// `note send --json`: the worktree, the `prompt` pasted into its agent, the ids of the notes
+/// `sent` in it (all consumed but those `kept`), and the ids of those `kept` pending because they
+/// were edited while being sent.
+#[derive(Debug, Serialize)]
+struct SentView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    prompt: &'a str,
+    sent: &'a [u64],
+    kept: &'a [u64],
+}
+
+/// One pending note: `path` is relative to the worktree, `anchor` where it was attached in the
+/// file as it was then, `current` where that is in the file now (the whole file when its lines
+/// are gone), `rev` its revision (bumped by every edit), `created` when it was made, in
+/// milliseconds since the Unix epoch.
+#[derive(Debug, Serialize)]
+struct NoteView<'a> {
+    id: u64,
+    path: &'a str,
+    anchor: AnchorView,
+    current: AnchorView,
+    body: &'a str,
+    rev: u64,
+    created: u64,
+}
+
+/// An anchor: `{"scope":"line","line":3}`, `{"scope":"lines","start":3,"end":5}` or
+/// `{"scope":"file"}`.
+#[derive(Debug, Serialize)]
+#[serde(tag = "scope", rename_all = "lowercase")]
+enum AnchorView {
+    Line { line: u32 },
+    Lines { start: u32, end: u32 },
+    File,
+}
+
 /// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
 #[derive(Debug, Serialize)]
 struct DoneView {}
@@ -225,6 +289,7 @@ fn set_up_worktree(
         agent: setup.agent.clone(),
         holder: HolderStatus::Gone,
         unseen: setup.unseen,
+        notes: setup.notes,
     }
 }
 
@@ -306,6 +371,68 @@ pub(crate) fn reviewed(reviewed: &Reviewed) -> serde_json::Result<String> {
     })
 }
 
+/// What `note add` or `note edit` left, as one JSON document.
+pub(crate) fn noted(noted: &Noted) -> serde_json::Result<String> {
+    document(NotedView {
+        name: &noted.name,
+        path: &noted.path,
+        note: note_view(&noted.note),
+    })
+}
+
+/// What `note ls` found, as one JSON document.
+pub(crate) fn listed(listed: &Listed) -> serde_json::Result<String> {
+    document(ListedView {
+        name: &listed.name,
+        path: &listed.path,
+        notes: listed.notes.iter().map(note_view).collect(),
+    })
+}
+
+/// What `note rm` removed, as one JSON document.
+pub(crate) fn unnoted(unnoted: &Unnoted) -> serde_json::Result<String> {
+    document(UnnotedView {
+        name: &unnoted.name,
+        path: &unnoted.path,
+        id: unnoted.note.id,
+    })
+}
+
+/// What `note send` pasted, as one JSON document.
+pub(crate) fn sent(sent: &NotesSent) -> serde_json::Result<String> {
+    document(SentView {
+        name: &sent.name,
+        path: &sent.path,
+        prompt: &sent.prompt,
+        sent: &sent.sent,
+        kept: &sent.kept,
+    })
+}
+
+fn note_view(pending: &PendingNote) -> NoteView<'_> {
+    let note: &Note = &pending.note;
+    NoteView {
+        id: note.id,
+        path: note.path.as_str(),
+        anchor: anchor_view(note.anchor),
+        current: anchor_view(pending.current),
+        body: &note.body,
+        rev: note.rev,
+        created: note.created,
+    }
+}
+
+fn anchor_view(anchor: Anchor) -> AnchorView {
+    match anchor {
+        Anchor::Line(line) => AnchorView::Line { line },
+        Anchor::Lines(range) => AnchorView::Lines {
+            start: range.start(),
+            end: range.end(),
+        },
+        Anchor::File => AnchorView::File,
+    }
+}
+
 /// A command that did its job and has nothing to report, as one JSON document.
 pub(crate) fn done() -> serde_json::Result<String> {
     document(DoneView {})
@@ -339,6 +466,7 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
         agent: worktree.agent.as_deref(),
         holder: worktree.holder.is_alive(),
         unseen: worktree.unseen,
+        notes: worktree.notes,
     }
 }
 
@@ -379,6 +507,7 @@ mod tests {
     use crate::domain::config::Setting;
     use crate::domain::error::{BusyReason, TypedError};
     use crate::domain::fleet::WorktreeEntry;
+    use crate::domain::note::{LineRange, NotePath};
     use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
@@ -403,7 +532,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0}}]}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -454,7 +583,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0}}]}}"#
             )
         );
     }
@@ -469,6 +598,7 @@ mod tests {
             agent: Some("claude-code".to_owned()),
             holder: HolderStatus::Alive,
             unseen: false,
+            notes: 0,
         }
     }
 
@@ -491,7 +621,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -553,12 +683,13 @@ mod tests {
                 activity: None,
                 agent: None,
                 unseen: true,
+                notes: 0,
             },
         };
         assert_eq!(
             set_up(&done).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true,"notes":0}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
             )
         );
     }
@@ -595,9 +726,97 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
             )
         );
+    }
+
+    fn pending_note(anchor: Anchor, current: Anchor) -> PendingNote {
+        PendingNote {
+            note: Note {
+                id: 1,
+                path: NotePath::parse("src/app.rs").unwrap(),
+                anchor,
+                body: "why \"this\"?".to_owned(),
+                rev: 2,
+                created: 1_700_000_000_000,
+                copy: None,
+            },
+            current,
+        }
+    }
+
+    #[test]
+    fn the_note_documents_keep_their_shape() {
+        let doc = noted(&Noted {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            note: pending_note(Anchor::Line(3), Anchor::Line(5)),
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","note":{{"id":1,"path":"src/app.rs","anchor":{{"scope":"line","line":3}},"current":{{"scope":"line","line":5}},"body":"why \"this\"?","rev":2,"created":1700000000000}}}}"#
+            )
+        );
+        let range = Anchor::Lines(LineRange::new(3, 5).unwrap());
+        let doc: serde_json::Value = serde_json::from_str(
+            &listed(&Listed {
+                name: "fix".to_owned(),
+                path: PathBuf::from("/l/fix"),
+                notes: vec![pending_note(range, Anchor::File)],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            doc["notes"][0]["anchor"],
+            serde_json::json!({"scope": "lines", "start": 3, "end": 5})
+        );
+        assert_eq!(
+            doc["notes"][0]["current"],
+            serde_json::json!({"scope": "file"})
+        );
+        let doc = unnoted(&Unnoted {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            note: pending_note(Anchor::File, Anchor::File).note,
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","id":1}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn the_send_document_keeps_its_shape() {
+        let doc = sent(&NotesSent {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            prompt: "File: a\nScope: file\nUser comment: \"x\"".to_owned(),
+            sent: vec![1, 3],
+            kept: vec![3],
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","prompt":"File: a\nScope: file\nUser comment: \"x\"","sent":[1,3],"kept":[3]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn a_worktree_carries_its_pending_notes_count() {
+        let worktree = Worktree {
+            notes: 2,
+            ..idle_worktree()
+        };
+        assert_eq!(worktree_view(&worktree).notes, 2);
     }
 
     #[test]
