@@ -34,10 +34,16 @@ describe('core', function()
     assert(fleet)
     assert.are.equal(core.CONTRACT, fleet.contract)
     assert.are.same({ path = repo.root, branch = 'main' }, fleet.primary)
-    assert.are.same(
-      { { name = 'fix', path = path, branch = 'fix', state = 'no_agent', holder = false } },
-      fleet.worktrees
-    )
+    assert.are.same({
+      {
+        name = 'fix',
+        path = path,
+        branch = 'fix',
+        state = 'no_agent',
+        holder = false,
+        unseen = false,
+      },
+    }, fleet.worktrees)
   end)
 
   it('returns the error the core prints as JSON, outside a git repository', function()

@@ -10,6 +10,7 @@ use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
 use crate::domain::worktree::{BranchOutcome, Created, Removed};
@@ -38,7 +39,8 @@ struct PrimaryView<'a> {
 
 /// One worktree: `activity` is what its agent is doing or said last, beside a state from its
 /// hooks (`working`, `waiting`, `finished`, `failed`, `interrupted`), else null; `agent` is its
-/// recorded agent's name or null, `holder` whether a holder is alive.
+/// recorded agent's name or null, `holder` whether a holder is alive, `unseen` whether its latest
+/// turn ended after the person last reviewed it (or the person marked it so).
 #[derive(Debug, Serialize)]
 struct WorktreeView<'a> {
     name: &'a str,
@@ -49,6 +51,7 @@ struct WorktreeView<'a> {
     activity: Option<&'a str>,
     agent: Option<&'a str>,
     holder: bool,
+    unseen: bool,
 }
 
 /// `worktree new --json`: the worktree as `worktree ls` shows it, and what was done to make it.
@@ -123,6 +126,14 @@ struct StoppedView<'a> {
     status: &'static str,
 }
 
+/// `worktree seen --json` and `worktree unseen --json`: the worktree, and whether it is unseen now.
+#[derive(Debug, Serialize)]
+struct MarkedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    unseen: bool,
+}
+
 /// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
 #[derive(Debug, Serialize)]
 struct DoneView {}
@@ -152,22 +163,20 @@ fn document<T: Serialize>(body: T) -> serde_json::Result<String> {
 pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
     document(FleetView {
         primary: primary_view(&fleet.primary),
-        worktrees: fleet.worktrees.iter().map(listed_view).collect(),
+        worktrees: fleet.worktrees.iter().map(worktree_view).collect(),
     })
 }
 
 /// What `worktree new` made, as one JSON document.
 pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
+    let worktree = set_up_worktree(
+        created.name.as_str(),
+        &created.path,
+        Some(&created.branch),
+        &created.setup,
+    );
     document(CreatedView {
-        worktree: worktree_view(
-            created.name.as_str(),
-            &created.path,
-            Some(&created.branch),
-            &created.setup.state,
-            created.setup.activity.as_deref(),
-            created.setup.agent.as_deref(),
-            HolderStatus::Gone,
-        ),
+        worktree: worktree_view(&worktree),
         start: created.start.to_string(),
         copied: created.copied,
         base: &created.base.value,
@@ -177,19 +186,31 @@ pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
 
 /// What `worktree setup` did, as one JSON document.
 pub(crate) fn set_up(done: &SetupDone) -> serde_json::Result<String> {
+    let worktree = set_up_worktree(&done.name, &done.path, done.branch.as_ref(), &done.setup);
     document(SetupDoneView {
-        // A setup runs only while no holder is alive.
-        worktree: worktree_view(
-            &done.name,
-            &done.path,
-            done.branch.as_ref(),
-            &done.setup.state,
-            done.setup.activity.as_deref(),
-            done.setup.agent.as_deref(),
-            HolderStatus::Gone,
-        ),
+        worktree: worktree_view(&worktree),
         setup: setup_view(&done.setup),
     })
+}
+
+/// The worktree `name` at `path` on `branch` as its setup, `setup`, left it, as `worktree ls`
+/// shows it. A setup runs only while no holder is alive.
+fn set_up_worktree(
+    name: &str,
+    path: &Path,
+    branch: Option<&Branch>,
+    setup: &SetupReport,
+) -> Worktree {
+    Worktree {
+        name: name.to_owned(),
+        path: path.to_owned(),
+        branch: branch.cloned(),
+        state: setup.state.clone(),
+        activity: setup.activity.clone(),
+        agent: setup.agent.clone(),
+        holder: HolderStatus::Gone,
+        unseen: setup.unseen,
+    }
 }
 
 /// What `worktree rm` removed, as one JSON document.
@@ -226,7 +247,7 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
         StartOutcome::AlreadyRunning { pid } => ("already_running", pid),
     };
     document(StartedView {
-        worktree: listed_view(&started.worktree),
+        worktree: worktree_view(&started.worktree),
         agent: started.agent.name(),
         holder: HolderView { status, pid },
         writable: started.writable.as_ref().map(|writable| WritableView {
@@ -239,11 +260,20 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
 /// What `agent stop` did, as one JSON document.
 pub(crate) fn stopped(stopped: &Stopped) -> serde_json::Result<String> {
     document(StoppedView {
-        worktree: listed_view(&stopped.worktree),
+        worktree: worktree_view(&stopped.worktree),
         status: match stopped.outcome {
             StopOutcome::Stopped => "stopped",
             StopOutcome::NotRunning => "not_running",
         },
+    })
+}
+
+/// What `worktree seen` or `worktree unseen` left, as one JSON document.
+pub(crate) fn marked(marked: &Marked) -> serde_json::Result<String> {
+    document(MarkedView {
+        name: &marked.name,
+        path: &marked.path,
+        unseen: marked.unseen,
     })
 }
 
@@ -269,36 +299,17 @@ fn primary_view(primary: &PrimaryCheckout) -> PrimaryView<'_> {
     }
 }
 
-fn listed_view(worktree: &Worktree) -> WorktreeView<'_> {
-    worktree_view(
-        &worktree.name,
-        &worktree.path,
-        worktree.branch.as_ref(),
-        &worktree.state,
-        worktree.activity.as_deref(),
-        worktree.agent.as_deref(),
-        worktree.holder,
-    )
-}
-
-fn worktree_view<'a>(
-    name: &'a str,
-    path: &'a Path,
-    branch: Option<&'a Branch>,
-    state: &State,
-    activity: Option<&'a str>,
-    agent: Option<&'a str>,
-    holder: HolderStatus,
-) -> WorktreeView<'a> {
+fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
     WorktreeView {
-        name,
-        path,
-        branch: branch.map(Branch::as_str),
-        state: state_name(state),
-        detail: state.detail(),
-        activity,
-        agent,
-        holder: holder.is_alive(),
+        name: &worktree.name,
+        path: &worktree.path,
+        branch: worktree.branch.as_ref().map(Branch::as_str),
+        state: state_name(&worktree.state),
+        detail: worktree.state.detail(),
+        activity: worktree.activity.as_deref(),
+        agent: worktree.agent.as_deref(),
+        holder: worktree.holder.is_alive(),
+        unseen: worktree.unseen,
     }
 }
 
@@ -361,9 +372,12 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false}}]}}"#
             )
         );
+        listed.worktrees[0].unseen = true;
+        let doc: serde_json::Value = serde_json::from_str(&fleet(&listed).unwrap()).unwrap();
+        assert_eq!(doc["worktrees"][0]["unseen"], true);
     }
 
     #[test]
@@ -372,15 +386,11 @@ mod tests {
             exit: Exit::Code(1),
             last_line: Some("boom".to_owned()),
         });
-        let view = worktree_view(
-            "fix",
-            Path::new("/l/fix"),
-            None,
-            &failed,
-            None,
-            None,
-            HolderStatus::Gone,
-        );
+        let worktree = Worktree {
+            state: failed,
+            ..idle_worktree()
+        };
+        let view = worktree_view(&worktree);
         assert_eq!(view.state, "not_ready");
         assert_eq!(view.detail.as_deref(), Some("setup failed (exit 1): boom"));
         assert_eq!(state_name(&State::SettingUp), "setting_up");
@@ -413,7 +423,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false}}]}}"#
             )
         );
     }
@@ -427,6 +437,7 @@ mod tests {
             activity: None,
             agent: Some("claude-code".to_owned()),
             holder: HolderStatus::Alive,
+            unseen: false,
         }
     }
 
@@ -446,7 +457,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}}}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -492,12 +503,29 @@ mod tests {
                 state: State::NoAgent,
                 activity: None,
                 agent: None,
+                unseen: true,
             },
         };
         assert_eq!(
             set_up(&done).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn the_seen_and_unseen_documents_keep_their_shape() {
+        let doc = marked(&Marked {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            unseen: true,
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","unseen":true}}"#
             )
         );
     }

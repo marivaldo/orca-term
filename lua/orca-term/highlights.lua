@@ -1,8 +1,9 @@
 -- orca-term's highlight groups: every colour the sidebar uses.
 --
 -- Each group links to a standard group of the colorscheme (`Title`, `Comment`, `Diagnostic*`), so
--- the sidebar reads well in any theme. The links are defaults: a person who defines the group in
--- their config keeps their own. `sidebar.lua` defines them again after each `:colorscheme`.
+-- the sidebar reads well in any theme, except the unseen worktree's name, which is only bold. Every
+-- group is a default: a person who defines the group in their config keeps their own. `sidebar.lua`
+-- defines them again after each `:colorscheme`.
 
 local M = {}
 
@@ -38,6 +39,14 @@ local LINKS = {
   OrcaTermStateFinished = 'DiagnosticOk',
   OrcaTermStateFailed = 'DiagnosticError',
   OrcaTermStateInterrupted = 'DiagnosticUnnecessary',
+  OrcaTermUnseen = 'DiagnosticWarn',
+}
+
+---Each group drawn with attributes of its own rather than a link.
+---@type table<string, vim.api.keyset.highlight>
+local ATTRIBUTES = {
+  -- The name of an unseen worktree.
+  OrcaTermUnseenName = { bold = true },
 }
 
 ---The group a state is drawn in; a state this client does not know yet is muted.
@@ -47,10 +56,13 @@ function M.state_group(state)
   return M.STATE_GROUPS[state] or 'OrcaTermMuted'
 end
 
----Defines every group as a default link. Safe to call again.
+---Defines every group as a default. Safe to call again.
 function M.define()
   for group, link in pairs(LINKS) do
     vim.api.nvim_set_hl(0, group, { link = link, default = true })
+  end
+  for group, attributes in pairs(ATTRIBUTES) do
+    vim.api.nvim_set_hl(0, group, vim.tbl_extend('force', attributes, { default = true }))
   end
 end
 

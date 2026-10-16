@@ -20,8 +20,9 @@ and `orca-term agent start|attach|stop <worktree>` run claude in one of them, in
 sandbox, held by a detached process that any terminal can attach to.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
-pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree and `.` runs
-its setup again, copies its path or removes it (always asking first). `:OrcaTerm jump` picks a
+pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
+its setup again, copies its path or removes it (always asking first), and `u` toggles its unseen
+mark `•`, which a worktree gets when its agent's turn ends. `:OrcaTerm jump` picks a
 worktree and `:OrcaTerm worktree N` goes to the Nth; bind keys to `<Plug>(OrcaTermSidebar)`,
 `<Plug>(OrcaTermJump)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
 client sets no global key.

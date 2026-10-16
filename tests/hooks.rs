@@ -176,6 +176,21 @@ impl<'a> Played<'a> {
         serde_json::from_slice(&fs::read(self.admin.join("status.json")).unwrap()).unwrap()
     }
 
+    /// Whether `worktree ls --json` shows the worktree unseen.
+    fn unseen(&self) -> bool {
+        self.fx.listed(&self.name)["unseen"].as_bool().unwrap()
+    }
+
+    /// Runs `worktree <command> <name>` (`seen` or `unseen`) and returns the line it prints.
+    fn mark(&self, command: &str) -> String {
+        self.fx.ok(&["worktree", command, &self.name])
+    }
+
+    /// `seen.json`, parsed.
+    fn seen_file(&self) -> Value {
+        serde_json::from_slice(&fs::read(self.admin.join("seen.json")).unwrap()).unwrap()
+    }
+
     /// The recording's session id, from its first hook.
     fn session_of(&self, fixture: &str) -> String {
         let (_, payload) = &self.recording(fixture)[0];
@@ -718,4 +733,196 @@ fn setup_and_rm_are_never_busy_because_of_a_hook() {
     assert!(!worktree.exists());
     assert!(!admin.exists(), "the admin dir goes with the worktree");
     drop(lock);
+}
+
+#[test]
+fn a_turn_that_ends_makes_the_worktree_unseen_until_the_person_marks_it_seen() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    assert!(!played.unseen(), "no turn has ended");
+    played.play("p-hello-2.1.300.log");
+    assert!(played.unseen(), "turn 1 finished");
+    assert!(
+        !played.admin.join("seen.json").exists(),
+        "hooks and listing write no seen record"
+    );
+
+    assert_eq!(played.mark("seen"), "fix: seen\n");
+    assert!(!played.unseen());
+    assert_eq!(
+        played.seen_file(),
+        json!({"schema": 1, "seen_through": 1, "marked": false})
+    );
+    assert_eq!(played.mark("seen"), "fix: seen\n", "idempotent");
+
+    played.play("tui-esc-2.1.300.log");
+    assert!(played.unseen(), "turn 3 finished after the review");
+    played.mark("seen");
+    assert_eq!(played.seen_file()["seen_through"], 3);
+
+    let out = fx.ok(&["worktree", "unseen", "fix", "--json"]);
+    let doc: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(doc["contract"], 1);
+    assert_eq!(doc["name"], "fix");
+    assert_eq!(doc["path"], json!(played.worktree));
+    assert_eq!(doc["unseen"], true);
+    assert!(played.unseen(), "marked by hand with no new turn");
+    assert_eq!(
+        played.seen_file(),
+        json!({"schema": 1, "seen_through": 3, "marked": true}),
+        "the mark keeps what was seen"
+    );
+    assert_eq!(played.mark("unseen"), "fix: unseen\n", "idempotent");
+
+    // A fresh session reads idle, and keeps the mark: it is independent of the state.
+    let (event, payload) = &played.recording("tui-exit-2.1.300.log")[0];
+    played.fire(event, payload);
+    assert_eq!(played.shown().0, "idle");
+    assert!(played.unseen());
+
+    let doc: Value = serde_json::from_str(&fx.ok(&["worktree", "seen", "fix", "--json"])).unwrap();
+    assert_eq!(doc["unseen"], false);
+    assert!(!played.unseen());
+    let table = fx.ok(&["worktree", "ls"]);
+    assert!(!table.contains("unseen"), "{table}");
+    played.mark("unseen");
+    let table = fx.ok(&["worktree", "ls"]);
+    assert!(table.contains("idle (unseen)"), "{table}");
+
+    let help = fx.ok(&["worktree", "--help"]);
+    assert!(
+        help.contains("seen") && help.contains("unseen"),
+        "public commands: {help}"
+    );
+}
+
+#[test]
+fn a_failed_turn_and_an_interrupted_one_are_unseen() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    played.play("p-stopfailure-2.1.300.log");
+    assert_eq!(played.shown().0, "failed");
+    assert!(played.unseen());
+    played.mark("seen");
+    assert!(!played.unseen());
+
+    played.play("tui-kill-2.1.300.log");
+    assert_eq!(played.shown().0, "interrupted");
+    assert!(played.unseen(), "a hang-up mid-turn ended it");
+}
+
+#[test]
+fn an_open_turn_whose_agent_is_gone_has_ended_and_is_unseen() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    let recording = played.recording("tui-esctool-2.1.300.log");
+    for (event, payload) in &recording[..3] {
+        played.fire(event, payload);
+    }
+    assert_eq!(played.shown().0, "working");
+    assert!(!played.unseen(), "the turn is still in progress");
+    played.mark("seen");
+    assert_eq!(played.seen_file()["seen_through"], 0, "nothing had ended");
+
+    fx.ok(&["agent", "stop", "fix"]);
+    assert_eq!(played.shown().0, "interrupted");
+    assert!(played.unseen());
+    played.mark("seen");
+    assert_eq!(played.seen_file()["seen_through"], 1, "the open turn ended");
+    assert!(!played.unseen());
+    assert_eq!(
+        played.turn_summary(),
+        [turn(1, "start", "")],
+        "marking writes no turn"
+    );
+}
+
+#[test]
+fn a_worktree_that_never_ran_a_turn_is_not_unseen_and_can_still_be_marked() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    assert_eq!(fx.listed("fix")["unseen"], false);
+    assert_eq!(fx.ok(&["worktree", "seen", "fix"]), "fix: seen\n");
+    assert_eq!(fx.listed("fix")["unseen"], false);
+    assert_eq!(fx.ok(&["worktree", "unseen", "fix"]), "fix: unseen\n");
+    assert_eq!(fx.listed("fix")["unseen"], true, "no agent, marked by hand");
+    assert_eq!(fx.listed("fix")["state"], "no_agent");
+    assert!(admin.join("seen.json").exists());
+
+    // A worktree made by hand with git, which has no admin directory of ours yet, by its path.
+    let by_hand = fx.repo.tmp.path().join("by-hand");
+    let by_hand = fx.repo.add_worktree(&by_hand, "by-hand");
+    assert_eq!(fx.listed("by-hand")["unseen"], false);
+    let target = by_hand.to_str().unwrap();
+    assert_eq!(fx.ok(&["worktree", "unseen", target]), "by-hand: unseen\n");
+    assert_eq!(fx.listed("by-hand")["unseen"], true);
+}
+
+#[test]
+fn seen_and_unseen_take_no_lock_so_they_are_never_busy() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    let lock = File::open(admin.join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let hook_lock = File::create(admin.join("hook.lock")).unwrap();
+    hook_lock.try_lock().unwrap();
+
+    let started = Instant::now();
+    assert_eq!(fx.ok(&["worktree", "unseen", "fix"]), "fix: unseen\n");
+    assert_eq!(fx.ok(&["worktree", "seen", "fix"]), "fix: seen\n");
+    assert!(started.elapsed() < Duration::from_secs(2), "nothing waited");
+    let out = fx.run(&["worktree", "setup", "fix", "--json"]);
+    assert_eq!(out.status.code(), Some(3), "the worktree's lock is held");
+    drop((lock, hook_lock));
+}
+
+#[test]
+fn seen_and_unseen_refuse_the_primary_checkout_and_an_unknown_worktree() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let root = fx.repo.root.to_str().unwrap().to_owned();
+    for command in ["seen", "unseen"] {
+        for (target, says) in [
+            ("repo", "is the primary checkout"),
+            (root.as_str(), "is the primary checkout"),
+            ("nope", "no worktree named `nope`"),
+        ] {
+            let out = fx.run(&["worktree", command, target, "--json"]);
+            assert_eq!(out.status.code(), Some(1), "{command} {target}");
+            let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(doc["error"]["kind"], "other");
+            let message = doc["error"]["message"].as_str().unwrap();
+            assert!(message.contains(says), "{message}");
+            let out = fx.run(&["worktree", command, target]);
+            assert_eq!(out.status.code(), Some(1));
+            assert!(String::from_utf8_lossy(&out.stderr).contains(says));
+        }
+    }
+    assert!(!fx.repo.root.join(".git/orca-term/seen.json").exists());
+}
+
+#[test]
+fn seen_never_writes_over_a_newer_schema_and_a_record_it_cannot_use_reads_as_nothing_seen() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    played.play("p-hello-2.1.300.log");
+    let path = played.admin.join("seen.json");
+
+    let newer = br#"{"schema":2,"seen_through":9,"marked":false}"#;
+    fs::write(&path, newer).unwrap();
+    assert!(played.unseen(), "a newer record reads as nothing seen");
+    for command in ["seen", "unseen"] {
+        let out = fx.run(&["worktree", command, "fix"]);
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("schema 2"), "{stderr}");
+        assert_eq!(fs::read(&path).unwrap(), newer, "left as it was");
+    }
+
+    fs::write(&path, b"{corrupt").unwrap();
+    assert!(played.unseen(), "a corrupt record reads as nothing seen");
+    assert_eq!(played.mark("seen"), "fix: seen\n", "and is written over");
+    assert!(!played.unseen());
 }

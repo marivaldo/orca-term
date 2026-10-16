@@ -40,7 +40,8 @@ the adapters, and returns a domain value that `output` prints.
 
 ### edge
 
-- `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`,
+- `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
+  person's marks `worktree seen|unseen`,
   `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
@@ -55,7 +56,8 @@ the adapters, and returns a domain value that `output` prints.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
   and `version` envelope. Each worktree carries `agent` (`"claude-code"` or null) and `holder`
-  (whether a holder is alive).
+  (whether a holder is alive) and `unseen` (whether it carries the unseen mark); `worktree seen`
+  and `unseen` print the worktree and its mark. The text table adds `(unseen)` to a marked row.
 
 ### ops
 
@@ -71,6 +73,10 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
   the setup again.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository.
+- `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
+  primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
+  (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
+  nothing more.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
   `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
   the branch's fate, remove, delete or keep the branch.
@@ -171,6 +177,9 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
   sessions), with texts kept to one capped line.
+- `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
+  has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
+  turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
 - `domain/sandbox.rs`: whether claude's sandbox can run here: `sandbox-exec` on macOS, `bwrap`
   and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`.
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
@@ -212,7 +221,8 @@ validate"):
   prunable, or the state file cannot be read. Broken wins over every other state.
 - `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
-  `claude-settings.json`.
+  `claude-settings.json`, the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
+  and the person's `seen.json`.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -311,6 +321,13 @@ validate"):
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
   `idle` after a fresh session; `--json` carries the `activity`.
+- **The unseen mark is the person's, derived on read.** A worktree is unseen when its latest
+  ended turn (an open turn whose holder is gone counts as ended) is after `seen_through` in
+  `seen.json`, whatever its outcome, or when the person marked it by hand. Only the person's
+  commands, `worktree seen` and `unseen`, write `seen.json`: atomically (write and rename), with
+  no lock, the last write winning, and never over a newer schema; a file the core cannot use
+  reads as nothing seen and no mark. Hooks never touch it. `worktree ls` derives the mark on
+  read, independent of the state.
 - **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
   starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
   exit (the holder, once its files are gone) and `worktree rm`, the command calls
@@ -377,6 +394,10 @@ validate"):
 - **A Neovim that does not answer within 200 ms misses that change** (suspended, or busy in a
   blocking command): the core hangs up and Neovim drops the call. The next change or focus reads
   the fleet again. Every hook of a worktree then waits those 200 ms.
+- **Viewing the agent's terminal does not clear the unseen mark**, unlike Orca: only `u` does
+  (and the review, once [#39](https://github.com/marivaldo/orca-term/issues/39) lands), because
+  Unseen means "not reviewed" (`CONTEXT.md`), and watching an agent is not reviewing its work.
+- **`•` is ambiguous-width**: with `ambiwidth=double` a marked row is one cell wider.
 
 ## Guards
 
@@ -445,7 +466,8 @@ what they print.
   `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
   client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
   throws. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
-  events. `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
+  events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting.
+  `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start` (with the terminal's size) runs without blocking too. `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
@@ -456,11 +478,15 @@ what they print.
 - `lua/orca-term/render.lua`: the sidebar's look, pure: turns the fleet (or an error), the
   selected worktree's path and a width (36) into lines, highlight spans and the worktree each line
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
-  glyph and a second line per worktree, the rounded card around the selected one. No line reaches
+  glyph and a second line per worktree, the rounded card around the selected one; an unseen
+  worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
+  name. No line reaches
   past the width.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
-  `OrcaTermBorder`, `OrcaTermError` and one `OrcaTermState*` per state), defined as default links
-  to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` so a person's own definition wins.
+  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state and `OrcaTermUnseen`),
+  defined as default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*`
+  (`OrcaTermUnseen` to `DiagnosticWarn`) so a person's own definition wins; `OrcaTermUnseenName`,
+  the unseen worktree's name, is a default of its own, only bold.
 - `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
   shown in a 36-column left split of every tab while open (and of every tab made later). It reads
   the fleet through `core.lua` on open, on `FocusGained`, when an action asks (`refresh()`) and
@@ -468,7 +494,7 @@ what they print.
   on `TabEnter` and on `DirChanged` of a tab, the worktree whose directory is the tab's becomes
   the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
   the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
-  creates a worktree and `.` opens the menu of the worktree under the cursor (through
+  creates a worktree, `u` toggles the unseen mark of the worktree under the cursor and `.` opens the menu of the worktree under the cursor (through
   `actions.lua`). A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
   other window it closes the tab's sidebar first, and on `WinClosed` it closes a tab left with
   only the sidebar (unless it is the last tab). The second line of each worktree shows its
@@ -496,6 +522,8 @@ what they print.
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, then its terminal through `terminal.lua`; a
   refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
+  `toggle_unseen` (`u`: `worktree seen` when the fleet last read
+  says unseen, `worktree unseen` otherwise, then the sidebar is read again; a refusal is told),
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after

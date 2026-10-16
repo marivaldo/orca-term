@@ -60,6 +60,10 @@ const HOOK_LOCK_FILE: &str = "hook.lock";
 /// What went wrong in the hooks, one line each, kept small.
 const HOOK_LOG_FILE: &str = "hook.log";
 
+/// What the person has seen of the worktree (`domain/seen.rs`). Only the person's commands write
+/// it; the hooks never do.
+const SEEN_FILE: &str = "seen.json";
+
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
@@ -128,6 +132,11 @@ impl AdminDir {
     /// The hooks' error log, `hook.log`.
     pub(crate) fn hook_log(&self) -> PathBuf {
         self.0.join(HOOK_LOG_FILE)
+    }
+
+    /// What the person has seen, `seen.json`.
+    pub(crate) fn seen_file(&self) -> PathBuf {
+        self.0.join(SEEN_FILE)
     }
 
     /// git's `commondir` file beside this directory, in git's per-worktree admin directory
@@ -841,6 +850,10 @@ mod tests {
         assert_eq!(
             admin.hook_log(),
             PathBuf::from("/repo/.git/worktrees/fix/orca-term/hook.log")
+        );
+        assert_eq!(
+            admin.seen_file(),
+            PathBuf::from("/repo/.git/worktrees/fix/orca-term/seen.json")
         );
     }
 

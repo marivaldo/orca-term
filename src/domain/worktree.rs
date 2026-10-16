@@ -263,6 +263,12 @@ pub(crate) fn check_can_run_agent(worktree: &Worktree) -> Result<()> {
     )
 }
 
+/// Refuses to mark seen or unseen a worktree whose directory is gone, as removing it is refused:
+/// only `worktree prune` cleans it, and its state goes with it.
+pub(crate) fn check_can_mark(worktree: &Worktree) -> Result<()> {
+    check_removable(worktree)
+}
+
 /// Refuses to remove a worktree whose directory is gone: only `worktree prune` cleans it.
 pub(crate) fn check_removable(worktree: &Worktree) -> Result<()> {
     if let State::Broken(reason) = &worktree.state
@@ -389,6 +395,7 @@ mod tests {
             activity: None,
             agent: None,
             holder: HolderStatus::Gone,
+            unseen: false,
         };
         check_can_run_agent(&with(State::NoAgent)).unwrap();
         check_can_run_agent(&with(State::Idle)).unwrap();

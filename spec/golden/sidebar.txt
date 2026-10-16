@@ -1,27 +1,31 @@
  ▾ repo  main
 
- NEEDS YOU 3
+ NEEDS YOU 7
  ╭────────────────────────────────╮
  │ ? pick-colour                  │
  │   Which colour?                │
  ╰────────────────────────────────╯
+•● api-call
+   API Error: 400 fake bad request
+•● slow-job
+   SLOW please
  △ fix-login
    setup failed (exit 1): npm ERR!…
  ! old-spike
    directory missing; run orca-ter…
+•● greet
+   ok
+•○ nudged
 
  RUNNING 2
  ◌ install-deps
  ◐ run-tests
    Bash: sleep 6
 
- QUIET 5
- ● api-call
-   API Error: 400 fake bad request
- ● greet
+ QUIET 4
+ ● reviewed
    ok
- ● slow-job
-   SLOW please
+ ○ standby
  · docs
  · spike
    ⎇ other-branch
@@ -39,21 +43,33 @@
 6:7-20 OrcaTermStateWaiting
 6:36-39 OrcaTermBorder
 7:1-103 OrcaTermBorder
-8:1-4 OrcaTermStateNotReady
-9:3-37 OrcaTermStateNotReady
-10:1-2 OrcaTermStateBroken
-11:3-37 OrcaTermStateBroken
-13:1-10 OrcaTermMuted
-14:1-4 OrcaTermStateSettingUp
-15:1-4 OrcaTermStateWorking
-16:3-16 OrcaTermMuted
-18:1-8 OrcaTermMuted
-19:1-4 OrcaTermStateFailed
-20:3-34 OrcaTermMuted
-21:1-4 OrcaTermStateFinished
-22:3-5 OrcaTermMuted
-23:1-4 OrcaTermStateInterrupted
-24:3-14 OrcaTermMuted
-25:1-3 OrcaTermStateNoAgent
-26:1-3 OrcaTermStateNoAgent
-27:3-19 OrcaTermMuted
+8:0-3 OrcaTermUnseen
+8:3-6 OrcaTermStateFailed
+8:7-15 OrcaTermUnseenName
+9:3-34 OrcaTermStateFailed
+10:0-3 OrcaTermUnseen
+10:3-6 OrcaTermStateInterrupted
+10:7-15 OrcaTermUnseenName
+11:3-14 OrcaTermStateInterrupted
+12:1-4 OrcaTermStateNotReady
+13:3-37 OrcaTermStateNotReady
+14:1-2 OrcaTermStateBroken
+15:3-37 OrcaTermStateBroken
+16:0-3 OrcaTermUnseen
+16:3-6 OrcaTermStateFinished
+16:7-12 OrcaTermUnseenName
+17:3-5 OrcaTermStateFinished
+18:0-3 OrcaTermUnseen
+18:3-6 OrcaTermStateIdle
+18:7-13 OrcaTermUnseenName
+20:1-10 OrcaTermMuted
+21:1-4 OrcaTermStateSettingUp
+22:1-4 OrcaTermStateWorking
+23:3-16 OrcaTermMuted
+25:1-8 OrcaTermMuted
+26:1-4 OrcaTermStateFinished
+27:3-5 OrcaTermMuted
+28:1-4 OrcaTermStateIdle
+29:1-3 OrcaTermStateNoAgent
+30:1-3 OrcaTermStateNoAgent
+31:3-19 OrcaTermMuted

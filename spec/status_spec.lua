@@ -17,11 +17,16 @@ local function lines()
   return vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), 0, -1, false)
 end
 
----Line `index` of the sidebar without the card's borders and the spaces around.
+---Line `index` of the sidebar without the card's borders, the spaces around and the unseen mark
+---(spec/unseen_spec.lua covers the mark).
 ---@param index integer
 ---@return string
 local function bare(index)
-  return vim.trim((lines()[index]:gsub('│', '')))
+  local text = vim.trim((lines()[index]:gsub('│', '')))
+  if vim.startswith(text, render.UNSEEN) then
+    text = text:sub(#render.UNSEEN + 1)
+  end
+  return text
 end
 
 ---The index of the line holding the name of the worktree `name`: its glyph, a space, its name.

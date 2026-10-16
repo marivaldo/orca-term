@@ -1,7 +1,7 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
--- again, copy its path, remove it), and going to a worktree by picking it (`:OrcaTerm jump`) or by
--- its number (`:OrcaTerm worktree N`).
+-- again, copy its path, remove it), toggle its unseen mark (`u`), and going to a worktree by picking
+-- it (`:OrcaTerm jump`) or by its number (`:OrcaTerm worktree N`).
 --
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
 -- moves between tabs through `tabs.lua` and shows agents through `terminal.lua`; it touches no
@@ -160,6 +160,21 @@ function M.run_setup(worktree, primary)
     end
   end)
   refresh_shortly()
+end
+
+---Toggles the unseen mark of `worktree` through the core, without waiting: clears it when the fleet
+---last read says the worktree is unseen, sets it otherwise. The sidebar is read again once the core
+---answers; a refusal is told with the core's reason.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.toggle_unseen(worktree, primary)
+  local mark = worktree.unseen and core.worktree_seen or core.worktree_unseen
+  mark(worktree.path, primary, function(marked, err)
+    refresh_sidebar()
+    if not marked then
+      fail(err)
+    end
+  end)
 end
 
 ---Puts the path of `worktree` in the unnamed register, and in the clipboard when Neovim has one.
