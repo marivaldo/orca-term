@@ -14,6 +14,7 @@ pub(crate) mod nvim;
 pub(crate) mod porcelain;
 pub(crate) mod protocol;
 pub(crate) mod sandbox;
+pub(crate) mod seen;
 pub(crate) mod setup;
 pub(crate) mod state;
 pub(crate) mod turn;

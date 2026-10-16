@@ -90,6 +90,8 @@ pub(crate) struct SetupReport {
     pub(crate) activity: Option<String>,
     /// The agent the worktree keeps recorded through the setup, by name.
     pub(crate) agent: Option<String>,
+    /// Whether the worktree is unseen after the setup (`domain/seen.rs`); a setup never changes it.
+    pub(crate) unseen: bool,
 }
 
 /// What `worktree setup` did.

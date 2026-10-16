@@ -127,5 +127,6 @@ fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktree> {
         activity: derived.activity,
         agent: derived.agent,
         holder: derived.holder,
+        unseen: derived.unseen,
     })
 }

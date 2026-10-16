@@ -54,6 +54,9 @@ pub(crate) struct Worktree {
     pub(crate) agent: Option<String>,
     /// Whether the worktree's holder is alive right now.
     pub(crate) holder: HolderStatus,
+    /// Whether the worktree is unseen: its latest turn ended after the person last reviewed it,
+    /// or the person marked it so (`domain/seen.rs`).
+    pub(crate) unseen: bool,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -80,6 +83,7 @@ impl Fleet {
                 activity: None,
                 agent: None,
                 holder: HolderStatus::Gone,
+                unseen: false,
             })
             .collect();
         Ok(Self {

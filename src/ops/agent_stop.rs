@@ -39,6 +39,7 @@ pub(crate) fn run(target: &Target) -> Result<Stopped> {
             activity: derived.activity,
             agent: derived.agent,
             holder: derived.holder,
+            unseen: derived.unseen,
             ..worktree.clone()
         },
         outcome: StopOutcome::Stopped,

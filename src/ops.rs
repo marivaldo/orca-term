@@ -14,6 +14,7 @@ pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
 pub(crate) mod worktree_rm;
+pub(crate) mod worktree_seen;
 pub(crate) mod worktree_setup;
 
 use std::io::Write;
@@ -29,6 +30,7 @@ use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::nvim::{self, Address};
+use crate::domain::seen::{self, Seen};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
 use crate::domain::turn::{self, Status};
@@ -49,6 +51,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.activity = derived.activity;
         worktree.agent = derived.agent;
         worktree.holder = derived.holder;
+        worktree.unseen = derived.unseen;
     }
     Ok(fleet)
 }
@@ -63,6 +66,8 @@ pub(crate) struct Derived {
     pub(crate) agent: Option<String>,
     /// Whether a holder is alive right now.
     pub(crate) holder: HolderStatus,
+    /// Whether the worktree is unseen (`domain/seen.rs`).
+    pub(crate) unseen: bool,
 }
 
 impl Derived {
@@ -72,6 +77,7 @@ impl Derived {
             activity: None,
             agent: None,
             holder: HolderStatus::Gone,
+            unseen: false,
         }
     }
 }
@@ -92,12 +98,35 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
     }
 }
 
-/// The state of the worktree whose admin directory is `admin`, from its state file, the hooks'
-/// live status and the volatile facts behind them. Only reads: the worktree's lock is probed only
-/// for a setup recorded as running, the holder's lock is probed and released at once, the setup
-/// log is read only for a failed setup, and the live status only for a ready worktree with an
-/// agent.
+/// The state of the worktree whose admin directory is `admin`, and whether it is unseen. Only
+/// reads.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
+    let mut derived = derive_agent_state(admin)?;
+    derived.unseen = read_unseen(admin, derived.holder);
+    Ok(derived)
+}
+
+/// Whether the worktree whose admin directory is `admin`, whose holder is `holder`, is unseen:
+/// from what the person has seen (`seen.json`) and the hooks' live status. Only reads, and never
+/// fails: a file that cannot be used reads as nothing seen, or no turn ended.
+fn read_unseen(admin: &AdminDir, holder: HolderStatus) -> bool {
+    let ended = seen::latest_ended(read_status(admin).as_ref(), holder);
+    seen::is_unseen(read_seen(admin), ended)
+}
+
+/// What the person has seen of the worktree whose admin directory is `admin`, or nothing seen and
+/// no mark when `seen.json` is missing, unreadable, corrupt or of a newer schema.
+fn read_seen(admin: &AdminDir) -> Seen {
+    let bytes = fs::read_optional(&admin.seen_file()).ok().flatten();
+    seen::read(bytes.as_deref()).usable()
+}
+
+/// The state of the worktree whose admin directory is `admin`, from its state file, the hooks'
+/// live status and the volatile facts behind them; not yet whether it is unseen. Only reads: the
+/// worktree's lock is probed only for a setup recorded as running, the holder's lock is probed and
+/// released at once, the setup log is read only for a failed setup, and the live status only for a
+/// ready worktree with an agent.
+fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
     let mut recorded = read_recorded(admin)?;
     if recorded.setup == Some(SetupRecord::Running) {
         if fs::lock_status(admin)? == LockStatus::Held {
@@ -106,6 +135,7 @@ pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
                 activity: None,
                 agent: recorded.agent,
                 holder: HolderStatus::Gone,
+                unseen: false,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -131,13 +161,14 @@ pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
         activity,
         agent: recorded.agent,
         holder,
+        unseen: false,
     })
 }
 
 /// The hooks' live status in `admin`, or `None` when there is none this core can use: missing,
 /// unreadable, corrupt or of a newer schema. It never fails the fleet; the next hook rewrites a
 /// corrupt one, saying so in `hook.log`.
-fn read_status(admin: &AdminDir) -> Option<Status> {
+pub(crate) fn read_status(admin: &AdminDir) -> Option<Status> {
     let bytes = fs::read_optional(&admin.status_file()).ok().flatten();
     turn::read_status(bytes.as_deref()).usable()
 }
@@ -281,6 +312,7 @@ pub(crate) fn set_up(
             state: derived.state,
             activity: derived.activity,
             agent: derived.agent,
+            unseen: derived.unseen,
         });
     };
     write_state(lock, Some(SetupRecord::Running))?;
@@ -299,6 +331,7 @@ pub(crate) fn set_up(
         state: derived.state,
         activity: derived.activity,
         agent: derived.agent,
+        unseen: derived.unseen,
     })
 }
 

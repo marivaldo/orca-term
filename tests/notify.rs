@@ -512,6 +512,24 @@ fn agent_start_stop_and_the_agents_own_exit_notify() {
 }
 
 #[test]
+fn worktree_seen_and_unseen_notify_with_the_worktrees_path() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let path = listed_path(&fx, "fix");
+    let (first, second) = (Neovim::new(), Neovim::new());
+    fx.ok(&["nvim", "register", &first.address()]);
+    fx.ok(&["nvim", "register", &second.address()]);
+
+    fx.ok(&["worktree", "unseen", "fix"]);
+    assert_eq!(first.paths(), times(&path, 1));
+    assert_eq!(second.paths(), times(&path, 1));
+
+    fx.ok(&["worktree", "seen", "fix", "--json"]);
+    assert_eq!(first.paths(), times(&path, 1));
+    assert_eq!(second.paths(), times(&path, 1));
+}
+
+#[test]
 fn a_stale_address_is_pruned_and_the_command_still_succeeds() {
     let fx = AgentRepo::new();
     let live = Neovim::new();

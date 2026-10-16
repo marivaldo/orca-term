@@ -11,11 +11,12 @@ use clap::{Parser, Subcommand};
 use crate::adapters::terminal::DetachKey;
 use crate::domain::agent::Size;
 use crate::domain::nvim::Address;
+use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     agent_attach, agent_holder, agent_start, agent_stop, hook, nvim_register, nvim_unregister,
-    worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_setup,
+    worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -122,6 +123,22 @@ enum WorktreeCommand {
     },
     /// Clean the worktrees whose directory is gone (`git worktree prune`). Nothing else prunes.
     Prune,
+    /// Mark a worktree seen: every turn that ended so far is reviewed, and a mark set by hand goes.
+    Seen {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark a worktree unseen by hand, whatever its turns, until `worktree seen`.
+    Unseen {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -184,7 +201,9 @@ impl Cli {
                 WorktreeCommand::Ls { json }
                 | WorktreeCommand::New { json, .. }
                 | WorktreeCommand::Setup { json, .. }
-                | WorktreeCommand::Rm { json, .. } => *json,
+                | WorktreeCommand::Rm { json, .. }
+                | WorktreeCommand::Seen { json, .. }
+                | WorktreeCommand::Unseen { json, .. } => *json,
                 WorktreeCommand::Prune => false,
             },
             Command::Agent { command } => match command {
@@ -279,6 +298,14 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
         }
         WorktreeCommand::Prune => {
             output::worktrees_pruned(&worktree_prune::run()?);
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Seen { worktree, .. } => {
+            output::worktree_marked(&worktree_seen::run(worktree, Mark::Seen)?, format)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Unseen { worktree, .. } => {
+            output::worktree_marked(&worktree_seen::run(worktree, Mark::Unseen)?, format)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Ls { json: true } => {

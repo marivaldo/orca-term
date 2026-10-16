@@ -18,6 +18,7 @@ use crate::domain::error;
 use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
 use crate::domain::nvim::Address;
+use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
@@ -93,7 +94,7 @@ fn render_fleet_table(fleet: &Fleet) -> String {
                     .branch
                     .as_ref()
                     .map_or_else(|| "(detached)".to_owned(), ToString::to_string),
-                worktree.state.label().to_owned(),
+                state_cell(worktree),
                 worktree.path.display().to_string(),
             ]
         })
@@ -122,6 +123,17 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         }
     }
     render_columns(&lines)
+}
+
+/// The worktree's state as the table shows it, followed by `(unseen)` when its latest turn ended
+/// after the person last reviewed it, or the person marked it so: `finished (unseen)`.
+fn state_cell(worktree: &Worktree) -> String {
+    let label = worktree.state.label();
+    if worktree.unseen {
+        format!("{label} (unseen)")
+    } else {
+        label.to_owned()
+    }
 }
 
 /// The worktree's agent and whether it runs, as the table shows it: `claude-code (running)`,
@@ -357,6 +369,20 @@ fn render_agent_stopped(stopped: &Stopped) -> String {
     }
 }
 
+/// Prints what `worktree seen` or `worktree unseen` left: one line, `fix: seen` or `fix: unseen`.
+pub(crate) fn worktree_marked(marked: &Marked, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_worktree_marked(marked)),
+        Format::Json => out(&json::marked(marked)?),
+    }
+    Ok(())
+}
+
+fn render_worktree_marked(marked: &Marked) -> String {
+    let mark = if marked.unseen { "unseen" } else { "seen" };
+    format!("{}: {mark}", marked.name)
+}
+
 /// Prints that the Neovim at `address` is registered: one line, or with `--json` a document
 /// carrying only `contract` and `version`.
 pub(crate) fn nvim_registered(address: &Address, format: Format) -> anyhow::Result<()> {
@@ -430,6 +456,7 @@ mod tests {
             state: State::NoAgent,
             activity: None,
             agent: None,
+            unseen: false,
         }
     }
 
@@ -442,6 +469,7 @@ mod tests {
             activity: None,
             agent: None,
             holder: HolderStatus::Gone,
+            unseen: false,
         }
     }
 
@@ -460,6 +488,7 @@ mod tests {
             }),
             activity: None,
             agent: None,
+            unseen: false,
         }
     }
 
@@ -535,6 +564,38 @@ mod tests {
             assert!(table.contains(state), "{table}");
         }
         assert!(!table.contains("npm test"), "{table}");
+    }
+
+    #[test]
+    fn the_table_marks_an_unseen_worktree_beside_its_state() {
+        let with = |name: &str, state, unseen| {
+            let mut worktree = worktree(name, state);
+            worktree.agent = Some("claude-code".to_owned());
+            worktree.unseen = unseen;
+            worktree
+        };
+        assert_eq!(
+            render_fleet_table(&fleet(vec![
+                with("a", State::Finished, true),
+                with("b", State::Finished, false),
+                with("c", State::Idle, true),
+            ])),
+            "NAME  BRANCH  STATE              PATH  AGENT\n\
+             a     a       finished (unseen)  /l/a  claude-code (stopped)\n\
+             b     b       finished           /l/b  claude-code (stopped)\n\
+             c     c       idle (unseen)      /l/c  claude-code (stopped)"
+        );
+    }
+
+    #[test]
+    fn seen_and_unseen_say_what_the_worktree_is_now() {
+        let marked = |unseen| Marked {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            unseen,
+        };
+        assert_eq!(render_worktree_marked(&marked(false)), "fix: seen");
+        assert_eq!(render_worktree_marked(&marked(true)), "fix: unseen");
     }
 
     #[test]
