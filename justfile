@@ -56,6 +56,10 @@ lua-test:
         echo "lua-test: lualine.nvim is not installed; run \`just lua-rocks\`" >&2
         exit 1
     fi
+    if [ ! -f "$rocks/diffview.nvim/lua/diffview/init.lua" ]; then
+        echo "lua-test: diffview.nvim is not installed; run \`just lua-rocks\`" >&2
+        exit 1
+    fi
     cargo build --locked
     export PATH="$rocks/bin:$PATH"
     export LUA_PATH="$rocks/share/lua/5.1/?.lua;$rocks/share/lua/5.1/?/init.lua;;"
@@ -63,8 +67,9 @@ lua-test:
     # nlua reads Lua from stdin when stdin is not a terminal: /dev/null keeps it from waiting.
     busted </dev/null
 
-# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`, and lualine.nvim at a pinned
-# commit into .rocks/lualine.nvim, for the specs of the status strip's lualine component. Run it
+# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`; lualine.nvim at a pinned
+# commit into .rocks/lualine.nvim, for the specs of the status strip's lualine component; and
+# diffview.nvim at a pinned commit into .rocks/diffview.nvim, for the specs of the review. Run it
 # once; running it again changes nothing.
 lua-rocks:
     #!/usr/bin/env bash
@@ -80,6 +85,15 @@ lua-rocks:
         git init --quiet "$lualine"
         git -C "$lualine" fetch --quiet --depth 1 https://github.com/nvim-lualine/lualine.nvim "$lualine_sha"
         git -C "$lualine" checkout --quiet FETCH_HEAD
+    fi
+    # diffview.nvim (MIT), the commit of 2024-06-13, fetched the same way.
+    diffview_sha=4516612fe98ff56ae0415a259ff6361a89419b0a
+    diffview=.rocks/diffview.nvim
+    if [ "$(git -C "$diffview" rev-parse HEAD 2>/dev/null || true)" != "$diffview_sha" ]; then
+        rm -rf "$diffview"
+        git init --quiet "$diffview"
+        git -C "$diffview" fetch --quiet --depth 1 https://github.com/sindrets/diffview.nvim "$diffview_sha"
+        git -C "$diffview" checkout --quiet FETCH_HEAD
     fi
 
 # Advisories, bans, licenses and sources.
@@ -105,8 +119,8 @@ vocab:
 layers:
     cargo xtask layers
 
-# The Neovim client: only core.lua starts processes, only sidebar.lua, tabs.lua and terminal.lua
-# touch windows, tabs and buffers, fleet.lua and render.lua are pure.
+# The Neovim client: only core.lua starts processes, only sidebar.lua, tabs.lua, terminal.lua and
+# review.lua touch windows, tabs and buffers, fleet.lua and render.lua are pure.
 client-boundary:
     cargo xtask client-boundary
 

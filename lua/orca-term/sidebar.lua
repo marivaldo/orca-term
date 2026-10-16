@@ -1,12 +1,14 @@
 -- orca-term's sidebar: the fleet in a left split of every tab, toggled by `:OrcaTerm sidebar`.
 --
--- This module, `tabs.lua` and `terminal.lua` are the only ones that touch windows and buffers
--- (`cargo xtask client-boundary` checks it). It gets the fleet from `live.lua`, has `render.lua`
--- turn it into lines and colours, and paints them into one buffer that every tab shows in its own
--- window. Its keys, local to that buffer, move the selection (`j`, `k`), open a worktree
+-- This module, `tabs.lua`, `terminal.lua` and `review.lua` are the only ones that touch windows
+-- and buffers (`cargo xtask client-boundary` checks it). It gets the fleet from `live.lua`, has
+-- `render.lua` turn it into lines and colours, and paints them into one buffer that every tab shows
+-- in its own window. Its keys, local to that buffer, move the selection (`j`, `k`), open a worktree
 -- (`<CR>`: its tab, and its agent's terminal when it has an agent), create a worktree (`a`), open
--- the menu of the worktree under the cursor (`.`) and toggle its unseen mark (`u`), all four through
--- `actions.lua`. The selection follows the current tab when it is a worktree's.
+-- the menu of the worktree under the cursor (`.`), toggle its unseen mark (`u`) and open its review
+-- (`d`), all five through `actions.lua`. The selection follows the current tab when it is a
+-- worktree's. The sidebar is never shown in a review tab (`review.lua`), where diffview lays out
+-- the whole tab.
 --
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains
@@ -23,6 +25,7 @@ local actions = require('orca-term.actions')
 local highlights = require('orca-term.highlights')
 local live = require('orca-term.live')
 local render = require('orca-term.render')
+local review = require('orca-term.review')
 local tabs = require('orca-term.tabs')
 
 local M = {}
@@ -300,6 +303,14 @@ local function toggle_unseen()
   end
 end
 
+---`d`: opens the review of the worktree under the cursor.
+local function open_review()
+  local worktree = worktree_under_cursor()
+  if worktree then
+    actions.review(worktree.path, primary_path())
+  end
+end
+
 ---Moves the selection `step` worktrees down (1) or up (-1), stopping at the first and the last.
 ---@param step integer
 local function move(step)
@@ -364,17 +375,33 @@ local function ensure_buffer()
   end, 'create a worktree')
   map('.', worktree_menu, 'the actions of the worktree under the cursor')
   map('u', toggle_unseen, 'mark the worktree under the cursor unseen, or seen when it is unseen')
+  map('d', open_review, 'open the review of the worktree under the cursor in diffview')
 
   state.buf = buf
   return buf
 end
 
----Shows the sidebar in `tab`, at the far left, unless it is already there. The person's current
----window stays current.
+---The options of the sidebar's windows: a fixed width, and none of the columns or marks of a text
+---window.
+local WINDOW_OPTIONS = {
+  winfixwidth = true,
+  number = false,
+  relativenumber = false,
+  signcolumn = 'no',
+  foldcolumn = '0',
+  statuscolumn = '',
+  list = false,
+  wrap = false,
+  spell = false,
+  cursorline = false,
+}
+
+---Shows the sidebar in `tab`, at the far left, unless it is already there or `tab` is a review
+---tab. The person's current window stays current.
 ---@param tab integer
 local function show_in(tab)
   local buf = ensure_buffer()
-  if window_in(tab) then
+  if window_in(tab) or review.is_review(tab) then
     return
   end
   local win
@@ -383,17 +410,9 @@ local function show_in(tab)
   vim.api.nvim_win_call(vim.api.nvim_tabpage_get_win(tab), function()
     win = vim.api.nvim_open_win(buf, false, { split = 'left', win = -1, width = render.WIDTH })
   end)
-  local options = vim.wo[win]
-  options.winfixwidth = true
-  options.number = false
-  options.relativenumber = false
-  options.signcolumn = 'no'
-  options.foldcolumn = '0'
-  options.statuscolumn = ''
-  options.list = false
-  options.wrap = false
-  options.spell = false
-  options.cursorline = false
+  for name, value in pairs(WINDOW_OPTIONS) do
+    vim.wo[win][name] = value
+  end
   follow_selection()
 end
 
@@ -414,6 +433,28 @@ local function hide(win)
   vim.o.eadirection = 'ver'
   pcall(vim.api.nvim_win_close, win, true)
   vim.o.eadirection = eadirection
+end
+
+---Closes the sidebar in the current tab once diffview has opened a view there. A view orca-term
+---opens never gets the sidebar, but one the person opens by hand (`:DiffviewOpen`) does: diffview
+---makes its tab, where the sidebar shows itself, before it registers the view. diffview then lays
+---out its diff windows by splitting the tab's first window, the sidebar's, so they start as copies
+---of it: they keep the sidebar's buffer until diffview fills them, and get the options of a text
+---window back here.
+local function leave_review_tab()
+  local tab = vim.api.nvim_get_current_tabpage()
+  local diffview_windows = review.view_windows(tab)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    if vim.api.nvim_win_get_buf(win) == state.buf then
+      if diffview_windows[win] then
+        for name in pairs(WINDOW_OPTIONS) do
+          vim.wo[win][name] = vim.go[name]
+        end
+      else
+        hide(win)
+      end
+    end
+  end
 end
 
 ---The windows of `tab` other than the sidebar's, leaving out floating windows.
@@ -507,6 +548,12 @@ function M.open()
     callback = function(args)
       after_close(tonumber(args.match) or -1)
     end,
+  })
+  vim.api.nvim_create_autocmd('User', {
+    group = group,
+    pattern = 'DiffviewViewOpened',
+    desc = 'orca-term: never show the sidebar in a review tab',
+    callback = leave_review_tab,
   })
   vim.api.nvim_create_autocmd('ColorScheme', {
     group = group,

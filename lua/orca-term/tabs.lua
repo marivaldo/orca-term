@@ -1,10 +1,12 @@
 -- orca-term's worktree tabs: each worktree gets a tab of its own, whose tab-local directory is the
 -- worktree.
 --
--- This module, `sidebar.lua` and `terminal.lua` are the only ones that touch windows and tabs
--- (`cargo xtask client-boundary` checks it). A worktree's tab is never remembered: it is found
--- again, each time, as the tab whose directory (`getcwd(-1, tabnr)`) is the worktree's path,
--- compared with symlinks resolved. Closing a tab only closes the tab; the worktree stays as it is.
+-- This module, `sidebar.lua`, `terminal.lua` and `review.lua` are the only ones that touch windows
+-- and tabs (`cargo xtask client-boundary` checks it). A worktree's tab is never remembered: it is
+-- found again, each time, as the tab whose directory (`getcwd(-1, tabnr)`) is the worktree's path,
+-- compared with symlinks resolved. A review tab (`review.lua`) is never a worktree's tab, although
+-- it has the worktree's directory: diffview makes it from the worktree's tab, whose tab-local
+-- directory a new tab inherits. Closing a tab only closes the tab; the worktree stays as it is.
 
 local M = {}
 
@@ -23,25 +25,34 @@ local function directory_of(tab)
   return vim.fn.getcwd(-1, vim.api.nvim_tabpage_get_number(tab))
 end
 
----Every tab whose directory is `path`, first to last.
+---Whether `tab` is a review tab, which is never a worktree's tab.
+---@param tab integer
+---@return boolean
+local function is_review(tab)
+  return require('orca-term.review').is_review(tab)
+end
+
+---Every tab whose directory is `path`, first to last, review tabs left out.
 ---@param path string
 ---@return integer[]
 function M.find_all(path)
   local wanted = resolved(path)
   local found = {}
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
-    if resolved(directory_of(tab)) == wanted then
+    if not is_review(tab) and resolved(directory_of(tab)) == wanted then
       table.insert(found, tab)
     end
   end
   return found
 end
 
----Whether the current tab's directory is `path`.
+---Whether the current tab is the tab of the worktree at `path`: its directory is `path`, and it is
+---no review tab.
 ---@param path string
 ---@return boolean
 function M.is_current(path)
-  return resolved(directory_of(vim.api.nvim_get_current_tabpage())) == resolved(path)
+  local tab = vim.api.nvim_get_current_tabpage()
+  return not is_review(tab) and resolved(directory_of(tab)) == resolved(path)
 end
 
 ---Whether `win` shows the sidebar.

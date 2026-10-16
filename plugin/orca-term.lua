@@ -19,6 +19,9 @@ local subcommands = {
   jump = function()
     require('orca-term.actions').jump()
   end,
+  review = function()
+    require('orca-term.actions').review_current()
+  end,
   worktree = function(args)
     local n = tonumber(args[1])
     if not n or n < 1 or n ~= math.floor(n) then
@@ -73,6 +76,10 @@ end, { desc = 'orca-term: toggle the sidebar in every tab' })
 vim.keymap.set('n', '<Plug>(OrcaTermJump)', function()
   require('orca-term.actions').jump()
 end, { desc = 'orca-term: pick a worktree and go to its tab' })
+
+vim.keymap.set('n', '<Plug>(OrcaTermReview)', function()
+  require('orca-term.actions').review_current()
+end, { desc = "orca-term: open the review of the current tab's worktree in diffview" })
 
 for n = 1, 9 do
   vim.keymap.set('n', ('<Plug>(OrcaTermWorktree%d)'):format(n), function()

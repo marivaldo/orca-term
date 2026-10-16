@@ -4,9 +4,10 @@
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
--- start` and the marks `worktree seen` and `unseen` are not waited for, and hand their result to a
--- callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
--- says when a worktree changes; `nvim unregister` runs as Neovim exits and is waited for, briefly.
+-- start`, the marks `worktree seen` and `unseen` and `worktree review` are not waited for, and hand
+-- their result to a callback in Neovim's main loop. `nvim register` tells the core where this
+-- Neovim listens, so it says when a worktree changes; `nvim unregister` runs as Neovim exits and is
+-- waited for, briefly.
 -- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
 -- made current, for the person to use, until it detaches or the agent ends. The client never works
 -- the fleet out by itself: it shows what the core prints.
@@ -371,6 +372,27 @@ end
 ---@param on_done fun(marked: orca_term.Marked?, err: orca_term.Error?)
 function M.worktree_unseen(path, cwd, on_done)
   run_async({ 'worktree', 'unseen', path }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---What `worktree review --json` prints: the worktree (now seen), the review's base and the branch
+---it was found against.
+---@class orca_term.Review
+---@field contract integer
+---@field version string
+---@field worktree orca_term.Worktree the worktree, its `unseen` now `false`
+---@field base string the review's base: the commit the worktree forked from, a full commit id
+---@field against string the default branch the base was found against, `main` or `origin/main`
+
+---Starts the review of the worktree `target` (its name or its path), without waiting:
+---`orca-term worktree review <target> --json`. The core finds the review's base (`git merge-base
+---<default branch> HEAD` in the worktree), marks the worktree seen and tells the running Neovims it
+---changed. The primary checkout, an unknown worktree, a worktree whose directory is gone and a
+---history unrelated to the default branch are refused, and then nothing is marked.
+---@param target string
+---@param cwd string
+---@param on_done fun(review: orca_term.Review?, err: orca_term.Error?)
+function M.worktree_review(target, cwd, on_done)
+  run_async({ 'worktree', 'review', target }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---What `nvim register --json` and `nvim unregister --json` print: only the contract and the core's
