@@ -554,7 +554,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   child Neovims to check its live update and its lualine component, with lualine.nvim pinned in
   `.rocks/lualine.nvim` by `just lua-rocks`. `spec/review_spec.lua` opens real reviews in
   diffview.nvim, pinned in `.rocks/diffview.nvim` by `just lua-rocks` and added to the runtimepath
-  for that file only, which closes every view and review tab it opens. See "Neovim client" below.
+  for that file only, which closes every view and review tab it opens; `spec/notes_spec.lua` does
+  the same to add, draw, list, send, edit and delete notes there, its fake claude recording every
+  line it reads (`support.claude_input`). See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -565,9 +567,10 @@ Neovim 0.11 or later. The client is thin: it runs the core's commands with `--js
 what they print.
 
 - `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
-  `review`, `worktree N`), with completion of the subcommands, and the `<Plug>(OrcaTermSidebar)`,
-  `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)` and `<Plug>(OrcaTermWorktree1)` to
-  `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
+  `review`, `notes`, `worktree N`), with completion of the subcommands, and the
+  `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
+  `<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and
+  nothing else.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
@@ -583,6 +586,12 @@ what they print.
   events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting;
   `worktree_review(target, cwd, on_done)` runs `worktree review` without waiting (10 s at most),
   handing over the worktree (now seen), the review's `base` and the branch it was found `against`.
+  The note commands run without waiting (10 s at most): `note_add(target, path, lines, body, cwd,
+  on_done)` (`lines` the first and the last line, equal for one line, `nil` for the whole file; the
+  body passed as `--body=<body>`), `note_ls`, `note_edit`, `note_rm` and `note_send(target, ids,
+  cwd, on_done)` (every pending note when `ids` is empty), typed as `orca_term.Note` (its `anchor`
+  as made and its `current` one, the line in the file on disk now) and one class per document; a
+  send with no running agent fails as `no_holder`. Every worktree carries `notes`, its pending count.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
   `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
@@ -597,7 +606,9 @@ what they print.
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. No line reaches
+  name. At the right end of a worktree's name line sit its icons, so far its pending notes `✎N`
+  (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; zero
+  notes shows nothing. No line reaches
   past the width. It also counts the fleet for the status strip: `counts(fleet)` gives the
   worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
   `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
@@ -606,11 +617,13 @@ what they print.
   `{ text = '?1', group = 'OrcaTermStateWaiting' }`, the unseen count last as `•N` in
   `OrcaTermUnseen`. The working glyph does not spin there.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
-  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state and `OrcaTermUnseen`),
-  defined as default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*`
-  (`OrcaTermUnseen` to `DiagnosticWarn`) so a person's own definition wins; `OrcaTermUnseenName`,
-  the unseen worktree's name, is a default of its own, only bold. The sidebar, while open, and the
-  status strip, once started, define them again after every `:colorscheme`.
+  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
+  `OrcaTermBadge` for a row's icons and `OrcaTermNote` for the notes in a review), defined as
+  default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` (`OrcaTermUnseen` to
+  `DiagnosticWarn`, `OrcaTermBadge` to `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
+  person's own definition wins; `OrcaTermUnseenName`, the unseen worktree's name, is a default of
+  its own, only bold. The sidebar, while open, the status strip, once started, and the notes, once a
+  review opened, define them again after every `:colorscheme`.
 - `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
   no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
   that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
@@ -706,7 +719,46 @@ what they print.
   worktree's file) the cursor lands on the same line. A file not on disk (the change deleted it) is
   told and opens nothing. On a buffer diffview shares with a tab orca-term did not open, the same
   map falls back to diffview's own `gf` there, or to Neovim's elsewhere. `close_all(path)` closes
-  the worktree's review tabs, letting diffview close its view and tab.
+  the worktree's review tabs, letting diffview close its view and tab. For the notes, `shown()`
+  says what orca-term's review in the current tab shows (`nil` in any other tab, a diffview opened
+  by hand included): its worktree, the right-hand window when it shows the worktree's file on disk
+  (diffview's `LOCAL` revision: the window, the file's own buffer and its relative path), the
+  buffers of the base side, the file panel's buffer and the panel's line of each file (from the
+  components diffview rendered; a file in a folded directory has none); `file_in_panel()` gives
+  the file under the cursor in the panel. Opening a review starts the notes (`notes.start()`) and
+  lists them (`notes.refresh()`), and so does going back to one already open.
+- `lua/orca-term/notes.lua`: the notes in orca-term's review tabs, with no buffer of their own. It
+  asks `review.lua` what the current tab shows, never diffview itself, and keeps each worktree's
+  notes as `note ls` last printed them. `draw()` draws them in one namespace (`NAMESPACE`) at their
+  `current` anchor, the line in the file on disk now: on the right-hand window's buffer a sign
+  `✎` (`render.NOTE`) on a note's line (on a range's first line, `┆` on its others) and its body as
+  `virt_lines` below its last line, prefixed `✎ `, or `virt_lines_above` line 1 for a whole-file
+  note; in the file panel `✎N` at the end of each file's line (`virt_text`). All in
+  `OrcaTermNote`. It puts buffer-local keys on those buffers and on the base side's: `gn` (normal
+  and visual) and `gN`. Every other buffer it marked loses its extmarks and keys, so outside
+  orca-term's review tab nothing of the notes is left: it is drawn on `User DiffviewDiffBufRead`,
+  `DiffviewDiffBufWinEnter` and `DiffviewViewClosed`, drawn and listed again on
+  `DiffviewViewEnter`, and taken off every buffer on `DiffviewViewLeave` (diffview's `tab_leave`,
+  where it removes its own keys); the right-hand buffer is the file's own, which `gf` edits in the
+  worktree's tab, and diffview removes only the keys it set. The file panel's buffer is watched
+  with `nvim_buf_attach`, since diffview replaces its lines on each redraw, which moves the
+  extmarks; it is drawn again just after. `refresh()` lists the current review's notes again
+  through `note ls` without waiting (a listing overtaken by a newer one is dropped) and draws them:
+  after every note action, when a marked buffer is reloaded or written (`FileChangedShellPost`,
+  `BufWritePost`), and on every fleet the live fleet keeps, to which it subscribes as `notes` while
+  a review tab is current (so the core's `User OrcaTermWorktreeChanged` reaches it, and this Neovim
+  is registered). `gn` in the right-hand window adds a note on the cursor's line, in visual mode on
+  the selected lines (one line is a line note), in the file panel on the whole file under the
+  cursor; on the base side it says notes go on the right-hand side; it refuses a buffer with unsaved
+  changes, since the core anchors on the file on disk. The body is asked with `vim.ui.input`
+  (`PROMPT`, `Note for the agent: `); an empty or cancelled answer adds nothing. `list(path)`
+  (`gN`, and `:OrcaTerm notes` through `actions.lua`) asks with `vim.ui.select`: `Send all (N)`,
+  then each note as `path:N  body` (`path:S-E`, `path`; the body on one line, cut to 60 cells),
+  which asks `Send`, `Edit` (the body offered as `default`), `Delete` (no confirmation, as Orca) or
+  `Cancel`. With no pending notes it says so. Sending tells `sent N notes to <worktree>`; a
+  `no_holder` refusal says to press `<CR>` on the worktree in the sidebar to start its agent. After
+  every change the notes are listed again and the sidebar reads the fleet again (its `✎N`).
+  `_reset()` forgets it all, for the specs.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
@@ -720,6 +772,8 @@ what they print.
   and, unless the core refused, the worktree's tab through `tabs.lua` and the review through
   `review.lua`), `review_current` (`:OrcaTerm review`: the worktree whose tab is current, or
   whose review tab is; anywhere else it says it needs a worktree's tab),
+  `notes_current` (`:OrcaTerm notes`: the notes of the same worktree, through `notes.lua`;
+  anywhere else it says it needs a worktree's tab or its review),
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
@@ -732,11 +786,12 @@ Its rules:
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
-- **Only `sidebar.lua`, `tabs.lua`, `terminal.lua` and `review.lua` touch windows, tabs and
-  buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain functions of
-  the fleet, tested without a window; the sidebar only paints them, and `actions.lua` moves between
-  tabs only through `tabs.lua`, opens terminals only through `terminal.lua` and reviews only
-  through `review.lua`, the one module that calls diffview.nvim.
+- **Only `sidebar.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` touch windows,
+  tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
+  functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
+  moves between tabs only through `tabs.lua`, opens terminals only through `terminal.lua`, reviews
+  only through `review.lua`, the one module that calls diffview.nvim (`notes.lua` asks it what a
+  review shows), and lists notes only through `notes.lua`.
   `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd` that splits
   or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else, and any
   `vim.api` or `vim.cmd` in the pure modules.
@@ -756,6 +811,10 @@ Its rules:
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
   commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
+- **Notes never leak out of the review.** The notes' extmarks and their `gn` and `gN` are only on
+  the buffers of orca-term's review tab while it is current: leaving it takes them off every buffer,
+  the file's own included, so editing the same file in the worktree's tab has Neovim's own `gn` and
+  no note drawn; entering the review puts them back. `spec/notes_spec.lua` checks it.
 
 Its known limits:
 
@@ -781,4 +840,17 @@ Its known limits:
   disk (diffview restores their windows as it closes, and Neovim says `E211` for a file that is
   gone). When the core then refuses (a busy worktree, or a cancelled forced removal), the review
   stays closed.
-- `:OrcaTerm review` reads the fleet, waiting for it, to find the current tab's worktree.
+- `:OrcaTerm review` and `:OrcaTerm notes` read the fleet, waiting for it, to find the current
+  tab's worktree.
+- A whole-file note is drawn above line 1 (`virt_lines_above`), which Neovim shows only once the
+  window is scrolled up past line 1 (`<C-y>` there): opened at the top, the review does not show it.
+- Notes are drawn only in orca-term's review tabs, on the right-hand side and the file panel: not
+  in a diffview opened by hand, not on the base side, not in the worktree's tab. `gn` adds notes
+  only on the files the review lists (a file git does not track is not listed); a note on any
+  other file, added with `orca-term note add`, is still listed by `gN` and sent.
+- While the right-hand buffer has unsaved changes, the notes drawn move with its text, but `gn` is
+  refused until it is written; once written (or reloaded), they are drawn where the core says.
+- After hiding and showing the file panel again (`:DiffviewToggleFiles`), its `✎N` and keys come
+  back on diffview's next event there, as `gf` does.
+- `gn` and `gN` take the place of Neovim's own `gn` (select the next match) and `gN` in the
+  review's buffers, while the review tab is current.
