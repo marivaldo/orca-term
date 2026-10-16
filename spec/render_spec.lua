@@ -48,6 +48,20 @@ local function groups_on(rendered, line)
   return groups
 end
 
+---The index in `rendered.spans` of the span in `group` on line `line`, or `nil`.
+---@param rendered orca_term.Rendered
+---@param line integer
+---@param group string
+---@return integer?
+local function span_index(rendered, line, group)
+  for index, span in ipairs(rendered.spans) do
+    if span.line == line and span.group == group then
+      return index
+    end
+  end
+  return nil
+end
+
 ---The line holding `text`, or `nil`.
 ---@param rendered orca_term.Rendered
 ---@param text string
@@ -227,6 +241,58 @@ describe('render', function()
       groups_on(rendered, 6)
     )
   end)
+
+  it(
+    'puts the unseen mark before the glyph and makes the name bold, seen ones unchanged',
+    function()
+      local long = string.rep('very-long-', 6)
+      local rendered = render.fleet(
+        fleet({
+          worktree('done', { state = 'finished', unseen = true, activity = 'ok' }),
+          worktree('broke', { state = 'failed', unseen = true }),
+          worktree('quiet', { state = 'idle', unseen = true }),
+          worktree(long, { state = 'interrupted', unseen = true }),
+          worktree('looked', { state = 'finished', unseen = false }),
+        }),
+        '/src/wt/broke'
+      )
+      assert_fits(rendered, render.WIDTH)
+
+      local done = assert(rendered.firsts['/src/wt/done'])
+      assert.are.equal('•● done', rendered.lines[done])
+      assert.are.equal('   ok', rendered.lines[done + 1])
+      assert.are.same(
+        { 'OrcaTermUnseen', 'OrcaTermStateFinished', 'OrcaTermUnseenName' },
+        groups_on(rendered, done)
+      )
+      -- The mark is the first cell of the line, where a seen worktree has a blank.
+      assert.are.same(
+        { line = done, first = 0, last = #render.UNSEEN, group = 'OrcaTermUnseen' },
+        rendered.spans[assert(span_index(rendered, done, 'OrcaTermUnseen'))]
+      )
+
+      -- Inside the card too, the mark keeps its cell and the line its width.
+      local broke = assert(rendered.firsts['/src/wt/broke'])
+      assert.are.equal(' │•● broke                        │', rendered.lines[broke])
+      assert.are.same({
+        'OrcaTermBorder',
+        'OrcaTermUnseen',
+        'OrcaTermStateFailed',
+        'OrcaTermUnseenName',
+        'OrcaTermBorder',
+      }, groups_on(rendered, broke))
+
+      local quiet = assert(rendered.firsts['/src/wt/quiet'])
+      assert.are.equal('•○ quiet', rendered.lines[quiet])
+      local cut = assert(rendered.firsts['/src/wt/' .. long])
+      assert.are.equal('•● very-long-very-long-very-long-v…', rendered.lines[cut])
+
+      -- A seen worktree keeps a blank first cell and a plain name.
+      local looked = assert(rendered.firsts['/src/wt/looked'])
+      assert.are.equal(' ● looked', rendered.lines[looked])
+      assert.are.same({ 'OrcaTermStateFinished' }, groups_on(rendered, looked))
+    end
+  )
 
   it('selects the first worktree shown when the selected one is gone', function()
     local rendered = render.fleet(
