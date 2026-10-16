@@ -165,6 +165,14 @@ local LUALINE_SETUP = [[
   })
 ]]
 
+---The colours of the highlight group `name` in the child Neovim, its links followed.
+---@param child integer
+---@param name string
+---@return { fg?: integer, bg?: integer }
+local function child_colours(child, name)
+  return vim.rpcrequest(child, 'nvim_get_hl', 0, { name = name, link = false }) or {}
+end
+
 ---Whether lualine draws each item of the strip `text` in the foreground of its group over the
 ---background of `lualine_x` (with no `x` of its own, the theme draws it in the colours of its `c`),
 ---and why not.
@@ -186,8 +194,8 @@ local function colours_fit(child, items, text)
         group = highlight.group
       end
     end
-    local wanted = vim.rpcrequest(child, 'nvim_get_hl', 0, { name = item.group, link = false }) --[[@as { fg?: integer }]]
-    local got = vim.rpcrequest(child, 'nvim_get_hl', 0, { name = group, link = false }) --[[@as { fg?: integer, bg?: integer }]]
+    local wanted = child_colours(child, item.group)
+    local got = child_colours(child, group)
     if wanted.fg == nil or wanted.fg ~= got.fg then
       return false,
         ('%s is drawn in %s, not in the colour of %s'):format(item.text, group, item.group)
