@@ -10,7 +10,7 @@
 --     UPDATE_GOLDEN=1 just lua-test
 --
 -- The strip starts once and stays subscribed for the rest of a session, so in this Neovim every
--- spec forgets it afterwards (`forget_strip`), and the live and lualine specs run in child
+-- spec forgets it afterwards (`strip._reset()`), and the live and lualine specs run in child
 -- Neovims, as spec/live_store_spec.lua does: embedded, driven over RPC, with only this client (and
 -- lualine, from .rocks/lualine.nvim) loaded and the sidebar never opened.
 
@@ -31,21 +31,19 @@ local LAYOUT_OPTIONS = { 'statusline', 'tabline', 'winbar', 'laststatus', 'showt
 ---@type { channel: integer, socket: string? }[]
 local children = {}
 
----The strip module, loaded afresh: as Neovim would have it before the first call.
+---The strip, as Neovim has it before the first call.
 ---@return table
 local function fresh_strip()
-  package.loaded['orca-term.strip'] = nil
-  return require('orca-term.strip')
+  local strip = require('orca-term.strip')
+  strip._reset()
+  return strip
 end
 
----Forgets the strip in this Neovim: its subscription, its autocommands and its module, so the next
----spec starts from a Neovim where the strip never ran.
+---Forgets the strip and the spy in this Neovim, so the next spec, of this file or another, starts
+---from a Neovim where the strip never ran.
 local function forget_strip()
-  local live = require('orca-term.live')
-  live.unsubscribe('strip')
-  live.unsubscribe('spec')
-  pcall(vim.api.nvim_del_augroup_by_name, 'orca-term-strip')
-  package.loaded['orca-term.strip'] = nil
+  require('orca-term.strip')._reset()
+  require('orca-term.live').unsubscribe('spec')
 end
 
 ---Subscribes a spy to the live fleet, under `spec`, and returns what it got: `got.reads` is how
@@ -326,6 +324,35 @@ describe('the status strip', function()
       return vim.api.nvim_eval_statusline('[' .. EXPRESSION .. ']', {}).str == '[·1]'
     end, 'the drawn statusline to show the strip')
     assert.are.equal('', vim.v.errmsg)
+  end)
+
+  it('writes nothing to the terminal of a Neovim without a UI, even in insert mode', function()
+    support.load_client()
+    local repo = support.repo()
+    support.run({ support.binary, 'worktree', 'new', 'demo' }, repo.root)
+    -- A Neovim run as `nvim -l`, as the specs are: no UI, and insert mode pending, whose mode
+    -- message a redraw would write to the terminal. It prints the strip once it shows the fleet.
+    local script = support.temp_dir() .. '/strip.lua'
+    vim.fn.writefile({
+      'vim.opt.runtimepath:prepend(arg[1])',
+      "require('orca-term').setup({ binary = arg[2] })",
+      'vim.cmd.startinsert()',
+      "local strip = require('orca-term.strip')",
+      'strip.statusline()',
+      "assert(vim.wait(20000, function() return strip.statusline() ~= '' end, 20))",
+      'io.stdout:write(strip.statusline())',
+    }, script)
+
+    local result = vim
+      .system(
+        { vim.v.progpath, '--clean', '--headless', '-l', script, support.root, support.binary },
+        { cwd = repo.root, stdin = '', text = true }
+      )
+      :wait(30000)
+
+    assert.are.equal(0, result.code, result.stderr)
+    assert.are.equal('%#OrcaTermStateNoAgent#·1%*', result.stdout)
+    assert.are.equal('', result.stderr)
   end)
 
   it('changes none of statusline, tabline, winbar, laststatus and showtabline', function()
