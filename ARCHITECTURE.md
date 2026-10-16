@@ -708,6 +708,8 @@ Its known limits:
 - `gf` is set again on diffview's file panel when the view is entered or a diff window is filled:
   after hiding and showing the panel again (`:DiffviewToggleFiles`), the panel has diffview's own
   `gf` until then.
-- Removing a worktree while its review is open makes Neovim say `E211` for each of its files the
-  review had loaded, as diffview closes the view after the files are gone.
+- Removing a worktree closes its review tabs before the core runs, while the files are still on
+  disk (diffview restores their windows as it closes, and Neovim says `E211` for a file that is
+  gone). When the core then refuses (a busy worktree, or a cancelled forced removal), the review
+  stays closed.
 - `:OrcaTerm review` reads the fleet, waiting for it, to find the current tab's worktree.

@@ -264,15 +264,16 @@ local function confirm_discarding(worktree, on_yes)
   end)
 end
 
----Removes `worktree` through the core, `force`d or not. On success its tabs close; a worktree
----with changes asks once more before it is forced; a busy one only says why.
+---Removes `worktree` through the core, `force`d or not. Its review tabs close first, while its
+---files are still on disk for diffview to let go of; on success its other tabs close too. A
+---worktree with changes asks once more before it is forced; a busy one only says why.
 ---@param worktree orca_term.Worktree
 ---@param primary string
 ---@param force boolean
 local function run_removal(worktree, primary, force)
+  review.close_all(worktree.path)
   core.worktree_rm(worktree.path, force, primary, function(removed, err)
     if removed then
-      review.close_all(worktree.path)
       tabs.close_all(worktree.path, primary)
       refresh_sidebar()
       info(removal_message(removed))
@@ -287,8 +288,7 @@ local function run_removal(worktree, primary, force)
 end
 
 ---Asks for confirmation, then removes `worktree` through the core and closes its tabs, its review
----tabs included. The last
----tab is kept, pointed at the primary checkout.
+---tabs included. The last tab is kept, pointed at the primary checkout.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 function M.remove(worktree, primary)
