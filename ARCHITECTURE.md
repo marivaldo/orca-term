@@ -552,8 +552,9 @@ what they print.
   `DirChanged` of the global or a tab directory reads the fleet again, `read_soon()`), subscribes
   to `live.lua` as `strip`, shows the fleet already kept (when the sidebar read it) and reads it
   again without waiting. Every fleet the live fleet keeps is turned into the strip once, through
-  `render.strip`; then `redrawstatus!`, `redrawtabline` and, when lualine is loaded,
-  `require('lualine').refresh()` draw it. After a read, when the fleet's primary checkout is not
+  `render.strip`; when what it shows changed, `redrawstatus!` and `redrawtabline` (only while a UI
+  is attached: with none, a redraw writes the screen's mode message to the terminal) and, when
+  lualine is loaded, `require('lualine').refresh()` draw it. `_reset()` forgets it, for the specs. After a read, when the fleet's primary checkout is not
   the one it registered from, it subscribes again, which registers this Neovim from there. It stays
   subscribed for the rest of the session, open sidebar or not, and touches no window or buffer.
 - `lua/lualine/components/orca-term.lua`: the strip as a lualine component, `lualine_x = {
@@ -627,7 +628,7 @@ Its rules:
   from the core's JSON; the client renders them. No logic is bound to the Neovim process.
 - **The status strip never blocks a statusline and never touches the layout.** Drawing it only
   returns what was kept: it never waits and never starts a process, and its first call only
-  schedules the start. Neither requiring nor starting it changes `statusline`, `tabline`,
+  schedules the start. Without a UI it never redraws, so it writes nothing to the terminal. Neither requiring nor starting it changes `statusline`, `tabline`,
   `winbar`, `laststatus`, `showtabline` or lualine's config: the person places it.
   `spec/strip_spec.lua` checks both.
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
