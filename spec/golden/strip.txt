@@ -1,0 +1,28 @@
+%#OrcaTermStateWaiting#?1%* %#OrcaTermStateFailed#●1%* %#OrcaTermStateInterrupted#●1%* %#OrcaTermStateBroken#!1%* %#OrcaTermStateNotReady#△1%* %#OrcaTermStateWorking#◐1%* %#OrcaTermStateSettingUp#◌1%* %#OrcaTermStateFinished#●2%* %#OrcaTermStateIdle#○2%* %#OrcaTermStateNoAgent#·2%* %#OrcaTermUnseen#•4%*
+
+# drawn:
+?1 ●1 ●1 !1 △1 ◐1 ◌1 ●2 ○2 ·2 •4
+
+# highlights: <byte> <group>
+0 OrcaTermStateWaiting
+2 StatusLine
+3 OrcaTermStateFailed
+7 StatusLine
+8 OrcaTermStateInterrupted
+12 StatusLine
+13 OrcaTermStateBroken
+15 StatusLine
+16 OrcaTermStateNotReady
+20 StatusLine
+21 OrcaTermStateWorking
+25 StatusLine
+26 OrcaTermStateSettingUp
+30 StatusLine
+31 OrcaTermStateFinished
+35 StatusLine
+36 OrcaTermStateIdle
+40 StatusLine
+41 OrcaTermStateNoAgent
+44 StatusLine
+45 OrcaTermUnseen
+49 StatusLine

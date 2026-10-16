@@ -52,6 +52,10 @@ lua-test:
         echo "lua-test: busted is not installed; run \`just lua-rocks\` once" >&2
         exit 1
     fi
+    if [ ! -f "$rocks/lualine.nvim/lua/lualine.lua" ]; then
+        echo "lua-test: lualine.nvim is not installed; run \`just lua-rocks\`" >&2
+        exit 1
+    fi
     cargo build --locked
     export PATH="$rocks/bin:$PATH"
     export LUA_PATH="$rocks/share/lua/5.1/?.lua;$rocks/share/lua/5.1/?/init.lua;;"
@@ -59,10 +63,24 @@ lua-test:
     # nlua reads Lua from stdin when stdin is not a terminal: /dev/null keeps it from waiting.
     busted </dev/null
 
-# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`. Run it once.
+# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`, and lualine.nvim at a pinned
+# commit into .rocks/lualine.nvim, for the specs of the status strip's lualine component. Run it
+# once; running it again changes nothing.
 lua-rocks:
+    #!/usr/bin/env bash
+    set -euo pipefail
     luarocks --lua-version=5.1 --tree .rocks install busted 2.3.0-1
     luarocks --lua-version=5.1 --tree .rocks install nlua 0.3.2-1
+    # lualine.nvim (MIT), the commit of 2026-05-31. Only that commit is fetched, and checked out
+    # again when the directory holds another.
+    lualine_sha=221ce6b2d999187044529f49da6554a92f740a96
+    lualine=.rocks/lualine.nvim
+    if [ "$(git -C "$lualine" rev-parse HEAD 2>/dev/null || true)" != "$lualine_sha" ]; then
+        rm -rf "$lualine"
+        git init --quiet "$lualine"
+        git -C "$lualine" fetch --quiet --depth 1 https://github.com/nvim-lualine/lualine.nvim "$lualine_sha"
+        git -C "$lualine" checkout --quiet FETCH_HEAD
+    fi
 
 # Advisories, bans, licenses and sources.
 deny:

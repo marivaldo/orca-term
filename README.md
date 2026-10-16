@@ -27,6 +27,48 @@ worktree and `:OrcaTerm worktree N` goes to the Nth; bind keys to `<Plug>(OrcaTe
 `<Plug>(OrcaTermJump)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
 client sets no global key.
 
+## Status strip
+
+The status strip shows the fleet's health while the sidebar is closed: how many worktrees are in
+each state, then how many are unseen, such as `?1 ◐2 ●3 •2`. orca-term never adds it to your
+statusline, tabline or winbar: you place it, and pad it, where you want. It shows nothing when the
+repository has no worktree, outside a git repository and before the fleet is first read. It
+updates when the core says a worktree changed, as the sidebar does.
+
+In a plain statusline, as an expression:
+
+```lua
+vim.o.statusline = "%f %= %{%v:lua.require'orca-term.strip'.statusline()%} %l:%c"
+```
+
+With [lualine](https://github.com/nvim-lualine/lualine.nvim), as the `orca-term` component (each
+count keeps the section's background):
+
+```lua
+require('lualine').setup({ sections = { lualine_x = { 'orca-term', 'filetype' } } })
+```
+
+With [LazyVim](https://www.lazyvim.org), add it to the front of `lualine_x` (orca-term must be on
+the runtimepath when lualine starts, so do not lazy-load it):
+
+```lua
+{
+  'nvim-lualine/lualine.nvim',
+  opts = function(_, opts)
+    table.insert(opts.sections.lualine_x, 1, 'orca-term')
+  end,
+}
+```
+
+The glyphs are the sidebar's, in the order of its attention: `?` waiting for you, `●` failed (in
+red), `●` interrupted (muted), `!` broken, `△` not ready, `◐` working, `◌` setting up, `●` finished
+(in green), `○` idle, `·` no agent, then `•` unseen. Each takes the colour of its
+`OrcaTermState*` group, and `•` of `OrcaTermUnseen`.
+
+To build a strip of your own, `require('orca-term.strip').counts()` gives the counts of the fleet
+last read: `{ states = { { state = 'waiting', count = 1 }, ... }, unseen = 2 }`, in the same order,
+leaving out the states no worktree is in.
+
 ## Development
 
 Needs Rust 1.97 and [just](https://github.com/casey/just). `just check` runs every check CI runs;
@@ -43,7 +85,7 @@ headless Neovim. It needs Neovim 0.11 or later, [StyLua](https://github.com/John
 
 ```sh
 brew install neovim luajit stylua selene lua-language-server luarocks
-just lua-rocks   # installs busted and nlua, pinned, into .rocks/ (ignored by git)
+just lua-rocks   # installs busted, nlua and lualine.nvim, pinned, into .rocks/ (ignored by git)
 ```
 
 On Linux, CI shows the way: the tools come from their GitHub releases at the versions pinned in

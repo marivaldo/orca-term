@@ -6,5 +6,5 @@
 # build output
 /target/
 
-# Lua rocks (busted, nlua) installed by `just lua-rocks`
+# Lua rocks (busted, nlua) and lualine.nvim, installed by `just lua-rocks`
 /.rocks/
