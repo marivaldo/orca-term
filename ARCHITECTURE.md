@@ -41,23 +41,26 @@ the adapters, and returns a domain value that `output` prints.
 ### edge
 
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
-  person's marks `worktree seen|unseen`,
+  person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
+  opens a review,
   `agent start|attach|stop`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
-  `worktree new`, `setup`, `rm` and `prune`, of `agent start` and `stop` (and, on stderr, the
+  `worktree new`, `setup`, `rm`, `prune`, `seen|unseen` and `review`, of `agent start` and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
   handed by `cli` to the ops module.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
-  `worktree rm`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
+  `worktree rm`, `worktree review`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
   and `version` envelope. Each worktree carries `agent` (`"claude-code"` or null) and `holder`
   (whether a holder is alive) and `unseen` (whether it carries the unseen mark); `worktree seen`
-  and `unseen` print the worktree and its mark. The text table adds `(unseen)` to a marked row.
+  and `unseen` print the worktree and its mark; `worktree review` prints the worktree object
+  (now seen), `base` (the review's base, a full commit id) and `against` (the default branch it
+  was taken from, `main` or `origin/main`). The text table adds `(unseen)` to a marked row.
 
 ### ops
 
@@ -76,7 +79,12 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
   primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
   (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
-  nothing more.
+  nothing more. `mark` writes the mark and notifies; `worktree review` marks through it too.
+- `ops/worktree_review.rs`: `worktree review`: find the target (refusing the primary checkout
+  and a worktree whose directory is gone), resolve the default branch as `worktree new` resolves
+  its start point, find the review's base with `git merge-base <default branch> HEAD` in the
+  worktree, then mark it seen as `worktree seen` does. The base comes first, so a failure (no
+  default branch, unrelated histories) marks nothing.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
   `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
   the branch's fate, remove, delete or keep the branch.
@@ -106,7 +114,7 @@ the adapters, and returns a domain value that `output` prints.
 ### adapters
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
-  `default_branch`, `is_merged`, ...) or change (`worktree_add`, `delete_branch`, ...).
+  `default_branch`, `is_merged`, `merge_base`, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, finding an executable in the PATH directories,
@@ -185,6 +193,9 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
+- `domain/review.rs`: a worktree's review: `Commit`, a full commit id checked as git prints it
+  (with its seven-character short form), what `worktree review` found (`Reviewed`), and its
+  refusals (a worktree whose directory is gone, a history unrelated to the default branch).
 - `domain/sandbox.rs`: whether claude's sandbox can run here: `sandbox-exec` on macOS, `bwrap`
   and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`.
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
@@ -345,7 +356,7 @@ validate"):
 - **The unseen mark is the person's, derived on read.** A worktree is unseen when its latest
   ended turn (an open turn whose holder is gone counts as ended) is after `seen_through` in
   `seen.json`, whatever its outcome, or when the person marked it by hand. Only the person's
-  commands, `worktree seen` and `unseen`, write `seen.json`: atomically (write and rename), with
+  commands, `worktree seen`, `unseen` and `review`, write `seen.json`: atomically (write and rename), with
   no lock, the last write winning, and never over a newer schema; a file the core cannot use
   reads as nothing seen and no mark. Hooks never touch it. `worktree ls` derives the mark on
   read, independent of the state.
