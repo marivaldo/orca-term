@@ -939,6 +939,127 @@ fn seen_never_writes_over_a_newer_schema_and_a_record_it_cannot_use_reads_as_not
     assert!(!played.unseen());
 }
 
+/// Runs git in the worktree at `worktree` and returns what it printed, trimmed.
+fn git_in(fx: &AgentRepo, worktree: &Path, args: &[&str]) -> String {
+    let mut all = vec!["-C", worktree.to_str().unwrap()];
+    all.extend_from_slice(args);
+    fx.repo.git(&all).trim().to_owned()
+}
+
+/// Runs `worktree review <name> --json` and returns its document.
+fn review(fx: &AgentRepo, name: &str) -> Value {
+    serde_json::from_str(&fx.ok(&["worktree", "review", name, "--json"])).unwrap()
+}
+
+#[test]
+fn review_gives_the_commit_the_worktree_forked_from_and_marks_it_seen() {
+    let fx = AgentRepo::new();
+    let fork = fx.repo.git(&["rev-parse", "main"]).trim().to_owned();
+    let played = Played::start(&fx, "demo");
+    played.play("p-hello-2.1.300.log");
+    assert!(played.unseen(), "turn 1 finished");
+
+    // A commit of the worktree's own, then a change not committed yet.
+    fs::write(played.worktree.join("feature.txt"), "one\n").unwrap();
+    git_in(&fx, &played.worktree, &["add", "feature.txt"]);
+    git_in(
+        &fx,
+        &played.worktree,
+        &["commit", "--quiet", "-m", "feature"],
+    );
+    fs::write(played.worktree.join("feature.txt"), "two\n").unwrap();
+
+    let doc = review(&fx, "demo");
+    assert_eq!(doc["contract"], 1);
+    assert_eq!(doc["base"], json!(fork));
+    assert_eq!(doc["against"], "main");
+    assert_eq!(doc["worktree"]["name"], "demo");
+    assert_eq!(doc["worktree"]["path"], json!(played.worktree));
+    assert_eq!(
+        doc["worktree"]["unseen"], false,
+        "the worktree as it is now"
+    );
+    assert!(!played.unseen(), "reviewing marks it seen");
+    assert_eq!(
+        played.seen_file(),
+        json!({"schema": 1, "seen_through": 1, "marked": false}),
+        "as `worktree seen` marks it"
+    );
+
+    // The default branch moves on: the review still starts where the worktree forked.
+    fx.repo.write("main.txt", "main\n");
+    fx.repo.commit_all("main moves on");
+    let tip = fx.repo.git(&["rev-parse", "main"]).trim().to_owned();
+    assert_ne!(tip, fork);
+    assert_eq!(review(&fx, "demo")["base"], json!(fork));
+
+    let text = fx.ok(&["worktree", "review", "demo"]);
+    assert_eq!(
+        text,
+        format!("demo: review against main ({})\n", &fork[..7])
+    );
+
+    let help = fx.ok(&["worktree", "--help"]);
+    assert!(help.contains("review"), "public command: {help}");
+}
+
+#[test]
+fn review_refuses_the_primary_checkout_an_unknown_worktree_and_a_broken_one() {
+    let fx = AgentRepo::new();
+    let gone = fx.new_worktree("gone");
+    let gone_admin = fx.admin_dir(&gone);
+    fs::remove_dir_all(&gone).unwrap();
+    let root = fx.repo.root.to_str().unwrap().to_owned();
+    for (target, says) in [
+        ("repo", "is the primary checkout"),
+        (root.as_str(), "is the primary checkout"),
+        ("nope", "no worktree named `nope`"),
+        ("gone", "nothing to review"),
+    ] {
+        let out = fx.run(&["worktree", "review", target, "--json"]);
+        assert_eq!(out.status.code(), Some(1), "{target}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["error"]["kind"], "other");
+        let message = doc["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{message}");
+        let out = fx.run(&["worktree", "review", target]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(says));
+    }
+    assert!(!fx.repo.root.join(".git/orca-term/seen.json").exists());
+    assert!(!gone_admin.join("seen.json").exists());
+}
+
+#[test]
+fn review_of_a_history_unrelated_to_the_default_branch_fails_and_marks_nothing() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("orphan");
+    let admin = fx.admin_dir(&worktree);
+    git_in(
+        &fx,
+        &worktree,
+        &["checkout", "--quiet", "--orphan", "elsewhere"],
+    );
+    git_in(
+        &fx,
+        &worktree,
+        &["commit", "--quiet", "--allow-empty", "-m", "unrelated"],
+    );
+
+    let out = fx.run(&["worktree", "review", "orphan", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let message = doc["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("shares no commit with the default branch `main`"),
+        "{message}"
+    );
+    assert!(
+        !admin.join("seen.json").exists(),
+        "a failed review marks nothing"
+    );
+}
+
 /// Writes an empty file at `path`, creating its directory: a transcript claude kept.
 fn create_file(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

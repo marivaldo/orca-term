@@ -530,6 +530,18 @@ fn worktree_seen_and_unseen_notify_with_the_worktrees_path() {
 }
 
 #[test]
+fn worktree_review_notifies_with_the_worktrees_path() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let path = listed_path(&fx, "fix");
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
+
+    fx.ok(&["worktree", "review", "fix", "--json"]);
+    assert_eq!(neovim.paths(), times(&path, 1));
+}
+
+#[test]
 fn a_stale_address_is_pruned_and_the_command_still_succeeds() {
     let fx = AgentRepo::new();
     let live = Neovim::new();
