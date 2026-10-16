@@ -2,6 +2,8 @@
 --
 -- Pure: it takes the fleet (or an error) and returns lines, highlight spans and which worktree
 -- each line belongs to. It never touches a buffer or a window; `sidebar.lua` paints the result.
+-- It also counts the fleet for the status strip (`M.strip`, `M.counts`), which `strip.lua` and the
+-- lualine component draw.
 -- The only Neovim calls measure text in screen cells (`vim.fn.strdisplaywidth`,
 -- `vim.fn.strcharpart`, `vim.fn.strchars`) or are pure helpers (`vim.fs.basename`,
 -- `vim.list_extend`).
@@ -432,6 +434,87 @@ function M.fleet(fleet, selected, width, frame)
     end
   end
   return finish(built, order, selected)
+end
+
+---The states in the order the status strip counts them: the attention order of the sidebar
+---(`fleet.lua`'s ranks), what needs the person first. A state this client does not know yet comes
+---after them, sorted by name.
+M.STRIP_ORDER = {
+  'waiting',
+  'failed',
+  'interrupted',
+  'broken',
+  'not_ready',
+  'working',
+  'setting_up',
+  'finished',
+  'idle',
+  'no_agent',
+}
+
+---How many worktrees are in one state.
+---@class orca_term.StateCount
+---@field state string
+---@field count integer
+
+---What the status strip counts: the worktrees in each state, and how many are unseen.
+---@class orca_term.Counts
+---@field states orca_term.StateCount[] in `STRIP_ORDER`, then unknown states by name; no zeros
+---@field unseen integer
+
+---One item of the status strip: its text (a glyph and a count, such as `?1`) and its colour.
+---@class orca_term.StripItem
+---@field text string
+---@field group string
+
+---How many worktrees of `fleet` are in each state, in the strip's order and leaving out the states
+---no worktree is in, and how many worktrees are unseen. No fleet counts nothing.
+---@param fleet? orca_term.Fleet
+---@return orca_term.Counts
+function M.counts(fleet)
+  local by_state = {}
+  local unseen = 0
+  for _, worktree in ipairs(fleet and fleet.worktrees or {}) do
+    by_state[worktree.state] = (by_state[worktree.state] or 0) + 1
+    if worktree.unseen == true then
+      unseen = unseen + 1
+    end
+  end
+
+  local states = {}
+  for _, state in ipairs(M.STRIP_ORDER) do
+    if by_state[state] then
+      table.insert(states, { state = state, count = by_state[state] })
+      by_state[state] = nil
+    end
+  end
+  -- What is left are the states this client does not know yet.
+  local unknown = vim.tbl_keys(by_state)
+  table.sort(unknown)
+  for _, state in ipairs(unknown) do
+    table.insert(states, { state = state, count = by_state[state] })
+  end
+  return { states = states, unseen = unseen }
+end
+
+---The status strip of `fleet`: one item per state a worktree is in (its glyph, which never spins
+---here, then its count, in the state's colour), then the unseen count after `UNSEEN`, when any
+---worktree is unseen. `?1 ◐2 ●3 •2` is four items. No fleet, or no worktree, is no item.
+---@param fleet? orca_term.Fleet
+---@return orca_term.StripItem[]
+function M.strip(fleet)
+  local counts = M.counts(fleet)
+  local items = {}
+  for _, counted in ipairs(counts.states) do
+    table.insert(items, {
+      text = M.glyph(counted.state) .. counted.count,
+      group = highlights.state_group(counted.state),
+    })
+  end
+  if counts.unseen > 0 then
+    table.insert(items, { text = M.UNSEEN .. counts.unseen, group = 'OrcaTermUnseen' })
+  end
+  return items
 end
 
 ---The sidebar when the fleet could not be read: why, wrapped to the width, so the person sees the
