@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail};
 use crate::domain::branch::{Branch, StartPoint};
 use crate::domain::fleet::{PrimaryCheckout, WorktreeEntry};
 use crate::domain::porcelain;
+use crate::domain::review::Commit;
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir};
 use crate::domain::worktree::Removal;
 
@@ -114,6 +115,26 @@ pub(crate) fn is_merged(
     let into = into.to_string();
     let args = ["merge-base", "--is-ancestor", branch.as_str(), &into];
     Ok(probe(&primary.path, &args)?.is_some())
+}
+
+/// Where the history of the worktree at `worktree` leaves the default branch's: the best common
+/// ancestor of `start` and the worktree's `HEAD` (`git merge-base <start> HEAD`). `None` when they
+/// share no commit (unrelated histories), which git says by exiting 1 and printing nothing.
+pub(crate) fn merge_base(worktree: &Path, start: &StartPoint) -> Result<Option<Commit>> {
+    let start = start.to_string();
+    let args = ["merge-base", start.as_str(), "HEAD"];
+    let out = invoke(worktree, &args)?;
+    if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        return Commit::parse(text.trim_end()).map(Some);
+    }
+    // Exit 1 with nothing printed is git's answer "no common ancestor"; any other failure (a bad
+    // ref, a repository git cannot read) is an error.
+    if out.status.code() == Some(1) && out.stdout.is_empty() {
+        return Ok(None);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    bail!("git {} failed: {}", display_args(&args), stderr.trim())
 }
 
 /// The untracked files the gitignore patterns in `patterns` match, NUL-separated.

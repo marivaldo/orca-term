@@ -11,6 +11,7 @@ use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::launch::SessionId;
+use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
@@ -136,6 +137,16 @@ struct MarkedView<'a> {
     name: &'a str,
     path: &'a Path,
     unseen: bool,
+}
+
+/// `worktree review --json`: the worktree as `worktree ls` shows it, now seen; `base`, the full id
+/// of the commit the review compares the working tree with; and `against`, the default branch
+/// that base was taken from, as git names it (`main` or `origin/main`).
+#[derive(Debug, Serialize)]
+struct ReviewedView<'a> {
+    worktree: WorktreeView<'a>,
+    base: &'a str,
+    against: String,
 }
 
 /// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
@@ -286,6 +297,15 @@ pub(crate) fn marked(marked: &Marked) -> serde_json::Result<String> {
     })
 }
 
+/// What `worktree review` found, as one JSON document.
+pub(crate) fn reviewed(reviewed: &Reviewed) -> serde_json::Result<String> {
+    document(ReviewedView {
+        worktree: worktree_view(&reviewed.worktree),
+        base: reviewed.base.as_str(),
+        against: reviewed.against.to_string(),
+    })
+}
+
 /// A command that did its job and has nothing to report, as one JSON document.
 pub(crate) fn done() -> serde_json::Result<String> {
     document(DoneView {})
@@ -355,9 +375,11 @@ mod tests {
 
     use super::*;
     use crate::domain::agent::Agent;
+    use crate::domain::branch::StartPoint;
     use crate::domain::config::Setting;
     use crate::domain::error::{BusyReason, TypedError};
     use crate::domain::fleet::WorktreeEntry;
+    use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
     use crate::domain::worktree::KeptReason;
@@ -553,6 +575,27 @@ mod tests {
             doc,
             format!(
                 r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","unseen":true}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn the_review_document_keeps_its_shape() {
+        let doc = reviewed(&Reviewed {
+            worktree: Worktree {
+                agent: None,
+                holder: HolderStatus::Gone,
+                state: State::NoAgent,
+                ..idle_worktree()
+            },
+            base: Commit::parse("1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b").unwrap(),
+            against: StartPoint::Remote(Branch::new("main")),
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
             )
         );
     }

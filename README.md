@@ -21,11 +21,27 @@ sandbox, held by a detached process that any terminal can attach to.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
-its setup again, copies its path or removes it (always asking first), and `u` toggles its unseen
-mark `•`, which a worktree gets when its agent's turn ends. `:OrcaTerm jump` picks a
-worktree and `:OrcaTerm worktree N` goes to the Nth; bind keys to `<Plug>(OrcaTermSidebar)`,
-`<Plug>(OrcaTermJump)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
-client sets no global key.
+its setup again, copies its path or removes it (always asking first), `u` toggles its unseen
+mark `•`, which a worktree gets when its agent's turn ends, and `d` opens its review.
+`:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth and `:OrcaTerm review`
+opens the review of the worktree whose tab you are in; bind keys to `<Plug>(OrcaTermSidebar)`,
+`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)` and `<Plug>(OrcaTermWorktree1)` to
+`<Plug>(OrcaTermWorktree9)`, since the client sets no global key.
+
+## Review
+
+The review shows what a worktree changed since it forked from the default branch: the commit it
+forked from (`git merge-base <default branch> HEAD`) against its files on disk, so its commits and
+its uncommitted changes show together, and the right-hand side is the worktree's real files. Files
+git does not track yet are not listed. It needs
+[diffview.nvim](https://github.com/sindrets/diffview.nvim); without it, `d` only says so.
+
+`d` on a worktree in the sidebar (or `:OrcaTerm review` in its tab) goes to the worktree's tab and
+opens the review from there, in a tab of its own where the sidebar is not shown; `d` again goes
+back to that tab and refreshes it. Opening the review clears the worktree's unseen mark. In the
+review, `gf` on a file (in the file list or in the diff) edits it in the worktree's tab, on the
+same line when the cursor is in the right-hand side; when that tab shows only the agent's
+terminal, the file opens beside it. Close the review with `:DiffviewClose`, or `:tabclose`.
 
 ## Status strip
 
@@ -85,7 +101,7 @@ headless Neovim. It needs Neovim 0.11 or later, [StyLua](https://github.com/John
 
 ```sh
 brew install neovim luajit stylua selene lua-language-server luarocks
-just lua-rocks   # installs busted, nlua and lualine.nvim, pinned, into .rocks/ (ignored by git)
+just lua-rocks   # installs busted, nlua, lualine.nvim and diffview.nvim, pinned, into .rocks/ (ignored by git)
 ```
 
 On Linux, CI shows the way: the tools come from their GitHub releases at the versions pinned in

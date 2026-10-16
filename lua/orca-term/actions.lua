@@ -1,17 +1,19 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
--- again, copy its path, remove it), toggle its unseen mark (`u`), and going to a worktree by picking
--- it (`:OrcaTerm jump`) or by its number (`:OrcaTerm worktree N`).
+-- again, copy its path, remove it), toggle its unseen mark (`u`), open its review (`d`, `:OrcaTerm
+-- review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its number (`:OrcaTerm
+-- worktree N`).
 --
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
--- moves between tabs through `tabs.lua` and shows agents through `terminal.lua`; it touches no
--- window or buffer itself. The commands that may run a setup, and starting an agent, never block
--- Neovim: the sidebar is read again shortly after a setup starts (so the worktree shows as setting
--- up) and once more when the command finishes, and the outcome is told with `vim.notify`. Removing
--- a worktree always asks first.
+-- moves between tabs through `tabs.lua`, shows agents through `terminal.lua` and reviews through
+-- `review.lua`; it touches no window or buffer itself. The commands that may run a setup, and
+-- starting an agent, never block Neovim: the sidebar is read again shortly after a setup starts (so
+-- the worktree shows as setting up) and once more when the command finishes, and the outcome is
+-- told with `vim.notify`. Removing a worktree always asks first.
 
 local core = require('orca-term.core')
 local render = require('orca-term.render')
+local review = require('orca-term.review')
 local tabs = require('orca-term.tabs')
 local terminal = require('orca-term.terminal')
 
@@ -262,12 +264,14 @@ local function confirm_discarding(worktree, on_yes)
   end)
 end
 
----Removes `worktree` through the core, `force`d or not. On success its tabs close; a worktree
----with changes asks once more before it is forced; a busy one only says why.
+---Removes `worktree` through the core, `force`d or not. Its review tabs close first, while its
+---files are still on disk for diffview to let go of; on success its other tabs close too. A
+---worktree with changes asks once more before it is forced; a busy one only says why.
 ---@param worktree orca_term.Worktree
 ---@param primary string
 ---@param force boolean
 local function run_removal(worktree, primary, force)
+  review.close_all(worktree.path)
   core.worktree_rm(worktree.path, force, primary, function(removed, err)
     if removed then
       tabs.close_all(worktree.path, primary)
@@ -283,8 +287,8 @@ local function run_removal(worktree, primary, force)
   end)
 end
 
----Asks for confirmation, then removes `worktree` through the core and closes its tabs. The last
----tab is kept, pointed at the primary checkout.
+---Asks for confirmation, then removes `worktree` through the core and closes its tabs, its review
+---tabs included. The last tab is kept, pointed at the primary checkout.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 function M.remove(worktree, primary)
@@ -309,6 +313,59 @@ function M.menu(worktree, primary)
       M.remove(worktree, primary)
     end
   end)
+end
+
+---Opens the review of the worktree at `path`: the core finds the review's base and marks the
+---worktree seen (`worktree review`, without waiting), then the worktree's tab becomes current
+---(made when missing) and the review opens from it in diffview, in a review tab of its own, or the
+---worktree's review tab already open becomes current and is read again. The sidebar is read again
+---once the core answers, so the unseen mark goes at once. Without diffview.nvim nothing runs, so
+---nothing is marked; a refusal of the core is told with its reason and opens nothing.
+---@param path string
+---@param primary string the primary checkout's path, where the core runs
+function M.review(path, primary)
+  if not review.available() then
+    fail({
+      kind = 'no_diffview',
+      message = 'orca-term: the review needs diffview.nvim (' .. review.DIFFVIEW_URL .. ')',
+    })
+    return
+  end
+  core.worktree_review(path, primary, function(reviewed, err)
+    refresh_sidebar()
+    if not reviewed then
+      fail(err)
+      return
+    end
+    tabs.go_to(reviewed.worktree.path)
+    local open_err = review.open(reviewed.worktree.path, reviewed.base)
+    if open_err then
+      fail(open_err)
+    end
+  end)
+end
+
+---`:OrcaTerm review`: opens the review of the current tab's worktree, the worktree whose tab is
+---current, or the worktree a review tab reviews. Anywhere else it says what it needs.
+function M.review_current()
+  local fleet, err = core.worktree_ls(vim.fn.getcwd())
+  if not fleet then
+    fail(err)
+    return
+  end
+  local path = review.current()
+  for _, worktree in ipairs(fleet.worktrees) do
+    if not path and tabs.is_current(worktree.path) then
+      path = worktree.path
+    end
+  end
+  if not path then
+    local message = "orca-term: the review needs a worktree's tab; go to one, "
+      .. 'or press d on a worktree in the sidebar'
+    vim.notify(message, levels.ERROR)
+    return
+  end
+  M.review(path, fleet.primary.path)
 end
 
 ---The worktrees of the current directory's repository, in the sidebar's order, or `nil` after

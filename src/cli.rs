@@ -16,7 +16,8 @@ use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     agent_attach, agent_holder, agent_start, agent_stop, hook, nvim_register, nvim_unregister,
-    worktree_ls, worktree_new, worktree_prune, worktree_rm, worktree_seen, worktree_setup,
+    worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm, worktree_seen,
+    worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -139,6 +140,15 @@ enum WorktreeCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the commit a worktree's review compares against (where it forked from the default
+    /// branch) and mark the worktree seen.
+    Review {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -207,7 +217,8 @@ impl Cli {
                 | WorktreeCommand::Setup { json, .. }
                 | WorktreeCommand::Rm { json, .. }
                 | WorktreeCommand::Seen { json, .. }
-                | WorktreeCommand::Unseen { json, .. } => *json,
+                | WorktreeCommand::Unseen { json, .. }
+                | WorktreeCommand::Review { json, .. } => *json,
                 WorktreeCommand::Prune => false,
             },
             Command::Agent { command } => match command {
@@ -310,6 +321,10 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
         }
         WorktreeCommand::Unseen { worktree, .. } => {
             output::worktree_marked(&worktree_seen::run(worktree, Mark::Unseen)?, format)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Review { worktree, .. } => {
+            output::worktree_reviewed(&worktree_review::run(worktree)?, format)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Ls { json: true } => {

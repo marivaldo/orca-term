@@ -18,6 +18,7 @@ use crate::domain::error;
 use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
 use crate::domain::nvim::Address;
+use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
@@ -389,6 +390,25 @@ fn render_worktree_marked(marked: &Marked) -> String {
     format!("{}: {mark}", marked.name)
 }
 
+/// Prints what `worktree review` found: one line naming the default branch and the base's short
+/// id, `fix: review against main (1a2b3c4)`.
+pub(crate) fn worktree_reviewed(reviewed: &Reviewed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_worktree_reviewed(reviewed)),
+        Format::Json => out(&json::reviewed(reviewed)?),
+    }
+    Ok(())
+}
+
+fn render_worktree_reviewed(reviewed: &Reviewed) -> String {
+    format!(
+        "{}: review against {} ({})",
+        reviewed.worktree.name,
+        reviewed.against,
+        reviewed.base.short()
+    )
+}
+
 /// Prints that the Neovim at `address` is registered: one line, or with `--json` a document
 /// carrying only `contract` and `version`.
 pub(crate) fn nvim_registered(address: &Address, format: Format) -> anyhow::Result<()> {
@@ -451,6 +471,7 @@ mod tests {
     use crate::domain::config::Setting;
     use crate::domain::fleet::PrimaryCheckout;
     use crate::domain::launch::SessionId;
+    use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason, State};
     use crate::domain::worktree::KeptReason;
@@ -603,6 +624,23 @@ mod tests {
         };
         assert_eq!(render_worktree_marked(&marked(false)), "fix: seen");
         assert_eq!(render_worktree_marked(&marked(true)), "fix: unseen");
+    }
+
+    #[test]
+    fn review_names_the_default_branch_and_the_short_base() {
+        let reviewed = |against| Reviewed {
+            worktree: worktree("demo", State::NoAgent),
+            base: Commit::parse("1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b").unwrap(),
+            against,
+        };
+        assert_eq!(
+            render_worktree_reviewed(&reviewed(StartPoint::Local(Branch::new("main")))),
+            "demo: review against main (1a2b3c4)"
+        );
+        assert_eq!(
+            render_worktree_reviewed(&reviewed(StartPoint::Remote(Branch::new("trunk")))),
+            "demo: review against origin/trunk (1a2b3c4)"
+        );
     }
 
     #[test]
