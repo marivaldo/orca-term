@@ -542,6 +542,31 @@ fn worktree_review_notifies_with_the_worktrees_path() {
 }
 
 #[test]
+fn every_note_write_notifies_with_the_worktrees_path() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let path = listed_path(&fx, "fix");
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
+
+    fx.ok(&["note", "add", "fix", "a.txt", "--body", "one"]);
+    assert_eq!(neovim.paths(), times(&path, 1), "add");
+    fx.ok(&["note", "add", "fix", "b.txt", "--body", "two"]);
+    fx.ok(&["note", "edit", "fix", "1", "--body", "uno", "--json"]);
+    assert_eq!(neovim.paths(), times(&path, 2), "add, then edit");
+    fx.ok(&["note", "rm", "fix", "2"]);
+    assert_eq!(neovim.paths(), times(&path, 1), "rm");
+    fx.ok(&["note", "ls", "fix"]);
+    assert!(neovim.paths().is_empty(), "listing notes sends nothing");
+
+    fx.ok(&["agent", "start", "fix"]);
+    fx.wait_for_output("fix", "fake claude ready");
+    neovim.paths();
+    fx.ok(&["note", "send", "fix"]);
+    assert_eq!(neovim.paths(), times(&path, 1), "send");
+}
+
+#[test]
 fn a_stale_address_is_pruned_and_the_command_still_succeeds() {
     let fx = AgentRepo::new();
     let live = Neovim::new();
