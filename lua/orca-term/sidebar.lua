@@ -4,9 +4,9 @@
 -- (`cargo xtask client-boundary` checks it). It reads the fleet through `core.lua`, has
 -- `render.lua` turn it into lines and colours, and paints them into one buffer that every tab shows
 -- in its own window. Its keys, local to that buffer, move the selection (`j`, `k`), open a worktree
--- (`<CR>`: its tab, and its agent's terminal when it has an agent), create a worktree (`a`) and
--- open the menu of the worktree under the cursor (`.`), all three through `actions.lua`. The
--- selection follows the current tab when it is a worktree's.
+-- (`<CR>`: its tab, and its agent's terminal when it has an agent), create a worktree (`a`), open
+-- the menu of the worktree under the cursor (`.`) and toggle its unseen mark (`u`), all four through
+-- `actions.lua`. The selection follows the current tab when it is a worktree's.
 --
 -- The fleet is read when the sidebar opens, when Neovim gains focus, after an action changes it and
 -- when the core says a worktree changed; it is never polled. Opening the sidebar, and Neovim
@@ -310,6 +310,14 @@ local function worktree_menu()
   end
 end
 
+---`u`: toggles the unseen mark of the worktree under the cursor.
+local function toggle_unseen()
+  local worktree = worktree_under_cursor()
+  if worktree then
+    actions.toggle_unseen(worktree, primary_path())
+  end
+end
+
 ---Moves the selection `step` worktrees down (1) or up (-1), stopping at the first and the last.
 ---@param step integer
 local function move(step)
@@ -373,6 +381,7 @@ local function ensure_buffer()
     actions.create(primary_path())
   end, 'create a worktree')
   map('.', worktree_menu, 'the actions of the worktree under the cursor')
+  map('u', toggle_unseen, 'mark the worktree under the cursor unseen, or seen when it is unseen')
 
   state.buf = buf
   return buf

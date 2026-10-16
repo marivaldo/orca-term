@@ -3,13 +3,13 @@
 -- This is the only module that starts a process (`cargo xtask client-boundary` checks it). It
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
--- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`) and `agent
--- start` are not waited for, and hand their result to a callback in Neovim's main loop. `nvim
--- register` tells the core where this Neovim listens, so it says when a worktree changes; `nvim
--- unregister` runs as Neovim exits and is waited for, briefly. `agent attach` is the one command
--- run without `--json`: it runs in a terminal buffer the caller made current, for the person to
--- use, until it detaches or the agent ends. The client never works the fleet out by itself: it
--- shows what the core prints.
+-- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
+-- start` and the marks `worktree seen` and `unseen` are not waited for, and hand their result to a
+-- callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
+-- says when a worktree changes; `nvim unregister` runs as Neovim exits and is waited for, briefly.
+-- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
+-- made current, for the person to use, until it detaches or the agent ends. The client never works
+-- the fleet out by itself: it shows what the core prints.
 --
 -- Every function returns (or hands its callback) its result, or `nil` and an `orca_term.Error`.
 -- None of them throws.
@@ -43,6 +43,9 @@
 ---@field activity? string
 ---@field agent? string the worktree's agent, `claude-code`; `nil` when it has none
 ---@field holder boolean whether the agent's holder is alive right now
+---Whether its latest turn ended after the person last looked, or the person marked it unseen
+---(`CONTEXT.md`, **Unseen**)
+---@field unseen boolean
 
 ---The fleet, as `worktree ls --json` prints it.
 ---@class orca_term.Fleet
@@ -333,6 +336,33 @@ end
 function M.agent_start(path, size, cwd, on_done)
   local rows, cols = tostring(size.rows), tostring(size.cols)
   run_async({ 'agent', 'start', path, '--rows', rows, '--cols', cols }, cwd, on_done)
+end
+
+---What `worktree seen --json` and `worktree unseen --json` print: the worktree and its mark now.
+---@class orca_term.Marked
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field unseen boolean
+
+---Clears the unseen mark of the worktree at `path`, without waiting:
+---`orca-term worktree seen <path> --json`. It takes no lock, so it is never `busy`; the primary
+---checkout is refused. The core then tells the running Neovims the worktree changed.
+---@param path string
+---@param cwd string
+---@param on_done fun(marked: orca_term.Marked?, err: orca_term.Error?)
+function M.worktree_seen(path, cwd, on_done)
+  run_async({ 'worktree', 'seen', path }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---Sets the unseen mark of the worktree at `path`, without waiting:
+---`orca-term worktree unseen <path> --json`, as `worktree_seen` clears it.
+---@param path string
+---@param cwd string
+---@param on_done fun(marked: orca_term.Marked?, err: orca_term.Error?)
+function M.worktree_unseen(path, cwd, on_done)
+  run_async({ 'worktree', 'unseen', path }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---What `nvim register --json` and `nvim unregister --json` print: only the contract and the core's

@@ -7,32 +7,36 @@
 -- `vim.list_extend`).
 --
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
--- spec/golden/sidebar.txt, with `pick-colour` selected:
+-- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees:
 --
 --   ▾ repo  main
 --
---   NEEDS YOU 3
+--   NEEDS YOU 7
 --   ╭────────────────────────────────╮
 --   │ ? pick-colour                  │
 --   │   Which colour?                │
 --   ╰────────────────────────────────╯
+--  •● api-call
+--     API Error: 400 fake bad request
+--  •● slow-job
+--     SLOW please
 --   △ fix-login
 --     setup failed (exit 1): npm ERR!…
 --   ! old-spike
 --     directory missing; run orca-ter…
+--  •● greet
+--     ok
+--  •○ nudged
 --
 --   RUNNING 2
 --   ◌ install-deps
 --   ◐ run-tests
 --     Bash: sleep 6
 --
---   QUIET 5
---   ● api-call
---     API Error: 400 fake bad request
---   ● greet
+--   QUIET 4
+--   ● reviewed
 --     ok
---   ● slow-job
---     SLOW please
+--   ○ standby
 --   · docs
 --   · spike
 --     ⎇ other-branch
@@ -63,6 +67,9 @@ M.GLYPHS = {
   setting_up = '◌',
   broken = '!',
 }
+
+---The mark of an unseen worktree, in the first cell of its name line, before its glyph.
+M.UNSEEN = '•'
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
 ---shows it. `sidebar.lua` turns them while a worktree is working.
@@ -270,11 +277,17 @@ local function worktree_lines(worktree, needs_you, budget, frame)
 
   local name_line = new_line(budget, worktree.path)
   name_line.first = true
-  -- The unseen mark goes in this first cell once the core prints it.
-  add(name_line, ' ')
+  -- The unseen mark takes the first cell, before the glyph, and the name turns bold; a seen
+  -- worktree leaves the cell blank.
+  local unseen = worktree.unseen == true
+  if unseen then
+    add(name_line, M.UNSEEN, 'OrcaTermUnseen')
+  else
+    add(name_line, ' ')
+  end
   add(name_line, M.glyph(worktree.state, frame), state_group)
   add(name_line, ' ')
-  add(name_line, worktree.name)
+  add(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil)
   -- The agent and the age of the last activity will sit at the right of this line.
   local lines = { name_line }
 

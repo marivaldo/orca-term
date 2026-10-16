@@ -1,8 +1,10 @@
 -- Seam 2, golden: the sidebar as Neovim shows it, for a real repository holding a worktree in
 -- every state the core reports today, read by the real binary. The agents are the fake claude of
 -- `support.agent_repo()`, and their states come from recordings of claude's hooks played through
--- the handlers their settings register (`support.play_hooks`). The buffer's text and its
--- highlights are compared with spec/golden/sidebar.txt.
+-- the handlers their settings register (`support.play_hooks`). A turn that ends leaves its worktree
+-- unseen; the core's `worktree seen` and `worktree unseen` clear and set the mark of others, so
+-- unseen and seen worktrees show side by side. The buffer's text and its highlights are compared
+-- with spec/golden/sidebar.txt.
 --
 -- The golden file holds the buffer's lines, then one highlight per line as
 -- `<line>:<first>-<last> <group>` (1-based line, 0-based byte columns, the last one excluded).
@@ -64,7 +66,7 @@ describe('the sidebar, golden', function()
     support.cleanup()
   end)
 
-  it('renders every state the core reports today', function()
+  it('renders every state the core reports today, unseen and seen', function()
     support.load_client()
     local repo = support.agent_repo()
     -- The setup scripts below need `touch` and `sleep`, which the fake claude's PATH leaves out;
@@ -77,20 +79,27 @@ describe('the sidebar, golden', function()
     end
 
     -- The agent states: an agent started by the core, then the hooks of a recording, played up to
-    -- the hook that leaves the worktree in that state.
+    -- the hook that leaves the worktree in that state. A turn that ended leaves it unseen.
     local agents = {
       { name = 'run-tests', fixture = 'tui-queuetool-2.1.300.log', last = 3 }, -- working
       { name = 'pick-colour', fixture = 'tui-ask-2.1.300.log', last = 4 }, -- waiting
-      { name = 'greet', fixture = 'p-hello-2.1.300.log' }, -- finished
-      { name = 'api-call', fixture = 'p-stopfailure-2.1.300.log' }, -- failed
-      { name = 'slow-job', fixture = 'tui-kill-2.1.300.log' }, -- interrupted
+      { name = 'greet', fixture = 'p-hello-2.1.300.log' }, -- finished, unseen
+      { name = 'api-call', fixture = 'p-stopfailure-2.1.300.log' }, -- failed, unseen
+      { name = 'slow-job', fixture = 'tui-kill-2.1.300.log' }, -- interrupted, unseen
+      { name = 'reviewed', fixture = 'p-hello-2.1.300.log' }, -- finished, then seen below
+      { name = 'standby' }, -- idle: no turn yet
+      { name = 'nudged' }, -- idle, then marked unseen below
     }
     for _, agent in ipairs(agents) do
       support.run({ support.binary, 'worktree', 'new', agent.name }, repo.root)
       support.run({ support.binary, 'agent', 'start', agent.name }, repo.root)
-      local path = support.worktree_path(repo, agent.name)
-      support.play_hooks(repo, path, agent.fixture, 1, agent.last)
+      if agent.fixture then
+        local path = support.worktree_path(repo, agent.name)
+        support.play_hooks(repo, path, agent.fixture, 1, agent.last)
+      end
     end
+    support.run({ support.binary, 'worktree', 'seen', 'reviewed' }, repo.root)
+    support.run({ support.binary, 'worktree', 'unseen', 'nudged' }, repo.root)
     support.run(
       { 'git', 'switch', '--quiet', '-c', 'other-branch' },
       support.worktree_path(repo, 'spike')

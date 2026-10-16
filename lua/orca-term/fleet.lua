@@ -10,10 +10,8 @@ local M = {}
 ---@field title string `Needs you`, `Running` or `Quiet`
 ---@field worktrees orca_term.RankedWorktree[]
 
----A worktree as the attention order reads it: the core's worktree, plus the marks it will print.
+---A worktree as the attention order reads it: the core's worktree, its state and unseen mark.
 ---@class orca_term.RankedWorktree: orca_term.Worktree
----A turn ended after the person last looked. The core does not print it yet, so it is `nil`.
----@field unseen? boolean
 
 ---The section titles, in the order they are shown.
 M.TITLES = { 'Needs you', 'Running', 'Quiet' }
