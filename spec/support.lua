@@ -141,12 +141,14 @@ end
 ---and Linux.
 M.SANDBOX_TOOLS = { 'sandbox-exec', 'bwrap', 'socat' }
 
----The fake `claude`, as in tests/support/agent.rs: answers `--version`, says it is ready, echoes
----every line typed, and ends on `SIGHUP` as claude does. The idle timeout ends a leaked one on its
----own. Bash builtins and absolute paths only: its PATH holds nothing else.
+---The fake `claude`, as in tests/support/agent.rs: answers `--version`, records its arguments in
+---`$ORCA_TERM_FAKE_CLAUDE_LOG.argv`, says it is ready, echoes every line typed, and ends on
+---`SIGHUP` as claude does. The idle timeout ends a leaked one on its own. Bash builtins and
+---absolute paths only: its PATH holds nothing else.
 local FAKE_CLAUDE = {
   '#!/bin/bash',
   'if [ "$1" = "--version" ]; then echo "2.1.296 (Claude Code)"; exit 0; fi',
+  'printf \'%s\\0\' "$@" > "$ORCA_TERM_FAKE_CLAUDE_LOG.argv"',
   'trap \'echo "got HUP"; exit 129\' HUP',
   'echo "fake claude ready"',
   'while IFS= read -r -t 120 line; do',
@@ -157,6 +159,7 @@ local FAKE_CLAUDE = {
 
 ---@class spec.AgentRepo: spec.Repo
 ---@field bin string the one directory on PATH: the fake claude and sandbox tools, git and bash
+---@field log string the prefix of the fake claude's log files (`<log>.argv`)
 
 ---A repository whose agents are the fake claude: PATH, for this Neovim and its children, is one
 ---directory holding the fake `claude`, the fake sandbox tools and links to the real `git` and
@@ -177,9 +180,24 @@ function M.agent_repo()
   local claude = repo.bin .. '/claude'
   vim.fn.writefile(FAKE_CLAUDE, claude)
   assert(vim.uv.fs_chmod(claude, tonumber('755', 8)))
+  repo.log = repo.tmp .. '/claude'
+  M.set_env('ORCA_TERM_FAKE_CLAUDE_LOG', repo.log)
   M.set_env('PATH', repo.bin)
   table.insert(agent_repos, repo)
   return repo
+end
+
+---The arguments the fake claude of `repo` was last started with, or `nil` before it starts.
+---@param repo spec.AgentRepo
+---@return string[]?
+function M.claude_argv(repo)
+  local file = io.open(repo.log .. '.argv', 'rb')
+  if not file then
+    return nil
+  end
+  local raw = file:read('*a')
+  file:close()
+  return vim.split(raw, '\0', { plain = true, trimempty = true })
 end
 
 ---Removes the fake sandbox tools from the PATH of `repo`, so starting an agent fails as

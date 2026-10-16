@@ -91,6 +91,7 @@
 ---@field worktree orca_term.Worktree
 ---@field agent string the agent started, `claude-code`
 ---@field holder orca_term.Holder
+---@field resumed? string the session resumed on a cold start; `nil` for a new session
 
 local M = {}
 
@@ -326,16 +327,23 @@ end
 
 ---Starts the agent of the worktree at `path` in its holder, without waiting:
 ---`orca-term agent start <path> --rows R --cols C --json`, `size` being the agent's first terminal
----size. An agent already running is not an error: `holder.status` is then `already_running`. A
----worktree that is not ready fails as `other`, a missing sandbox as `no_sandbox`; the message says
----why and names the fix.
+---size, with `--fresh` when `fresh` is true. With no live holder the core resumes the session the
+---worktree recorded (`resumed`), unless `fresh`; one it can no longer resume fails as
+---`session_gone`. An agent already running is not an error: `holder.status` is then
+---`already_running`. A worktree that is not ready fails as `other`, a missing sandbox as
+---`no_sandbox`; the message says why and names the fix.
 ---@param path string
 ---@param size { rows: integer, cols: integer }
+---@param fresh boolean
 ---@param cwd string
 ---@param on_done fun(started: orca_term.Started?, err: orca_term.Error?)
-function M.agent_start(path, size, cwd, on_done)
+function M.agent_start(path, size, fresh, cwd, on_done)
   local rows, cols = tostring(size.rows), tostring(size.cols)
-  run_async({ 'agent', 'start', path, '--rows', rows, '--cols', cols }, cwd, on_done)
+  local args = { 'agent', 'start', path, '--rows', rows, '--cols', cols }
+  if fresh then
+    table.insert(args, '--fresh')
+  end
+  run_async(args, cwd, on_done)
 end
 
 ---What `worktree seen --json` and `worktree unseen --json` print: the worktree and its mark now.

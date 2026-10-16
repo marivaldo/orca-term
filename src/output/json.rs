@@ -10,6 +10,7 @@ use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::launch::SessionId;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
@@ -96,14 +97,17 @@ struct RemovedBranchView<'a> {
     reason: Option<String>,
 }
 
-/// `agent start --json`: the worktree as `worktree ls` shows it, the holder and the sandbox's
-/// extra writable paths with the config file that set them (`null` when nothing was launched).
+/// `agent start --json`: the worktree as `worktree ls` shows it, the holder, the sandbox's
+/// extra writable paths with the config file that set them (`null` when nothing was launched),
+/// and `resumed`, the id of the session the agent was started on with `--resume` (`null` for a
+/// new session, or when nothing was launched).
 #[derive(Debug, Serialize)]
 struct StartedView<'a> {
     worktree: WorktreeView<'a>,
     agent: &'static str,
     holder: HolderView,
     writable: Option<WritableView<'a>>,
+    resumed: Option<&'a str>,
 }
 
 /// `status` is `started` or `already_running`; `pid` is the holder's, when known.
@@ -242,9 +246,13 @@ fn removed_branch_view(outcome: &BranchOutcome) -> RemovedBranchView<'_> {
 
 /// What `agent start` did, as one JSON document.
 pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
-    let (status, pid) = match started.outcome {
-        StartOutcome::Started { pid } => ("started", Some(pid)),
-        StartOutcome::AlreadyRunning { pid } => ("already_running", pid),
+    let (status, pid, resumed) = match &started.outcome {
+        StartOutcome::Started { pid, resumed } => (
+            "started",
+            Some(*pid),
+            resumed.as_ref().map(SessionId::as_str),
+        ),
+        StartOutcome::AlreadyRunning { pid } => ("already_running", *pid, None),
     };
     document(StartedView {
         worktree: worktree_view(&started.worktree),
@@ -254,6 +262,7 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
             paths: writable.value.iter().map(PathBuf::as_path).collect(),
             source: writable.source.as_deref(),
         }),
+        resumed,
     })
 }
 
@@ -446,7 +455,10 @@ mod tests {
         let doc = started(&Started {
             worktree: idle_worktree(),
             agent: Agent::ClaudeCode,
-            outcome: StartOutcome::Started { pid: 4242 },
+            outcome: StartOutcome::Started {
+                pid: 4242,
+                resumed: None,
+            },
             writable: Some(Setting {
                 value: vec![PathBuf::from("/home/me/.cache")],
                 source: Some(".git/orca-term.yaml".to_owned()),
@@ -457,7 +469,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -473,6 +485,21 @@ mod tests {
         assert_eq!(doc["holder"]["status"], "already_running");
         assert_eq!(doc["holder"]["pid"], serde_json::Value::Null);
         assert_eq!(doc["writable"], serde_json::Value::Null);
+        assert_eq!(doc["resumed"], serde_json::Value::Null);
+        let doc: serde_json::Value = serde_json::from_str(
+            &started(&Started {
+                worktree: idle_worktree(),
+                agent: Agent::ClaudeCode,
+                outcome: StartOutcome::Started {
+                    pid: 7,
+                    resumed: SessionId::parse("0b983a87-4074-466e-b864-422ce6f063c8"),
+                },
+                writable: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["resumed"], "0b983a87-4074-466e-b864-422ce6f063c8");
     }
 
     #[test]

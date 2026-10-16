@@ -56,18 +56,55 @@ end
 ---The agents `a` offers, in the order shown: claude first, as Orca does, then none.
 M.AGENTS = { 'claude-code', 'No agent' }
 
----Starts the agent of the worktree at `path` through the core, then shows it in the worktree's
----tab, attached, in terminal mode. Starting is idempotent: an agent already running is only
----attached to, and one whose holder is gone (after a reboot, or after the agent exited) starts
----again. A refusal, such as a worktree not ready or no sandbox, is told with the core's reason and
----opens no terminal. The caller has gone to the worktree's tab.
----@param path string
+---The answers offered when a worktree's recorded session can no longer be resumed.
+M.SESSION_GONE = { 'Start a fresh session', 'Cancel' }
+
+---Why the core cannot resume a session, out of its `session_gone` message: what follows the
+---session id, up to the fix the message names, on one line. The whole message, without its
+---`orca-term: `, when it does not read that way.
+---@param err orca_term.Error
+---@return string
+local function gone_reason(err)
+  local body = err.message:gsub('^orca%-term: ', '')
+  local reason = body:match('cannot resume its session %S+: (.-); start a fresh session') or body
+  return (reason:gsub('%s+', ' '))
+end
+
+local start_and_attach
+
+---Asks whether to start a fresh session in `worktree`, whose recorded session the core cannot
+---resume (`err`, kind `session_gone`), and on yes starts one and shows it. Cancelling starts nothing.
+---@param worktree orca_term.Worktree
+---@param primary string
+---@param err orca_term.Error
+local function offer_fresh_session(worktree, primary, err)
+  local prompt = ('Cannot resume the session of %s: %s'):format(worktree.name, gone_reason(err))
+  vim.ui.select(M.SESSION_GONE, { prompt = prompt }, function(choice)
+    if choice == M.SESSION_GONE[1] then
+      start_and_attach(worktree, primary, true)
+    end
+  end)
+end
+
+---Starts the agent of `worktree` through the core, then shows it in the worktree's tab, attached,
+---in terminal mode. Starting is idempotent: an agent already running is only attached to, and one
+---whose holder is gone (after a reboot, or after the agent exited) starts again, resuming the
+---session the worktree recorded unless `fresh`. A session the core can no longer resume asks
+---whether to start a fresh one. Any other refusal, such as a worktree not ready or no sandbox, is
+---told with the core's reason and opens no terminal. The caller has gone to the worktree's tab.
+---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
-local function start_and_attach(path, primary)
-  core.agent_start(path, terminal.size(), primary, function(started, err)
+---@param fresh boolean
+function start_and_attach(worktree, primary, fresh)
+  local path = worktree.path
+  core.agent_start(path, terminal.size(), fresh, primary, function(started, err)
     refresh_sidebar()
     if not started then
-      fail(err)
+      if err and err.kind == 'session_gone' and not fresh then
+        offer_fresh_session(worktree, primary, err)
+      else
+        fail(err)
+      end
       return
     end
     -- Starting takes a moment. A person who has moved to another tab meanwhile is left there: the
@@ -91,7 +128,7 @@ end
 function M.open(worktree, primary)
   tabs.go_to(worktree.path)
   if worktree.agent then
-    start_and_attach(worktree.path, primary)
+    start_and_attach(worktree, primary, false)
   end
 end
 
@@ -121,7 +158,7 @@ local function create_worktree(name, with_agent, primary)
     end
     info('created worktree ' .. name)
     if with_agent then
-      start_and_attach(path, primary)
+      start_and_attach(created.worktree, primary, false)
     end
   end)
   refresh_shortly()

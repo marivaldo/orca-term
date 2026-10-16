@@ -84,8 +84,11 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
   `no_sandbox`), find claude on PATH and check its version, resolve the extra writable paths,
-  pre-create the admin directories, build and check the settings and the command line, write
-  `claude-settings.json`, start the holder and wait for its first word, record the agent.
+  pre-create the admin directories, pick the session (none with `--fresh` or without a recorded
+  one; else the current session `status.json` records, once its id is checked and its transcript
+  found on disk, or the typed `session_gone`), build and check the settings and the command line
+  (`--resume <id>` on a cold start), write `claude-settings.json`, start the holder and wait for
+  its first word, record the agent. The report says which session was `resumed`, if any.
 - `ops/agent_attach.rs`: `agent attach`: find the target, refuse when no holder is alive (naming
   `agent start`), connect, hand the terminal to the holder until detach or the agent's end.
 - `ops/agent_stop.rs`: `agent stop`: find the target, nothing to do when no holder is alive, else
@@ -165,7 +168,8 @@ the adapters, and returns a domain value that `output` prints.
   run as `claude`), whether its holder is alive, the holder's record (`agent.json`), a terminal
   size, and the reports of `agent start`, `stop` and `attach`.
 - `domain/launch.rs`: claude's launch: the command line (`--settings <file>
-  --permission-mode acceptEdits`), the settings file that turns its sandbox on and denies our
+  --permission-mode acceptEdits`, plus `--resume <id>` on a cold start), the session a cold start
+  resumes (`session_to_resume`, `check_transcript`), the settings file that turns its sandbox on and denies our
   state (ADR 0007) and registers the hooks, the version floor (2.1.285), the variables stripped
   from its environment, and the guard that refuses a launch bypassing permissions. The
   forbidden flags and modes are listed here and nowhere else.
@@ -174,7 +178,8 @@ the adapters, and returns a domain value that `output` prints.
   a session start or end interrupts the open one; queued prompts are told apart by `prompt_id`,
   subagents (payloads with `agent_id`) never open or close a turn, and events of a turn that
   already ended are ignored. Tools set the activity, permission requests and questions wait.
-- `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes) and the turn log
+- `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes, the current
+  session and its `transcript`) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
   sessions), with texts kept to one capped line.
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
@@ -227,7 +232,12 @@ validate"):
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
 - `StartOutcome`, `Started`, `StopOutcome`, `Stopped`, `AttachEnd` (`domain/agent.rs`): what the
-  agent commands did and report.
+  agent commands did and report (`Started` names the session it `resumed`, if any).
+- `StartMode` (`domain/agent.rs`): `Resume` or `Fresh`, the `--fresh` flag of `agent start` from
+  the edge down to the op.
+- `SessionId` (`domain/launch.rs`): a session id safe on claude's command line: 1 to 128 ASCII
+  letters, digits, `_` and `-`, not starting with `-`, so a recorded id never reads as a flag.
+  `Resume` pairs it with the transcript a cold start checks.
 - `Address` (`domain/nvim.rs`): a Neovim's server address, an absolute path, parsed by clap for
   `nvim register|unregister` (a relative one is refused as a usage error).
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
@@ -290,7 +300,8 @@ validate"):
   `busy` while a holder is alive, naming `agent stop`. `agent start` refuses a worktree that is
   not ready, and the primary checkout.
 - **The agent is launched only through `domain/launch.rs`.** The command line is
-  `claude --settings <admin>/claude-settings.json --permission-mode acceptEdits`, in the worktree,
+  `claude --settings <admin>/claude-settings.json --permission-mode acceptEdits [--resume <id>]`,
+  in the worktree,
   with the environment of `agent start` minus `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
   `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` (so an orca-term run from inside a
   Claude Code session never starts a child session). The settings turn claude's sandbox on with
@@ -304,9 +315,17 @@ validate"):
   writable paths, the highest config layer replacing the lower ones and printed with its source.
   `launch::check_launch` refuses, by whole argument and parsed value, `--dangerously-skip-permissions`,
   `--allow-dangerously-skip-permissions`, `--auto`, any `--permission-mode` but `acceptEdits`,
-  and settings whose `permissions.defaultMode` bypasses, before any holder is started; the
+  a `--resume` whose value is not a `SessionId`, and settings whose `permissions.defaultMode` bypasses, before any holder is started; the
   literals exist in that file alone (`cargo xtask launch-guard`). Without the sandbox's tools on
   PATH (`sandbox-exec`; `bwrap` and `socat`) nothing is launched: the typed `no_sandbox`.
+  It checks every argument, the values of flags included, so a forbidden flag hidden as a value
+  is still refused.
+- **A cold start resumes the current session** (ADR 0009). With no live holder, `agent start`
+  launches claude with `--resume <id>` on the session `status.json` records, and a new session
+  when none is recorded or the person passes `--fresh`. It never uses `--fork-session`: the
+  worktree keeps one current session. Before launching it checks the id (a `SessionId`) and that
+  the recorded transcript is an absolute path still on disk; otherwise nothing is launched and it
+  fails as the typed `session_gone`, naming the reason and `agent start <name> --fresh`.
 - **Hooks report the live status, and never reach claude.** The settings register one
   synchronous handler for SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest,
   PostToolUse, PostToolUseFailure, Stop, StopFailure and SessionEnd: `/bin/sh -c '"$0" hook
@@ -316,7 +335,9 @@ validate"):
   its stdout on some events as extra context, so whatever orca-term does, even missing or
   crashing, reaches claude as a silent success. Hooks run outside claude's sandbox (measured), so
   they can write the admin directory, while the agent's own Bash cannot (`denyWrite`). In the
-  admin directory `status.json` is replaced atomically, `turns.jsonl` only grows, `hook.lock`
+  admin directory `status.json` is replaced atomically (it records the current session and its
+  `transcript`, the `transcript_path` of the main agent's hooks only, forgotten when the session
+  changes), `turns.jsonl` only grows, `hook.lock`
   serialises a worktree's hooks, and `hook.log` stays under 256 KiB. `worktree ls` derives the
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
@@ -346,13 +367,14 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `no_sandbox`, `dirty`) or `other`.
+  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`) or `other`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
-  holds or whose agent is running; 5 for `no_sandbox`, a machine where claude's sandbox cannot
+  holds or whose agent is running; 4 for `session_gone`, a recorded session `agent start`
+  cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
-  or untracked files (4 is kept for a later slice).
+  or untracked files.
 
 ## Known limits of the agent holder
 
@@ -398,6 +420,13 @@ validate"):
   (and the review, once [#39](https://github.com/marivaldo/orca-term/issues/39) lands), because
   Unseen means "not reviewed" (`CONTEXT.md`), and watching an agent is not reviewing its work.
 - **`•` is ambiguous-width**: with `ambiwidth=double` a marked row is one cell wider.
+- **A `status.json` written before #66 records no transcript**, so the first cold start of such
+  a worktree fails as `session_gone` and asks for a fresh session.
+- **A transcript present but unusable to claude** passes the check, and claude exits at once: the
+  terminal shows claude's own message and the attach ends.
+- **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
+  once saying no session was found with that id, which is why the core checks the transcript
+  first and reports `session_gone` instead.
 
 ## Guards
 
@@ -468,7 +497,8 @@ what they print.
   throws. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
   events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
-  while Neovim exits. `agent_start` (with the terminal's size) runs without blocking too. `agent_attach` is
+  while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
+  `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
@@ -520,8 +550,10 @@ what they print.
   refuse `:wqa` or `:xa` (E948).
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
-  has an agent, `agent start` without blocking, then its terminal through `terminal.lua`; a
-  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
+  has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
+  then its terminal through `terminal.lua`; a `session_gone` refusal asks `Cannot resume the
+  session of <name>: <reason>` with `Start a fresh session` (`agent start --fresh`, then the
+  terminal) or `Cancel` (nothing starts); any other refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
   `toggle_unseen` (`u`: `worktree seen` when the fleet last read
   says unseen, `worktree unseen` otherwise, then the sidebar is read again; a refusal is told),
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`

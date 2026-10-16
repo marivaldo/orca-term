@@ -10,7 +10,9 @@
 //! submitted prompt had.
 //!
 //! Payloads from subagents (and claude's internal agents) carry `agent_id`; they never open or
-//! close a turn.
+//! close a turn, nor set the session's transcript.
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -45,6 +47,8 @@ pub(crate) struct Payload {
     /// `hook_event_name`: `UserPromptSubmit`, `Stop`, ...
     pub(crate) event: String,
     pub(crate) session_id: Option<String>,
+    /// The file claude keeps the session's transcript in, `transcript_path`.
+    pub(crate) transcript_path: Option<String>,
     pub(crate) prompt_id: Option<String>,
     /// Set on the events of subagents and of claude's internal agents.
     pub(crate) agent_id: Option<String>,
@@ -74,6 +78,7 @@ impl Payload {
         Ok(Self {
             event,
             session_id: text("session_id"),
+            transcript_path: text("transcript_path"),
             prompt_id: text("prompt_id"),
             agent_id: text("agent_id"),
             prompt: text("prompt"),
@@ -102,9 +107,7 @@ pub(crate) fn apply(status: Status, payload: &Payload, now: u64, next_number: u6
         now,
         next_number,
     };
-    if let Some(session) = &payload.session_id {
-        step.status.session = Some(session.clone());
-    }
+    step.follow_session(payload);
     if payload.agent_id.is_some() {
         step.subagent_event(payload);
     } else {
@@ -127,6 +130,24 @@ struct Step {
 }
 
 impl Step {
+    /// Records the session `payload` names as the current one, and the transcript it names when
+    /// it comes from the main agent: a subagent's payload is not trusted to name the session's own
+    /// transcript. A session that changes forgets the previous session's transcript, so the
+    /// transcript recorded always belongs to the current session.
+    fn follow_session(&mut self, payload: &Payload) {
+        if let Some(session) = &payload.session_id {
+            if self.status.session.as_ref() != Some(session) {
+                self.status.transcript = None;
+            }
+            self.status.session = Some(session.clone());
+        }
+        if payload.agent_id.is_none()
+            && let Some(path) = &payload.transcript_path
+        {
+            self.status.transcript = Some(PathBuf::from(path));
+        }
+    }
+
     /// An event of the main agent.
     fn main_event(&mut self, payload: &Payload) {
         match payload.event.as_str() {
@@ -353,6 +374,7 @@ mod tests {
         Payload {
             event: name.to_owned(),
             session_id: Some("s1".to_owned()),
+            transcript_path: None,
             prompt_id: prompt_id.map(str::to_owned),
             agent_id: None,
             prompt: None,
@@ -753,6 +775,66 @@ mod tests {
             ..event("Notification", None)
         }]);
         assert_eq!(status.session.as_deref(), Some("s9"));
+    }
+
+    /// A payload of session `session` naming the transcript `path`.
+    fn with_transcript(payload: Payload, session: &str, path: &str) -> Payload {
+        Payload {
+            session_id: Some(session.to_owned()),
+            transcript_path: Some(path.to_owned()),
+            ..payload
+        }
+    }
+
+    #[test]
+    fn the_main_agents_payloads_record_the_sessions_transcript() {
+        let (status, _) = replay(&[with_transcript(
+            session_start("s1", "startup"),
+            "s1",
+            "/t/s1.jsonl",
+        )]);
+        assert_eq!(status.transcript, Some(PathBuf::from("/t/s1.jsonl")));
+        assert_eq!(
+            Payload::parse(br#"{"hook_event_name":"Stop","transcript_path":"/t/s.jsonl"}"#)
+                .unwrap()
+                .transcript_path
+                .as_deref(),
+            Some("/t/s.jsonl")
+        );
+    }
+
+    #[test]
+    fn a_subagents_payload_never_sets_the_transcript() {
+        let subagent = Payload {
+            agent_id: Some("a1".to_owned()),
+            ..with_transcript(event("PostToolUse", Some("p1")), "s1", "/t/agent-a1.jsonl")
+        };
+        let (status, _) = replay(&[
+            with_transcript(session_start("s1", "startup"), "s1", "/t/s1.jsonl"),
+            subagent.clone(),
+        ]);
+        assert_eq!(status.transcript, Some(PathBuf::from("/t/s1.jsonl")));
+        let (status, _) = replay(&[subagent]);
+        assert_eq!(status.transcript, None);
+    }
+
+    #[test]
+    fn a_new_session_forgets_the_previous_transcript() {
+        let (status, _) = replay(&[
+            with_transcript(session_start("s1", "startup"), "s1", "/t/s1.jsonl"),
+            session_start("s2", "clear"),
+        ]);
+        assert_eq!(status.session.as_deref(), Some("s2"));
+        assert_eq!(status.transcript, None, "s1's transcript is not s2's");
+        let (status, _) = replay(&[
+            with_transcript(session_start("s1", "startup"), "s1", "/t/s1.jsonl"),
+            submit("p1", "go"),
+        ]);
+        assert_eq!(
+            status.transcript,
+            Some(PathBuf::from("/t/s1.jsonl")),
+            "a payload of the same session without a path keeps it"
+        );
     }
 
     #[test]
