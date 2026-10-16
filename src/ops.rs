@@ -13,6 +13,7 @@ pub(crate) mod nvim_unregister;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
+pub(crate) mod worktree_review;
 pub(crate) mod worktree_rm;
 pub(crate) mod worktree_seen;
 pub(crate) mod worktree_setup;
