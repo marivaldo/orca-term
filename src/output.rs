@@ -17,6 +17,7 @@ use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stoppe
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
+use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -101,12 +102,13 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         })
         .collect();
     let mut lines: Vec<Vec<String>> = [header].into_iter().chain(rows).map(Vec::from).collect();
-    // The agent and detail columns appear only when some worktree has something in them.
+    // The agent, notes and detail columns appear only when some worktree has something in them.
     for (title, cells) in [
         (
             "AGENT",
             fleet.worktrees.iter().map(agent_cell).collect::<Vec<_>>(),
         ),
+        ("NOTES", fleet.worktrees.iter().map(notes_cell).collect()),
         (
             "DETAIL",
             fleet
@@ -144,6 +146,15 @@ fn agent_cell(worktree: &Worktree) -> String {
         (None, _) => String::new(),
         (Some(agent), true) => format!("{agent} (running)"),
         (Some(agent), false) => format!("{agent} (stopped)"),
+    }
+}
+
+/// How many notes are pending on the worktree, as the table shows it: the count, or nothing.
+fn notes_cell(worktree: &Worktree) -> String {
+    if worktree.notes == 0 {
+        String::new()
+    } else {
+        worktree.notes.to_string()
     }
 }
 
@@ -409,6 +420,111 @@ fn render_worktree_reviewed(reviewed: &Reviewed) -> String {
     )
 }
 
+/// Prints what `note add` or `note edit` left: one line naming the note, its file and its lines,
+/// `fix: note 1 on src/app.rs, line 3`.
+pub(crate) fn noted(noted: &Noted, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!(
+            "{}: note {}",
+            noted.name,
+            render_note_place(&noted.note)
+        )),
+        Format::Json => out(&json::noted(noted)?),
+    }
+    Ok(())
+}
+
+/// Prints what `note ls` found: one line per pending note, its id, file, lines and what it says.
+pub(crate) fn notes_listed(listed: &Listed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_notes_listed(listed)),
+        Format::Json => out(&json::listed(listed)?),
+    }
+    Ok(())
+}
+
+fn render_notes_listed(listed: &Listed) -> String {
+    if listed.notes.is_empty() {
+        return format!("no pending notes in worktree {}", listed.name);
+    }
+    let header = ["ID", "FILE", "LINES", "NOTE"].map(str::to_owned).to_vec();
+    let rows = listed.notes.iter().map(|pending| {
+        vec![
+            pending.note.id.to_string(),
+            pending.note.path.to_string(),
+            render_anchor(pending),
+            pending.note.body.replace('\n', " "),
+        ]
+    });
+    render_columns(&[header].into_iter().chain(rows).collect::<Vec<_>>())
+}
+
+/// `1 on src/app.rs, line 3`: the note's id, file and lines.
+fn render_note_place(pending: &PendingNote) -> String {
+    format!(
+        "{} on {}, {}",
+        pending.note.id,
+        pending.note.path,
+        render_anchor(pending)
+    )
+}
+
+/// The note's lines as made, followed by where they are now when they moved: `line 3`,
+/// `line 3 (now line 5)`, `lines 2-4 (now the whole file)`.
+fn render_anchor(pending: &PendingNote) -> String {
+    let made = pending.note.anchor;
+    if pending.current == made {
+        made.to_string()
+    } else {
+        format!("{made} (now {})", pending.current)
+    }
+}
+
+/// Prints what `note rm` removed: one line, `fix: removed note 1`.
+pub(crate) fn unnoted(unnoted: &Unnoted, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!(
+            "{}: removed note {}",
+            unnoted.name, unnoted.note.id
+        )),
+        Format::Json => out(&json::unnoted(unnoted)?),
+    }
+    Ok(())
+}
+
+/// Prints what `note send` pasted: the prompt, then one line naming the notes sent and those kept
+/// because they were edited while being sent.
+pub(crate) fn notes_sent(sent: &NotesSent, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_notes_sent(sent)),
+        Format::Json => out(&json::sent(sent)?),
+    }
+    Ok(())
+}
+
+fn render_notes_sent(sent: &NotesSent) -> String {
+    let ids = |ids: &[u64]| {
+        ids.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut text = format!(
+        "{}\n\n{}: sent notes {}",
+        sent.prompt,
+        sent.name,
+        ids(&sent.sent)
+    );
+    if !sent.kept.is_empty() {
+        let _ = write!(
+            text,
+            "; kept {} pending, edited while being sent",
+            ids(&sent.kept)
+        );
+    }
+    text
+}
+
 /// Prints that the Neovim at `address` is registered: one line, or with `--json` a document
 /// carrying only `contract` and `version`.
 pub(crate) fn nvim_registered(address: &Address, format: Format) -> anyhow::Result<()> {
@@ -471,6 +587,7 @@ mod tests {
     use crate::domain::config::Setting;
     use crate::domain::fleet::PrimaryCheckout;
     use crate::domain::launch::SessionId;
+    use crate::domain::note::{Anchor, LineRange, Note, NotePath};
     use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason, State};
@@ -485,6 +602,7 @@ mod tests {
             activity: None,
             agent: None,
             unseen: false,
+            notes: 0,
         }
     }
 
@@ -498,6 +616,7 @@ mod tests {
             agent: None,
             holder: HolderStatus::Gone,
             unseen: false,
+            notes: 0,
         }
     }
 
@@ -517,6 +636,7 @@ mod tests {
             activity: None,
             agent: None,
             unseen: false,
+            notes: 0,
         }
     }
 
@@ -570,6 +690,77 @@ mod tests {
              a     a       idle      /l/a  claude-code (running)\n\
              b     b       idle      /l/b  claude-code (stopped)\n\
              c     c       no agent  /l/c"
+        );
+    }
+
+    #[test]
+    fn the_notes_column_counts_the_pending_notes_when_a_worktree_has_some() {
+        let mut noted = worktree("a", State::NoAgent);
+        noted.notes = 2;
+        assert_eq!(
+            render_fleet_table(&fleet(vec![noted, worktree("b", State::NoAgent)])),
+            "NAME  BRANCH  STATE     PATH  NOTES\n\
+             a     a       no agent  /l/a  2\n\
+             b     b       no agent  /l/b"
+        );
+    }
+
+    fn pending(id: u64, anchor: Anchor, current: Anchor, body: &str) -> PendingNote {
+        PendingNote {
+            note: Note {
+                id,
+                path: NotePath::parse("src/app.rs").unwrap(),
+                anchor,
+                body: body.to_owned(),
+                rev: 1,
+                created: 0,
+                copy: None,
+            },
+            current,
+        }
+    }
+
+    #[test]
+    fn the_notes_are_listed_with_where_their_lines_are_now() {
+        let listed = |notes| Listed {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            notes,
+        };
+        assert_eq!(
+            render_notes_listed(&listed(vec![])),
+            "no pending notes in worktree fix"
+        );
+        let range = Anchor::Lines(LineRange::new(2, 4).unwrap());
+        assert_eq!(
+            render_notes_listed(&listed(vec![
+                pending(1, Anchor::Line(3), Anchor::Line(5), "why?"),
+                pending(2, range, Anchor::File, "two\nlines"),
+                pending(3, Anchor::File, Anchor::File, "all"),
+            ])),
+            "ID  FILE        LINES                           NOTE\n\
+             1   src/app.rs  line 3 (now line 5)             why?\n\
+             2   src/app.rs  lines 2-4 (now the whole file)  two lines\n\
+             3   src/app.rs  the whole file                  all"
+        );
+    }
+
+    #[test]
+    fn a_send_prints_the_prompt_then_the_notes_sent_and_kept() {
+        let sent = |kept| NotesSent {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            prompt: "File: a\nLine: 1\nUser comment: \"x\"".to_owned(),
+            sent: vec![1, 2],
+            kept,
+        };
+        assert_eq!(
+            render_notes_sent(&sent(vec![])),
+            "File: a\nLine: 1\nUser comment: \"x\"\n\nfix: sent notes 1, 2"
+        );
+        assert!(
+            render_notes_sent(&sent(vec![2]))
+                .ends_with("fix: sent notes 1, 2; kept 2 pending, edited while being sent")
         );
     }
 

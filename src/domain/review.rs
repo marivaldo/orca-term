@@ -104,6 +104,7 @@ mod tests {
             agent: None,
             holder: HolderStatus::Gone,
             unseen: false,
+            notes: 0,
         }
     }
 

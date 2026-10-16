@@ -10,6 +10,7 @@ pub(crate) mod fleet;
 pub(crate) mod hook;
 pub(crate) mod include;
 pub(crate) mod launch;
+pub(crate) mod note;
 pub(crate) mod nvim;
 pub(crate) mod porcelain;
 pub(crate) mod protocol;

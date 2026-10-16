@@ -6,13 +6,15 @@
 )]
 
 use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail};
 
 use crate::domain::branch::{Branch, StartPoint};
 use crate::domain::fleet::{PrimaryCheckout, WorktreeEntry};
+use crate::domain::note::BlobId;
 use crate::domain::porcelain;
 use crate::domain::review::Commit;
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir};
@@ -225,6 +227,60 @@ pub(crate) fn worktree_prune(primary: &PrimaryCheckout) -> Result<()> {
 pub(crate) fn delete_branch(primary: &PrimaryCheckout, branch: &Branch) -> Result<()> {
     output(&primary.path, &["branch", "-D", branch.as_str()])?;
     Ok(())
+}
+
+/// The git blob id of a file whose content is `bytes`, as the repository containing `dir` names
+/// objects, with no filter applied (`git hash-object --no-filters --stdin`). Writes nothing.
+pub(crate) fn blob_id(dir: &Path, bytes: &[u8]) -> Result<BlobId> {
+    let args = ["hash-object", "--no-filters", "--stdin"];
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("could not run git; is it installed and on PATH?")?;
+    // git reads all of its input before it prints anything, so writing first cannot block.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(bytes)
+            .context("could not hand the file's content to git")?;
+    }
+    let out = child.wait_with_output().context("could not run git")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {} failed: {}", display_args(&args), stderr.trim());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(BlobId::parse(text.trim_end())?)
+}
+
+/// The differences from the file `old` to the file `new`, both absolute, as a diff with no
+/// context lines (`git diff --no-index --unified=0`), compared as text whatever they hold and
+/// with no external diff, text conversion or colour a config may set. Empty when they are the
+/// same. Writes nothing.
+pub(crate) fn diff_files(dir: &Path, old: &Path, new: &Path) -> Result<Vec<u8>> {
+    let args = [
+        OsStr::new("diff"),
+        OsStr::new("--no-index"),
+        OsStr::new("--no-color"),
+        OsStr::new("--no-ext-diff"),
+        OsStr::new("--no-textconv"),
+        OsStr::new("--text"),
+        OsStr::new("--unified=0"),
+        OsStr::new("--"),
+        old.as_os_str(),
+        new.as_os_str(),
+    ];
+    let out = invoke(dir, &args)?;
+    // With `--no-index`, git exits 0 when the files are the same and 1 when they differ.
+    if let Some(0 | 1) = out.status.code() {
+        return Ok(out.stdout);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    bail!("git {} failed: {}", display_args(&args), stderr.trim())
 }
 
 fn has_ref(dir: &Path, full_ref: &str) -> Result<bool> {

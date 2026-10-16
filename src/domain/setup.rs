@@ -92,6 +92,8 @@ pub(crate) struct SetupReport {
     pub(crate) agent: Option<String>,
     /// Whether the worktree is unseen after the setup (`domain/seen.rs`); a setup never changes it.
     pub(crate) unseen: bool,
+    /// How many notes are pending on the worktree (`domain/note.rs`); a setup never changes it.
+    pub(crate) notes: usize,
 }
 
 /// What `worktree setup` did.
