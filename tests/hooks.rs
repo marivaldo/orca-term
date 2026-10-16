@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use fixture::AgentRepo;
+use fixture::{AgentRepo, holder_alive};
 use serde_json::{Value, json};
 
 /// Where the recordings are.
@@ -189,6 +189,18 @@ impl<'a> Played<'a> {
     /// `seen.json`, parsed.
     fn seen_file(&self) -> Value {
         serde_json::from_slice(&fs::read(self.admin.join("seen.json")).unwrap()).unwrap()
+    }
+
+    /// Where the recording `fixture` says its session's transcript is, in the test's own
+    /// directory (`{{transcripts}}/<session>.jsonl`). Nothing creates it.
+    fn transcript_of(&self, fixture: &str) -> PathBuf {
+        let session = self.session_of(fixture);
+        self.fx
+            .repo
+            .tmp
+            .path()
+            .join("transcripts")
+            .join(format!("{session}.jsonl"))
     }
 
     /// The recording's session id, from its first hook.
@@ -925,4 +937,157 @@ fn seen_never_writes_over_a_newer_schema_and_a_record_it_cannot_use_reads_as_not
     assert!(played.unseen(), "a corrupt record reads as nothing seen");
     assert_eq!(played.mark("seen"), "fix: seen\n", "and is written over");
     assert!(!played.unseen());
+}
+
+/// Writes an empty file at `path`, creating its directory: a transcript claude kept.
+fn create_file(path: &Path) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, b"").unwrap();
+}
+
+/// Runs `agent start` with `args` and the error document `--json` printed, checking it failed
+/// as `session_gone` with exit code 4.
+fn session_gone(fx: &AgentRepo, args: &[&str]) -> String {
+    let out = fx.run(args);
+    assert_eq!(out.status.code(), Some(4), "{args:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"]["kind"], "session_gone", "{doc}");
+    doc["error"]["message"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_cold_start_resumes_the_recorded_session() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    assert!(
+        !fx.argv().contains(&"--resume".to_owned()),
+        "the first start has nothing to resume: {:?}",
+        fx.argv()
+    );
+    played.play("p-hello-2.1.300.log");
+    let session = played.session_of("p-hello-2.1.300.log");
+    let transcript = played.transcript_of("p-hello-2.1.300.log");
+    assert_eq!(played.status()["transcript"], json!(transcript));
+    create_file(&transcript);
+    fx.ok(&["agent", "stop", "fix"]);
+
+    let doc: Value = serde_json::from_str(&fx.ok(&["agent", "start", "fix", "--json"])).unwrap();
+    assert_eq!(doc["holder"]["status"], "started");
+    assert_eq!(doc["resumed"], json!(session));
+    let argv = fx.argv();
+    assert_eq!(
+        argv[argv.len() - 2..],
+        ["--resume".to_owned(), session.clone()]
+    );
+    assert_eq!(argv[2..4], ["--permission-mode", "acceptEdits"]);
+    assert_eq!(fx.starts(), 2);
+
+    fx.ok(&["agent", "stop", "fix"]);
+    let text = fx.ok(&["agent", "start", "fix"]);
+    assert!(
+        text.starts_with(&format!(
+            "started agent claude-code in worktree fix, resuming session {session}\n"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_cold_start_without_a_recorded_session_starts_a_new_one() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let doc: Value = serde_json::from_str(&fx.ok(&["agent", "start", "fix", "--json"])).unwrap();
+    assert_eq!(doc["holder"]["status"], "started");
+    assert_eq!(doc["resumed"], NONE);
+    assert!(
+        !fx.argv().contains(&"--resume".to_owned()),
+        "{:?}",
+        fx.argv()
+    );
+    fx.ok(&["agent", "stop", "fix"]);
+    let text = fx.ok(&["agent", "start", "fix"]);
+    assert!(
+        text.starts_with("started agent claude-code in worktree fix\n"),
+        "{text}"
+    );
+    assert!(
+        !fx.argv().contains(&"--resume".to_owned()),
+        "{:?}",
+        fx.argv()
+    );
+}
+
+#[test]
+fn a_session_whose_transcript_is_gone_is_refused_and_fresh_starts_a_new_one() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    played.play("p-hello-2.1.300.log");
+    let session = played.session_of("p-hello-2.1.300.log");
+    let transcript = played.transcript_of("p-hello-2.1.300.log");
+    create_file(&transcript);
+    fx.ok(&["agent", "stop", "fix"]);
+    fs::remove_file(&transcript).unwrap();
+
+    let message = session_gone(&fx, &["agent", "start", "fix", "--json"]);
+    assert_eq!(
+        message,
+        format!(
+            "worktree fix cannot resume its session {session}: its transcript {} is gone; start \
+             a fresh session with `orca-term agent start fix --fresh`",
+            transcript.display()
+        )
+    );
+    let out = fx.run(&["agent", "start", "fix"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("orca-term: {message}\n")
+    );
+    assert_eq!(fx.starts(), 1, "nothing was launched");
+    assert!(!holder_alive(&played.admin));
+
+    let text = fx.ok(&["agent", "start", "fix", "--fresh"]);
+    assert!(
+        text.starts_with("started agent claude-code in worktree fix\n"),
+        "{text}"
+    );
+    assert!(
+        !fx.argv().contains(&"--resume".to_owned()),
+        "{:?}",
+        fx.argv()
+    );
+    assert_eq!(fx.starts(), 2);
+}
+
+#[test]
+fn a_recorded_session_id_that_is_a_flag_is_never_launched() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    fx.ok(&["agent", "stop", "fix"]);
+    let transcript = fx.repo.tmp.path().join("transcripts/x.jsonl");
+    create_file(&transcript);
+    for id in ["--dangerously-skip-permissions", "-p", "a b", ""] {
+        let status = json!({"schema": 1, "session": id, "transcript": transcript});
+        fs::write(played.admin.join("status.json"), status.to_string()).unwrap();
+        let message = session_gone(&fx, &["agent", "start", "fix", "--json"]);
+        assert!(
+            message.contains(": its id is not one claude makes; "),
+            "{id:?}: {message}"
+        );
+        assert!(message.contains("agent start fix --fresh"), "{message}");
+    }
+    assert_eq!(fx.starts(), 1, "never launched");
+    assert!(!holder_alive(&played.admin));
+}
+
+#[test]
+fn a_live_holder_with_fresh_is_reported_as_live() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    played.play("p-hello-2.1.300.log");
+    let doc: Value =
+        serde_json::from_str(&fx.ok(&["agent", "start", "fix", "--fresh", "--json"])).unwrap();
+    assert_eq!(doc["holder"]["status"], "already_running");
+    assert_eq!(doc["resumed"], NONE);
+    assert_eq!(fx.starts(), 1, "no second agent");
 }
