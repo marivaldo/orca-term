@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::adapters::terminal::DetachKey;
-use crate::domain::agent::Size;
+use crate::domain::agent::{Size, StartMode};
 use crate::domain::nvim::Address;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
@@ -153,6 +153,10 @@ enum AgentCommand {
         /// The agent's first terminal width, in columns (default: this terminal's, else 80).
         #[arg(long)]
         cols: Option<u16>,
+        /// Start a fresh session instead of resuming the one the worktree recorded (no effect
+        /// when the agent is already running).
+        #[arg(long)]
+        fresh: bool,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -325,9 +329,15 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
             worktree,
             rows,
             cols,
+            fresh,
             ..
         } => {
-            let started = agent_start::run(worktree, *rows, *cols)?;
+            let mode = if *fresh {
+                StartMode::Fresh
+            } else {
+                StartMode::Resume
+            };
+            let started = agent_start::run(worktree, *rows, *cols, mode)?;
             output::agent_started(&started, format)?;
         }
         AgentCommand::Attach {

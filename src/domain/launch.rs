@@ -1,19 +1,22 @@
 //! Domain: how claude is launched in a worktree (ADR 0007, ADR 0009): its arguments, the settings
 //! file that turns its native sandbox on, keeps our state out of its reach and registers the hooks
 //! that report its turns (ADR 0008: per launch, never in claude's own config), the version it
-//! needs, the variables kept from its environment, and the guard that no launch ever bypasses
-//! permissions.
+//! needs, the variables kept from its environment, the session a cold start resumes, and the
+//! guard that no launch ever bypasses permissions.
 //!
 //! The forbidden flags and modes are listed here and nowhere else in the source:
 //! `cargo xtask launch-guard` rejects their literals in any other file.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::domain::error::{GoneReason, TypedError};
 use crate::domain::hook;
 use crate::domain::state::ADMIN_DIR_NAME;
+use crate::domain::turn::Status;
 
 /// The permission mode every launch runs under: edits inside the worktree go through without
 /// asking; the sandbox confines everything else (ADR 0007).
@@ -58,16 +61,118 @@ pub(crate) const HOOK_SCRIPT: &str =
 /// How long claude lets a hook run, in seconds, before cancelling it and carrying on.
 pub(crate) const HOOK_TIMEOUT_SECS: u64 = 5;
 
-/// The command line claude is started with: its settings file and the permission mode. Nothing
-/// else in this slice; `--resume` joins later.
-pub(crate) fn claude_argv(program: &str, settings_file: &Path) -> Vec<String> {
-    vec![
+/// The flag that continues a recorded session under its own id. claude's `--fork-session`, which
+/// would give it a new id, is never used: the worktree keeps one current session.
+const RESUME_FLAG: &str = "--resume";
+
+/// The longest session id ever put on claude's command line.
+const MAX_SESSION_ID_CHARS: usize = 128;
+
+/// The command line claude is started with: its settings file and the permission mode, and,
+/// when `resume` names a session, `--resume <id>` to continue it.
+pub(crate) fn claude_argv(
+    program: &str,
+    settings_file: &Path,
+    resume: Option<&SessionId>,
+) -> Vec<String> {
+    let mut argv = vec![
         program.to_owned(),
         "--settings".to_owned(),
         settings_file.display().to_string(),
         "--permission-mode".to_owned(),
         PERMISSION_MODE.to_owned(),
-    ]
+    ];
+    if let Some(session) = resume {
+        argv.push(RESUME_FLAG.to_owned());
+        argv.push(session.as_str().to_owned());
+    }
+    argv
+}
+
+/// A session id that is safe to put on claude's command line: 1 to 128 characters among ASCII
+/// letters, digits, `_` and `-`, not starting with `-`. claude's ids are UUIDs, which pass. The
+/// rule keeps whatever `status.json` holds from ever reading as a flag (an "id" such as
+/// `--dangerously-skip-permissions`) or as anything but one argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionId(String);
+
+impl SessionId {
+    /// `text` as a session id, or `None` when it breaks the rule.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let allowed = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        let ok = !text.is_empty()
+            && text.len() <= MAX_SESSION_ID_CHARS
+            && !text.starts_with('-')
+            && text.chars().all(allowed);
+        ok.then(|| Self(text.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The session a cold start would continue: its id, and the transcript claude keeps it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resume {
+    pub(crate) session: SessionId,
+    pub(crate) transcript: PathBuf,
+}
+
+/// What a cold start of the worktree `name` does with the session `status` records (`None` when
+/// `status.json` is missing or cannot be used): nothing to resume without a recorded session, so
+/// a new session starts; else the session to resume. Fails as `session_gone` when the recorded
+/// id is not a [`SessionId`] or no absolute transcript path is recorded for it.
+pub(crate) fn session_to_resume(
+    name: &str,
+    status: Option<&Status>,
+) -> Result<Option<Resume>, TypedError> {
+    let Some(recorded) = status.and_then(|status| status.session.as_deref()) else {
+        return Ok(None);
+    };
+    let gone = |reason| TypedError::SessionGone {
+        name: name.to_owned(),
+        session: recorded.to_owned(),
+        reason,
+    };
+    let session = SessionId::parse(recorded).ok_or_else(|| gone(GoneReason::InvalidId))?;
+    let transcript = status
+        .and_then(|status| status.transcript.clone())
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| gone(GoneReason::NoTranscript))?;
+    Ok(Some(Resume {
+        session,
+        transcript,
+    }))
+}
+
+/// The session to put after `--resume`, once the caller has looked whether its transcript is
+/// still on disk (`transcript_exists`). Fails as `session_gone` when it is not.
+///
+/// Why look first: claude resumes a session from its transcript, and refuses one it cannot find.
+/// Measured with claude 2.1.301: `claude --resume 00000000-0000-4000-8000-000000000000 --print
+/// hello` exits 1 at once, before any API call, saying on stderr that it found no session with
+/// that id. Launched in a holder, such an agent would end as soon as it starts, leaving the
+/// person a dead terminal instead of the reason and the fix.
+pub(crate) fn check_transcript(
+    name: &str,
+    resume: Resume,
+    transcript_exists: bool,
+) -> Result<SessionId, TypedError> {
+    if transcript_exists {
+        return Ok(resume.session);
+    }
+    Err(TypedError::SessionGone {
+        name: name.to_owned(),
+        session: resume.session.as_str().to_owned(),
+        reason: GoneReason::TranscriptGone(resume.transcript),
+    })
 }
 
 /// The settings passed to claude as `--settings <file>`: its sandbox on and set to fail rather
@@ -173,27 +278,19 @@ pub(crate) fn settings_bytes(settings: &Value) -> Result<Vec<u8>> {
 
 /// Refuses a launch that bypasses permissions: an argument among [`FORBIDDEN_FLAGS`], a
 /// `--permission-mode` other than [`PERMISSION_MODE`] (as two arguments or as `--permission-mode=`),
-/// or settings whose `permissions.defaultMode` is one of [`FORBIDDEN_MODES`]. Arguments are
-/// compared whole, never as substrings: the settings legitimately name `disableBypassPermissionsMode`.
+/// a `--resume` whose value is not a [`SessionId`], or settings whose `permissions.defaultMode`
+/// is one of [`FORBIDDEN_MODES`]. Arguments are compared whole, never as substrings: the settings
+/// legitimately name `disableBypassPermissionsMode`. Every argument is checked, the values of
+/// flags included, so a forbidden flag hidden as a value is still refused.
 pub(crate) fn check_launch(argv: &[String], settings: &Value) -> Result<()> {
-    let mut rest = argv.iter().skip(1);
-    while let Some(arg) = rest.next() {
+    let rest = argv.get(1..).unwrap_or_default();
+    for (at, arg) in rest.iter().enumerate() {
+        let value = rest.get(at + 1).map(String::as_str);
         if FORBIDDEN_FLAGS.contains(&arg.as_str()) {
             bail!("refusing to launch the agent with `{arg}`, which bypasses permissions");
         }
-        let mode = if arg == "--permission-mode" {
-            rest.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--permission-mode=")
-        };
-        if let Some(mode) = mode
-            && mode != PERMISSION_MODE
-        {
-            bail!(
-                "refusing to launch the agent with `--permission-mode {mode}`; only \
-                 `{PERMISSION_MODE}` is allowed"
-            );
-        }
+        check_permission_mode(arg, value)?;
+        check_resume(arg, value)?;
     }
     if let Some(mode) = settings
         .pointer("/permissions/defaultMode")
@@ -203,6 +300,41 @@ pub(crate) fn check_launch(argv: &[String], settings: &Value) -> Result<()> {
         bail!(
             "refusing to launch the agent with settings whose `permissions.defaultMode` is `{mode}`"
         );
+    }
+    Ok(())
+}
+
+/// Refuses `arg` when it is `--permission-mode` (followed by `value`) or `--permission-mode=...`
+/// with any mode but [`PERMISSION_MODE`].
+fn check_permission_mode(arg: &str, value: Option<&str>) -> Result<()> {
+    let mode = if arg == "--permission-mode" {
+        Some(value.unwrap_or_default())
+    } else {
+        arg.strip_prefix("--permission-mode=")
+    };
+    if let Some(mode) = mode
+        && mode != PERMISSION_MODE
+    {
+        bail!(
+            "refusing to launch the agent with `--permission-mode {mode}`; only \
+             `{PERMISSION_MODE}` is allowed"
+        );
+    }
+    Ok(())
+}
+
+/// Refuses `arg` when it is `--resume` (followed by `value`) or `--resume=...` with a value
+/// that is not a [`SessionId`].
+fn check_resume(arg: &str, value: Option<&str>) -> Result<()> {
+    let session = if arg == RESUME_FLAG {
+        Some(value.unwrap_or_default())
+    } else {
+        arg.strip_prefix("--resume=")
+    };
+    if let Some(session) = session
+        && SessionId::parse(session).is_none()
+    {
+        bail!("refusing to launch the agent with `{RESUME_FLAG} {session}`, not a session id");
     }
     Ok(())
 }
@@ -255,7 +387,7 @@ mod tests {
     #[test]
     fn the_argv_passes_the_settings_file_and_accept_edits() {
         assert_eq!(
-            claude_argv("claude", Path::new("/a/claude-settings.json")),
+            claude_argv("claude", Path::new("/a/claude-settings.json"), None),
             [
                 "claude",
                 "--settings",
@@ -266,10 +398,160 @@ mod tests {
         );
         let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
         check_launch(
-            &claude_argv("claude", Path::new("/a/claude-settings.json")),
+            &claude_argv("claude", Path::new("/a/claude-settings.json"), None),
             &settings,
         )
         .unwrap();
+    }
+
+    const UUID: &str = "0b983a87-4074-466e-b864-422ce6f063c8";
+
+    #[test]
+    fn a_resumed_launch_adds_resume_and_its_session_and_passes_the_guard() {
+        let session = SessionId::parse(UUID).unwrap();
+        let argv = claude_argv("claude", Path::new("/a/s.json"), Some(&session));
+        assert_eq!(
+            argv,
+            [
+                "claude",
+                "--settings",
+                "/a/s.json",
+                "--permission-mode",
+                "acceptEdits",
+                "--resume",
+                UUID
+            ]
+        );
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        check_launch(&argv, &settings).unwrap();
+    }
+
+    #[test]
+    fn a_session_id_is_letters_digits_underscore_and_dash_not_leading() {
+        assert_eq!(SessionId::parse(UUID).unwrap().as_str(), UUID);
+        assert_eq!(SessionId::parse(UUID).unwrap().to_string(), UUID);
+        assert!(SessionId::parse("a_b-C9").is_some());
+        assert!(SessionId::parse(&"a".repeat(128)).is_some());
+        for bad in [
+            "",
+            "-x",
+            "--dangerously-skip-permissions",
+            "a b",
+            "a/b",
+            "../x",
+            "a\nb",
+            "é",
+            "a=b",
+        ] {
+            assert_eq!(SessionId::parse(bad), None, "{bad:?}");
+        }
+        assert_eq!(SessionId::parse(&"a".repeat(129)), None, "too long");
+    }
+
+    #[test]
+    fn the_guard_refuses_bypasses_beside_resume_and_a_resume_that_is_not_an_id() {
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let refused = |args: &[&str]| check_launch(&argv(args), &settings).is_err();
+        assert!(refused(&["--resume", "--dangerously-skip-permissions"]));
+        assert!(refused(&[
+            "--resume",
+            "--allow-dangerously-skip-permissions"
+        ]));
+        assert!(refused(&["--resume", "--auto"]));
+        assert!(refused(&["--resume=--auto"]));
+        assert!(refused(&[
+            "--resume",
+            UUID,
+            "--dangerously-skip-permissions"
+        ]));
+        assert!(refused(&["--resume", UUID, "--permission-mode", "plan"]));
+        assert!(refused(&[
+            "--resume",
+            UUID,
+            "--permission-mode=bypassPermissions"
+        ]));
+        assert!(refused(&["--resume", "a b"]));
+        assert!(refused(&["--resume"]), "a resume without its id");
+        check_launch(&argv(&["--resume", UUID]), &settings).unwrap();
+        check_launch(&argv(&[&format!("--resume={UUID}")]), &settings).unwrap();
+        let err = check_launch(&argv(&["--resume", "-x"]), &settings)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`--resume -x`, not a session id"), "{err}");
+    }
+
+    fn recorded(session: &str, transcript: Option<&str>) -> Status {
+        Status {
+            session: Some(session.to_owned()),
+            transcript: transcript.map(PathBuf::from),
+            ..Status::default()
+        }
+    }
+
+    fn gone_reason(result: Result<Option<Resume>, TypedError>) -> GoneReason {
+        match result {
+            Err(TypedError::SessionGone { reason, .. }) => reason,
+            other => panic!("expected session_gone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cold_start_resumes_the_recorded_session_or_starts_a_new_one() {
+        assert_eq!(session_to_resume("fix", None), Ok(None));
+        assert_eq!(
+            session_to_resume("fix", Some(&Status::default())),
+            Ok(None),
+            "no session recorded"
+        );
+        let status = recorded(UUID, Some("/h/t/s.jsonl"));
+        assert_eq!(
+            session_to_resume("fix", Some(&status)),
+            Ok(Some(Resume {
+                session: SessionId::parse(UUID).unwrap(),
+                transcript: PathBuf::from("/h/t/s.jsonl"),
+            }))
+        );
+    }
+
+    #[test]
+    fn a_session_with_a_bad_id_or_no_transcript_cannot_be_resumed() {
+        let flag = recorded("--dangerously-skip-permissions", Some("/h/t/s.jsonl"));
+        assert_eq!(
+            gone_reason(session_to_resume("fix", Some(&flag))),
+            GoneReason::InvalidId
+        );
+        assert_eq!(
+            gone_reason(session_to_resume("fix", Some(&recorded(UUID, None)))),
+            GoneReason::NoTranscript
+        );
+        assert_eq!(
+            gone_reason(session_to_resume(
+                "fix",
+                Some(&recorded(UUID, Some("t/s.jsonl")))
+            )),
+            GoneReason::NoTranscript,
+            "a relative path is not trusted"
+        );
+    }
+
+    #[test]
+    fn a_session_whose_transcript_is_gone_cannot_be_resumed() {
+        let resume = Resume {
+            session: SessionId::parse(UUID).unwrap(),
+            transcript: PathBuf::from("/h/t/s.jsonl"),
+        };
+        assert_eq!(
+            check_transcript("fix", resume.clone(), true),
+            Ok(SessionId::parse(UUID).unwrap())
+        );
+        assert_eq!(
+            check_transcript("fix", resume, false),
+            Err(TypedError::SessionGone {
+                name: "fix".to_owned(),
+                session: UUID.to_owned(),
+                reason: GoneReason::TranscriptGone(PathBuf::from("/h/t/s.jsonl")),
+            })
+        );
     }
 
     #[test]

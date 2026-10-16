@@ -34,6 +34,25 @@ pub(crate) enum TypedError {
         path.display()
     )]
     Dirty { name: String, path: PathBuf },
+    /// The worktree's current session cannot be resumed on a cold start, for `reason`;
+    /// `session` is the id `status.json` recorded, as written there. Nothing was launched.
+    #[error("{}", session_gone_message(name, session, reason))]
+    SessionGone {
+        name: String,
+        session: String,
+        reason: GoneReason,
+    },
+}
+
+/// Why a recorded session cannot be resumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GoneReason {
+    /// The transcript claude kept the session in, at this path, no longer exists.
+    TranscriptGone(PathBuf),
+    /// No transcript was recorded for the session (or not as an absolute path).
+    NoTranscript,
+    /// The id is not one claude makes, so it is never put on claude's command line.
+    InvalidId,
 }
 
 /// Why a worktree is busy.
@@ -61,6 +80,28 @@ fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
     }
 }
 
+/// The message of [`TypedError::SessionGone`]. The id is shown cut to one short line, since an
+/// id that is not one claude makes may hold anything.
+fn session_gone_message(name: &str, session: &str, reason: &GoneReason) -> String {
+    let reason = match reason {
+        GoneReason::TranscriptGone(path) => format!("its transcript {} is gone", path.display()),
+        GoneReason::NoTranscript => "no transcript of it is recorded".to_owned(),
+        GoneReason::InvalidId => "its id is not one claude makes".to_owned(),
+    };
+    let session: String = session
+        .chars()
+        .take(SHOWN_ID_CHARS)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!(
+        "worktree {name} cannot resume its session {session}: {reason}; start a fresh session \
+         with `orca-term agent start {name} --fresh`"
+    )
+}
+
+/// The most characters of a session id an error message shows.
+const SHOWN_ID_CHARS: usize = 128;
+
 fn no_sandbox_message(missing: &[String], hint: &str) -> String {
     if missing.is_empty() {
         return format!("claude's sandbox is not available: {hint}");
@@ -78,15 +119,17 @@ impl TypedError {
             Self::Busy { .. } => "busy",
             Self::NoSandbox { .. } => "no_sandbox",
             Self::Dirty { .. } => "dirty",
+            Self::SessionGone { .. } => "session_gone",
         }
     }
 
-    /// The process's exit code for the failure. 4 is kept for a later slice.
+    /// The process's exit code for the failure.
     pub(crate) fn exit_code(&self) -> u8 {
         match self {
             Self::Busy { .. } => 3,
             Self::NoSandbox { .. } => 5,
             Self::Dirty { .. } => 6,
+            Self::SessionGone { .. } => 4,
         }
     }
 }
@@ -172,6 +215,44 @@ mod tests {
             "worktree wip at /w/repo/wip has modified or untracked files; pass --force to remove \
              it anyway, discarding its changes"
         );
+    }
+
+    fn gone(reason: GoneReason) -> anyhow::Error {
+        anyhow::Error::new(TypedError::SessionGone {
+            name: "fix".to_owned(),
+            session: "0b983a87-4074-466e-b864-422ce6f063c8".to_owned(),
+            reason,
+        })
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_resumed_has_its_own_kind_and_exit_code() {
+        let err = gone(GoneReason::TranscriptGone(PathBuf::from("/h/t/s.jsonl")));
+        assert_eq!(kind(&err), "session_gone");
+        assert_eq!(exit_code(&err), 4);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix cannot resume its session 0b983a87-4074-466e-b864-422ce6f063c8: its \
+             transcript /h/t/s.jsonl is gone; start a fresh session with `orca-term agent start \
+             fix --fresh`"
+        );
+        let err = gone(GoneReason::InvalidId).to_string();
+        assert!(err.contains(": its id is not one claude makes; "), "{err}");
+        let err = gone(GoneReason::NoTranscript).to_string();
+        assert!(err.contains(": no transcript of it is recorded; "), "{err}");
+    }
+
+    #[test]
+    fn a_session_id_is_shown_on_one_short_line() {
+        let err = anyhow::Error::new(TypedError::SessionGone {
+            name: "fix".to_owned(),
+            session: format!("a\nb{}", "x".repeat(500)),
+            reason: GoneReason::InvalidId,
+        })
+        .to_string();
+        assert!(!err.contains('\n'), "{err}");
+        assert!(err.contains("session a bxxx"), "{err}");
+        assert!(!err.contains(&"x".repeat(127)), "{err}");
     }
 
     #[test]

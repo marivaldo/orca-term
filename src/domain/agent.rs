@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::config::Setting;
 use crate::domain::fleet::Worktree;
+use crate::domain::launch::SessionId;
 use crate::domain::state::LockStatus;
 
 /// The agents a worktree can run. `worktree.json` records one under its glossary name.
@@ -111,11 +112,24 @@ impl Size {
     }
 }
 
+/// Which session `agent start` starts the agent on when no holder is alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartMode {
+    /// The current session `status.json` records, resumed; a new session when none is recorded.
+    Resume,
+    /// A new session, even when one is recorded (`--fresh`).
+    Fresh,
+}
+
 /// What `agent start` did about the holder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
-    /// A holder was started, with this pid.
-    Started { pid: u32 },
+    /// A holder was started, with this pid, on the session `resumed` names, or on a new session
+    /// when it is `None`.
+    Started {
+        pid: u32,
+        resumed: Option<SessionId>,
+    },
     /// A holder was already alive; its pid when `agent.json` could be read.
     AlreadyRunning { pid: Option<u32> },
 }

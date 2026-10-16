@@ -1,19 +1,21 @@
 //! Ops: `agent start`, which launches claude in a worktree inside a detached holder (ADR 0009),
 //! under claude's native sandbox with everything allowed inside the worktree (ADR 0007), with
 //! hooks that call this orca-term back on every turn event. Starting an agent that already runs
-//! is not an error: the report says so.
+//! is not an error: the report says so. With no holder alive, the agent continues the current
+//! session `status.json` records (`--resume`), unless the person asks for a fresh one.
 
 use anyhow::{Context, Result};
 
 use crate::adapters::fs;
 use crate::adapters::holder::{self, HolderArgs};
 use crate::adapters::{env, git, program, terminal};
-use crate::domain::agent::{Agent, HolderRecord, Size, StartOutcome, Started};
+use crate::domain::agent::{Agent, HolderRecord, Size, StartMode, StartOutcome, Started};
 use crate::domain::config;
 use crate::domain::fleet::Worktree;
-use crate::domain::launch;
+use crate::domain::launch::{self, SessionId};
 use crate::domain::sandbox::{self, Platform};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
+use crate::domain::turn;
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
     config_layers, derive_state, find_target_admin, lock_worktree, notify_changed, read_fleet,
@@ -22,26 +24,25 @@ use crate::ops::{
 
 /// Starts claude in the worktree `target` names or locates in the repository containing the
 /// current directory, with `rows` and `cols` as its first terminal size where given (else the
-/// starter's terminal size, else 24 by 80). Fails as `busy` when the worktree's lock is held and
-/// as `no_sandbox` when claude's sandbox cannot run here.
-pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Result<Started> {
+/// starter's terminal size, else 24 by 80), on the session `mode` says. Fails as `busy` when the
+/// worktree's lock is held, as `no_sandbox` when claude's sandbox cannot run here, and as
+/// `session_gone` when the recorded session can no longer be resumed.
+pub(crate) fn run(
+    target: &Target,
+    rows: Option<u16>,
+    cols: Option<u16>,
+    mode: StartMode,
+) -> Result<Started> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
     let (worktree, admin) = find_target_admin(&fleet, &cwd, target)?;
     worktree::check_can_run_agent(worktree)?;
     let lock = lock_worktree(&worktree.name, &worktree.path)?;
     let agent = Agent::ClaudeCode;
-    if fs::lock_status_at(&admin.agent_lock())? == LockStatus::Held {
-        let pid = fs::read_optional(&admin.agent_record())?
-            .and_then(|bytes| HolderRecord::parse(&bytes).ok())
-            .map(|record| record.pid);
-        return Ok(Started {
-            worktree: refreshed(worktree, &admin)?,
-            agent,
-            outcome: StartOutcome::AlreadyRunning { pid },
-            writable: None,
-        });
+    if let Some(running) = already_running(worktree, &admin, agent)? {
+        return Ok(running);
     }
+    let resumed = session_to_resume(&worktree.name, &admin, mode)?;
 
     let path_dirs = env::path_dirs();
     sandbox::check_available(Platform::current(), &|tool| {
@@ -63,7 +64,11 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     let admin = AdminDir::new(fs::canonicalize(admin.path())?);
     let hooks = hook_target(&admin)?;
     let settings = launch::claude_settings(&common, &admin_dirs, &writable.value, &hooks);
-    let argv = launch::claude_argv(&claude.display().to_string(), &admin.claude_settings());
+    let argv = launch::claude_argv(
+        &claude.display().to_string(),
+        &admin.claude_settings(),
+        resumed.as_ref(),
+    );
     // The guard: no launch bypasses permissions, whatever the code above produced.
     launch::check_launch(&argv, &settings)?;
     fs::write_atomically(
@@ -86,9 +91,41 @@ pub(crate) fn run(target: &Target, rows: Option<u16>, cols: Option<u16>) -> Resu
     Ok(Started {
         worktree: refreshed(worktree, &admin)?,
         agent,
-        outcome: StartOutcome::Started { pid },
+        outcome: StartOutcome::Started { pid, resumed },
         writable: Some(writable),
     })
+}
+
+/// The report of a holder already alive in `worktree`, whose admin directory is `admin`, with
+/// its pid when `agent.json` can be read; `None` when no holder is alive.
+fn already_running(worktree: &Worktree, admin: &AdminDir, agent: Agent) -> Result<Option<Started>> {
+    if fs::lock_status_at(&admin.agent_lock())? != LockStatus::Held {
+        return Ok(None);
+    }
+    let pid = fs::read_optional(&admin.agent_record())?
+        .and_then(|bytes| HolderRecord::parse(&bytes).ok())
+        .map(|record| record.pid);
+    Ok(Some(Started {
+        worktree: refreshed(worktree, admin)?,
+        agent,
+        outcome: StartOutcome::AlreadyRunning { pid },
+        writable: None,
+    }))
+}
+
+/// The session to resume in the worktree `name`, whose admin directory is `admin`: none with
+/// `--fresh`, nor when `status.json` records no session or cannot be used; else the recorded one,
+/// once its id is checked and its transcript found on disk (or the typed `session_gone`).
+fn session_to_resume(name: &str, admin: &AdminDir, mode: StartMode) -> Result<Option<SessionId>> {
+    if mode == StartMode::Fresh {
+        return Ok(None);
+    }
+    let status = turn::read_status(fs::read_optional(&admin.status_file())?.as_deref()).usable();
+    let Some(resume) = launch::session_to_resume(name, status.as_ref())? else {
+        return Ok(None);
+    };
+    let exists = fs::is_file(&resume.transcript);
+    Ok(Some(launch::check_transcript(name, resume, exists)?))
 }
 
 /// Creates `refs/orca-term`, the `orca-term` directory (where the registry of running Neovims

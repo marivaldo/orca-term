@@ -326,12 +326,18 @@ fn render_writable(writable: &crate::domain::config::Setting<Vec<PathBuf>>) -> S
 
 fn render_agent_started(started: &Started) -> String {
     let worktree = &started.worktree;
-    let (headline, pid) = match started.outcome {
-        StartOutcome::Started { pid } => (
-            format!(
-                "started agent {} in worktree {}",
-                started.agent, worktree.name
-            ),
+    let (headline, pid) = match &started.outcome {
+        StartOutcome::Started { pid, resumed } => (
+            match resumed {
+                Some(session) => format!(
+                    "started agent {} in worktree {}, resuming session {session}",
+                    started.agent, worktree.name
+                ),
+                None => format!(
+                    "started agent {} in worktree {}",
+                    started.agent, worktree.name
+                ),
+            },
             format!("pid {pid}"),
         ),
         StartOutcome::AlreadyRunning { pid } => (
@@ -444,6 +450,7 @@ mod tests {
     use crate::domain::branch::{Branch, StartPoint};
     use crate::domain::config::Setting;
     use crate::domain::fleet::PrimaryCheckout;
+    use crate::domain::launch::SessionId;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason, State};
     use crate::domain::worktree::KeptReason;
@@ -693,7 +700,10 @@ mod tests {
         let started = Started {
             worktree: fix,
             agent: Agent::ClaudeCode,
-            outcome: StartOutcome::Started { pid: 4242 },
+            outcome: StartOutcome::Started {
+                pid: 4242,
+                resumed: None,
+            },
             writable: Some(Setting {
                 value: vec![PathBuf::from("/home/me/.cache/pnpm")],
                 source: Some(".git/orca-term.yaml".to_owned()),
@@ -720,6 +730,17 @@ mod tests {
             }),
             "sandbox: no extra writable paths (built-in default)"
         );
+        let resumed = Started {
+            outcome: StartOutcome::Started {
+                pid: 4242,
+                resumed: SessionId::parse("0b983a87-4074-466e-b864-422ce6f063c8"),
+            },
+            ..started.clone()
+        };
+        assert!(render_agent_started(&resumed).starts_with(
+            "started agent claude-code in worktree fix, resuming session \
+             0b983a87-4074-466e-b864-422ce6f063c8\npath:   /l/fix\n"
+        ));
         let again = Started {
             outcome: StartOutcome::AlreadyRunning { pid: None },
             writable: None,
