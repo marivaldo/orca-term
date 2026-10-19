@@ -57,6 +57,8 @@ pub(crate) struct Worktree {
     /// Whether the worktree is unseen: its latest turn ended after the person last reviewed it,
     /// or the person marked it so (`domain/seen.rs`).
     pub(crate) unseen: bool,
+    /// How many notes are pending on the worktree (`domain/note.rs`).
+    pub(crate) notes: usize,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -84,6 +86,7 @@ impl Fleet {
                 agent: None,
                 holder: HolderStatus::Gone,
                 unseen: false,
+                notes: 0,
             })
             .collect();
         Ok(Self {

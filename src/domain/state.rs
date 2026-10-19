@@ -64,6 +64,15 @@ const HOOK_LOG_FILE: &str = "hook.log";
 /// it; the hooks never do.
 const SEEN_FILE: &str = "seen.json";
 
+/// The worktree's pending notes (`domain/note.rs`). Only the note commands write it.
+const NOTES_FILE: &str = "notes.json";
+
+/// The lock the note commands take, waiting briefly, while they change `notes.json`.
+const NOTES_LOCK_FILE: &str = "notes.lock";
+
+/// The directory of the file contents kept for notes on lines, one file per git blob id.
+const NOTE_COPIES_DIR: &str = "notes";
+
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
@@ -137,6 +146,21 @@ impl AdminDir {
     /// What the person has seen, `seen.json`.
     pub(crate) fn seen_file(&self) -> PathBuf {
         self.0.join(SEEN_FILE)
+    }
+
+    /// The pending notes, `notes.json`.
+    pub(crate) fn notes_file(&self) -> PathBuf {
+        self.0.join(NOTES_FILE)
+    }
+
+    /// The note commands' lock, `notes.lock`.
+    pub(crate) fn notes_lock(&self) -> PathBuf {
+        self.0.join(NOTES_LOCK_FILE)
+    }
+
+    /// The directory of the contents kept for notes on lines, `notes/`.
+    pub(crate) fn note_copies(&self) -> PathBuf {
+        self.0.join(NOTE_COPIES_DIR)
     }
 
     /// git's `commondir` file beside this directory, in git's per-worktree admin directory

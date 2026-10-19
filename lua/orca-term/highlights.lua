@@ -1,9 +1,10 @@
--- orca-term's highlight groups: every colour the sidebar uses.
+-- orca-term's highlight groups: every colour the sidebar, the status strip and the notes in a
+-- review use.
 --
 -- Each group links to a standard group of the colorscheme (`Title`, `Comment`, `Diagnostic*`), so
 -- the sidebar reads well in any theme, except the unseen worktree's name, which is only bold. Every
 -- group is a default: a person who defines the group in their config keeps their own. `sidebar.lua`
--- defines them again after each `:colorscheme`.
+-- and `notes.lua` define them again after each `:colorscheme`.
 
 local M = {}
 
@@ -40,6 +41,10 @@ local LINKS = {
   OrcaTermStateFailed = 'DiagnosticError',
   OrcaTermStateInterrupted = 'DiagnosticUnnecessary',
   OrcaTermUnseen = 'DiagnosticWarn',
+  -- The icons at the right of a worktree's name line, such as its pending notes `✎N`.
+  OrcaTermBadge = 'DiagnosticHint',
+  -- The notes drawn in a review: their signs, their text and their count in the file panel.
+  OrcaTermNote = 'DiagnosticInfo',
 }
 
 ---Each group drawn with attributes of its own rather than a link.

@@ -2,8 +2,8 @@
 //! (`ARCHITECTURE.md`, "Neovim client"):
 //!
 //! - only `lua/orca-term/core.lua` starts processes; every other file reaches the core through it;
-//! - only `lua/orca-term/sidebar.lua`, `lua/orca-term/tabs.lua`, `lua/orca-term/terminal.lua` and
-//!   `lua/orca-term/review.lua` touch windows, tabs and buffers;
+//! - only `lua/orca-term/sidebar.lua`, `lua/orca-term/tabs.lua`, `lua/orca-term/terminal.lua`,
+//!   `lua/orca-term/review.lua` and `lua/orca-term/notes.lua` touch windows, tabs and buffers;
 //! - `lua/orca-term/fleet.lua` and `lua/orca-term/render.lua` are pure: no `vim.api`, no `vim.cmd`.
 //!
 //! The check is textual, like the layers lint: `--` comments are skipped, and each line of each Lua
@@ -33,17 +33,18 @@ const PROCESS_CALLS: &[&str] = &[
 ];
 
 /// The files allowed to touch windows, tabs and buffers: the sidebar, the worktrees' tabs, the
-/// agents' terminals and the review tabs.
+/// agents' terminals, the review tabs and the notes drawn in them.
 const WINDOW_MODULES: &[&str] = &[
     "lua/orca-term/sidebar.lua",
     "lua/orca-term/tabs.lua",
     "lua/orca-term/terminal.lua",
     "lua/orca-term/review.lua",
+    "lua/orca-term/notes.lua",
 ];
 
 /// The same files, as the findings name them.
 const WINDOW_MODULES_TEXT: &str = "lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, \
-     lua/orca-term/terminal.lua and lua/orca-term/review.lua";
+     lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua";
 
 /// Calls that open, change or read windows, tabs and buffers. A prefix such as `nvim_win_` stands
 /// for every API function that starts with it (`nvim_set_current_` covers the window, the tab and
@@ -231,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_tabs_terminal_and_review_modules_may_touch_windows_tabs_and_buffers() {
+    fn the_sidebar_tabs_terminal_review_and_notes_modules_may_touch_windows_tabs_and_buffers() {
         let text = "local win = vim.api.nvim_open_win(buf, false, {})\n\
                     vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})\n\
                     vim.wo[win].number = false\nvim.cmd('topleft vsplit')\n\
@@ -251,11 +252,11 @@ mod tests {
         assert_eq!(problems.len(), 7, "{problems:#?}");
         assert_eq!(
             problems[0],
-            "lua/orca-term/actions.lua:1: `vim.cmd` opens, closes or moves a tab; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua and lua/orca-term/review.lua may"
+            "lua/orca-term/actions.lua:1: `vim.cmd` opens, closes or moves a tab; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
         );
         assert_eq!(
             problems[4],
-            "lua/orca-term/actions.lua:5: `nvim_set_current_` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua and lua/orca-term/review.lua may"
+            "lua/orca-term/actions.lua:5: `nvim_set_current_` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
         );
     }
 
@@ -276,11 +277,11 @@ mod tests {
         assert_eq!(problems.len(), 9, "{problems:#?}");
         assert_eq!(
             problems[0],
-            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua and lua/orca-term/review.lua may"
+            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
         );
         assert_eq!(
             problems[7],
-            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua and lua/orca-term/review.lua may open windows"
+            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may open windows"
         );
     }
 

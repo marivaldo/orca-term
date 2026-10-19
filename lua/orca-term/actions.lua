@@ -2,7 +2,7 @@
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
 -- again, copy its path, remove it), toggle its unseen mark (`u`), open its review (`d`, `:OrcaTerm
 -- review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its number (`:OrcaTerm
--- worktree N`).
+-- worktree N`), and the list of the current tab's notes (`:OrcaTerm notes`, through `notes.lua`).
 --
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
 -- moves between tabs through `tabs.lua`, shows agents through `terminal.lua` and reviews through
@@ -345,13 +345,17 @@ function M.review(path, primary)
   end)
 end
 
----`:OrcaTerm review`: opens the review of the current tab's worktree, the worktree whose tab is
----current, or the worktree a review tab reviews. Anywhere else it says what it needs.
-function M.review_current()
+---The current tab's worktree: the worktree whose tab is current, or the worktree a review tab
+---reviews, with the fleet read to find it (waiting for it). `nil` after telling the person why: the
+---fleet cannot be read, or `needs` (what is said anywhere else) when the tab is neither.
+---@param needs string
+---@return string? path
+---@return orca_term.Fleet? fleet
+local function current_worktree(needs)
   local fleet, err = core.worktree_ls(vim.fn.getcwd())
   if not fleet then
     fail(err)
-    return
+    return nil
   end
   local path = review.current()
   for _, worktree in ipairs(fleet.worktrees) do
@@ -360,12 +364,31 @@ function M.review_current()
     end
   end
   if not path then
-    local message = "orca-term: the review needs a worktree's tab; go to one, "
-      .. 'or press d on a worktree in the sidebar'
-    vim.notify(message, levels.ERROR)
-    return
+    vim.notify('orca-term: ' .. needs, levels.ERROR)
+    return nil
   end
-  M.review(path, fleet.primary.path)
+  return path, fleet
+end
+
+---`:OrcaTerm review`: opens the review of the current tab's worktree, the worktree whose tab is
+---current, or the worktree a review tab reviews. Anywhere else it says what it needs.
+function M.review_current()
+  local path, fleet = current_worktree(
+    "the review needs a worktree's tab; go to one, or press d on a worktree in the sidebar"
+  )
+  if path and fleet then
+    M.review(path, fleet.primary.path)
+  end
+end
+
+---`:OrcaTerm notes`: lists the pending notes of the current tab's worktree, the worktree whose tab
+---is current, or the worktree a review tab reviews, to send, edit or delete them (`notes.lua`).
+---Anywhere else it says what it needs.
+function M.notes_current()
+  local path = current_worktree("the notes need a worktree's tab or its review; go to one first")
+  if path then
+    require('orca-term.notes').list(path)
+  end
 end
 
 ---The worktrees of the current directory's repository, in the sidebar's order, or `nil` after

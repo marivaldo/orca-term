@@ -10,14 +10,15 @@ use clap::{Parser, Subcommand};
 
 use crate::adapters::terminal::DetachKey;
 use crate::domain::agent::{Size, StartMode};
+use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    agent_attach, agent_holder, agent_start, agent_stop, hook, nvim_register, nvim_unregister,
-    worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm, worktree_seen,
-    worktree_setup,
+    agent_attach, agent_holder, agent_start, agent_stop, hook, note_add, note_edit, note_ls,
+    note_rm, note_send, nvim_register, nvim_unregister, worktree_ls, worktree_new, worktree_prune,
+    worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -44,6 +45,11 @@ enum Command {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
+    },
+    /// Attach notes to a worktree's files, then send them to its agent as one prompt.
+    Note {
+        #[command(subcommand)]
+        command: NoteCommand,
     },
     /// What the agent's hooks run: `hook claude --admin <dir> <event>`, the event's payload on
     /// stdin. Its arguments are taken as they come, unchecked, so that clap never refuses them
@@ -152,6 +158,70 @@ enum WorktreeCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum NoteCommand {
+    /// Attach a note to a line, a range of lines or (with neither flag) a whole file of a worktree.
+    Add {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The file, relative to the worktree's root; a whole-file note may name a deleted file.
+        path: String,
+        /// The line the note is on, numbered from 1.
+        #[arg(long, conflicts_with = "lines", value_parser = clap::value_parser!(u32).range(1..))]
+        line: Option<u32>,
+        /// The lines the note is on, `S-E` with S before E, such as `3-5`.
+        #[arg(long)]
+        lines: Option<LineRange>,
+        /// What the note says to the agent.
+        #[arg(long, allow_hyphen_values = true)]
+        body: String,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List a worktree's pending notes, each with where its lines are in the file now.
+    Ls {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace what a pending note says.
+    Edit {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The note's id, as `note ls` shows it.
+        id: u64,
+        /// What the note says to the agent now.
+        #[arg(long, allow_hyphen_values = true)]
+        body: String,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a pending note without sending it.
+    Rm {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The note's id, as `note ls` shows it.
+        id: u64,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Paste pending notes into the worktree's running agent as one prompt, and consume them.
+    Send {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The ids of the notes to send, as `note ls` shows them (default: every pending note).
+        ids: Vec<u64>,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Start claude in a worktree, inside its sandbox, held by a detached process.
     Start {
@@ -225,6 +295,13 @@ impl Cli {
                 AgentCommand::Start { json, .. } | AgentCommand::Stop { json, .. } => *json,
                 AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
+            Command::Note { command } => match command {
+                NoteCommand::Add { json, .. }
+                | NoteCommand::Ls { json, .. }
+                | NoteCommand::Edit { json, .. }
+                | NoteCommand::Rm { json, .. }
+                | NoteCommand::Send { json, .. } => *json,
+            },
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -240,6 +317,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),
+        Command::Note { command } => run_note(command, cli.format()),
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -381,6 +459,37 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
                 cols: *cols,
             };
             agent_holder::run(admin.clone(), worktree.clone(), size, argv.clone())?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_note(command: &NoteCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        NoteCommand::Add {
+            worktree,
+            path,
+            line,
+            lines,
+            body,
+            ..
+        } => {
+            let anchor = match (line, lines) {
+                (Some(line), _) => Anchor::line(*line)?,
+                (None, Some(range)) => Anchor::Lines(*range),
+                (None, None) => Anchor::File,
+            };
+            output::noted(&note_add::run(worktree, path, anchor, body)?, format)?;
+        }
+        NoteCommand::Ls { worktree, .. } => output::notes_listed(&note_ls::run(worktree)?, format)?,
+        NoteCommand::Edit {
+            worktree, id, body, ..
+        } => output::noted(&note_edit::run(worktree, *id, body)?, format)?,
+        NoteCommand::Rm { worktree, id, .. } => {
+            output::unnoted(&note_rm::run(worktree, *id)?, format)?;
+        }
+        NoteCommand::Send { worktree, ids, .. } => {
+            output::notes_sent(&note_send::run(worktree, ids)?, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

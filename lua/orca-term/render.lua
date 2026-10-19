@@ -6,16 +6,17 @@
 -- lualine component draw.
 -- The only Neovim calls measure text in screen cells (`vim.fn.strdisplaywidth`,
 -- `vim.fn.strcharpart`, `vim.fn.strchars`) or are pure helpers (`vim.fs.basename`,
--- `vim.list_extend`).
+-- `vim.list_extend`, `vim.tbl_map`).
 --
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
--- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees:
+-- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, and `✎N`
+-- counts a worktree's pending notes:
 --
 --   ▾ repo  main
 --
 --   NEEDS YOU 7
 --   ╭────────────────────────────────╮
---   │ ? pick-colour                  │
+--   │ ? pick-colour               ✎1 │
 --   │   Which colour?                │
 --   ╰────────────────────────────────╯
 --  •● api-call
@@ -39,7 +40,7 @@
 --   ● reviewed
 --     ok
 --   ○ standby
---   · docs
+--   · docs                          ✎2
 --   · spike
 --     ⎇ other-branch
 --
@@ -72,6 +73,10 @@ M.GLYPHS = {
 
 ---The mark of an unseen worktree, in the first cell of its name line, before its glyph.
 M.UNSEEN = '•'
+
+---The mark of notes: before a worktree's count of pending notes at the right of its name line, and
+---before each note `notes.lua` draws in a review.
+M.NOTE = '✎'
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
 ---shows it. `sidebar.lua` turns them while a worktree is working.
@@ -268,6 +273,44 @@ local function second_line_text(worktree)
   return text
 end
 
+---The icons at the right of a worktree's name line, from left to right: `✎N` for its pending
+---notes. Empty when it has nothing to show.
+---@param worktree orca_term.Worktree
+---@return { text: string, group: string }[]
+local function icons(worktree)
+  local found = {}
+  if (worktree.notes or 0) > 0 then
+    table.insert(found, { text = M.NOTE .. worktree.notes, group = 'OrcaTermBadge' })
+  end
+  return found
+end
+
+---Adds `name` to `line`, in `group` when given, then `icons` flushed to the right end of the line's
+---budget, a space between them. The name is cut with `…` to leave the icons room, and a space
+---before them.
+---@param line orca_term.Line
+---@param name string
+---@param group? string
+---@param right { text: string, group: string }[]
+local function add_name(line, name, group, right)
+  if #right == 0 then
+    add(line, name, group)
+    return
+  end
+  local texts = vim.tbl_map(function(icon)
+    return icon.text
+  end, right)
+  local right_cells = cells(table.concat(texts, ' '))
+  add(line, truncate(name, line.budget - cells(line.text) - right_cells - 1), group)
+  add(line, string.rep(' ', line.budget - cells(line.text) - right_cells))
+  for index, icon in ipairs(right) do
+    if index > 1 then
+      add(line, ' ')
+    end
+    add(line, icon.text, icon.group)
+  end
+end
+
 ---The lines of one worktree: its name line and, when it has something to say, its second line.
 ---@param worktree orca_term.RankedWorktree
 ---@param needs_you boolean whether it is under "Needs you", which colours its second line
@@ -289,8 +332,9 @@ local function worktree_lines(worktree, needs_you, budget, frame)
   end
   add(name_line, M.glyph(worktree.state, frame), state_group)
   add(name_line, ' ')
-  add(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil)
-  -- The agent and the age of the last activity will sit at the right of this line.
+  -- The icons sit at the right of this line; the agent and the age of the last activity will join
+  -- them.
+  add_name(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil, icons(worktree))
   local lines = { name_line }
 
   local text = second_line_text(worktree)

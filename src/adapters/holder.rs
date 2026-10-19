@@ -120,6 +120,36 @@ pub(crate) fn connect(admin: &AdminDir) -> Result<UnixStream> {
         .with_context(|| format!("could not connect to {}", admin.agent_socket().display()))
 }
 
+/// How long a write to a holder may block before the delivery gives up.
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Types into the agent's terminal through the holder of `admin`, as an attached terminal would:
+/// `first`, then after `pause` `second`, each as one input frame. It connects as one more client
+/// and sends no size, so the terminals attached keep theirs (only a client's own first size
+/// resizes the agent), never reads what the holder sends back, and closes without a stop, leaving
+/// the agent running. Returns once both frames were written to the holder. Changes this process's
+/// directory, as [`connect`] does.
+pub(crate) fn type_input(
+    admin: &AdminDir,
+    first: &[u8],
+    pause: Duration,
+    second: &[u8],
+) -> Result<()> {
+    let mut stream = connect(admin)?;
+    stream
+        .set_write_timeout(Some(DELIVERY_TIMEOUT))
+        .context("could not set up the connection to the holder")?;
+    stream
+        .write_all(&Frame::Input(first.to_vec()).encode())
+        .context("could not send the input to the holder")?;
+    thread::sleep(pause);
+    stream
+        .write_all(&Frame::Input(second.to_vec()).encode())
+        .context("could not send the input to the holder")?;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
 /// Asks the holder of `admin` to end its agent, and returns at once. The holder hangs the agent up,
 /// then escalates; `agent stop` watches `agent.lock` to know when it is gone.
 pub(crate) fn request_stop(admin: &AdminDir) -> Result<()> {
