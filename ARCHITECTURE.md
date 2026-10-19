@@ -42,13 +42,15 @@ the adapters, and returns a domain value that `output` prints.
 
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
-  opens a review,
+  opens a review, `worktree detail`, what the detail float shows,
   `agent start|attach|stop`, `note add|ls|edit|rm|send`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
-  `worktree new`, `setup`, `rm`, `prune`, `seen|unseen` and `review`, of `agent start` and `stop` (and, on stderr, the
+  `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
+  the state, the whole detail indented, the denials, the setup and the end of its log, the
+  drift), of `agent start` and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
   of the note commands (a note's lines as made and, when they moved, `(now line 5)`; the prompt a
   send pasted),
@@ -69,6 +71,12 @@ the adapters, and returns a domain value that `output` prints.
   an anchor is `{"scope":"line","line":N}`, `{"scope":"lines","start":S,"end":E}` or
   `{"scope":"file"}`); `note ls` the same with `notes`, in id order; `note rm` the `id` removed;
   `note send` the `prompt` pasted, the ids `sent` and those `kept` (edited while being sent).
+  Each worktree also carries `denials`, how many tool calls its agent was denied in its latest
+  turn (open or ended, whatever its outcome). `worktree detail` prints the worktree object,
+  `detail` (why it is in its state, whole, or null), `denials` (`[{"tool", "text"}]`, in order),
+  `setup` (`{"status": "running"|"interrupted"|"succeeded"|"failed", "log", "tail"}`, the last 20
+  lines of the log, or null when it never ran one) and `drift` (`{"against", "ahead", "behind"}`,
+  or null).
 
 ### ops
 
@@ -96,6 +104,12 @@ the adapters, and returns a domain value that `output` prints.
   its start point, find the review's base with `git merge-base <default branch> HEAD` in the
   worktree, then mark it seen as `worktree seen` does. The base comes first, so a failure (no
   default branch, unrelated histories) marks nothing.
+- `ops/worktree_detail.rs`: `worktree detail`: find the target (refusing the primary checkout and
+  an unknown worktree), read the hooks' live status for the whole detail and the latest turn's
+  denials, `worktree.json` and the end of the setup log (64 KiB at most), and the drift: the
+  default branch only when it exists locally (`refs/heads/<default>`, never `origin/`), `git
+  merge-base` against it (none: unrelated histories, no drift), then `git rev-list --left-right
+  --count`. A worktree whose directory is gone gives only its state and reason. Only reads.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
   `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
   the branch's fate, remove, delete or keep the branch.
@@ -137,7 +151,8 @@ the adapters, and returns a domain value that `output` prints.
 ### adapters
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
-  `default_branch`, `is_merged`, `merge_base`, `blob_id` of some content, `diff_files` between two
+  `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
+  drift's `rev-list --left-right --count`), `blob_id` of some content, `diff_files` between two
   files, ...) or change (`worktree_add`, `delete_branch`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
@@ -211,10 +226,16 @@ the adapters, and returns a domain value that `output` prints.
   a session start or end interrupts the open one; queued prompts are told apart by `prompt_id`,
   subagents (payloads with `agent_id`) never open or close a turn, and events of a turn that
   already ended are ignored. Tools set the activity, permission requests and questions wait.
+  `PostToolBatch` reports the tool calls denied (`is_denial`, by claude's words in a call's
+  `tool_response`), recorded on the open turn its `prompt_id` names, a subagent's too, once per
+  `tool_use_id`, never touching the phase or the activity. A failed turn keeps the agent's whole
+  last message.
 - `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes, the current
   session and its `transcript`) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
-  sessions), with texts kept to one capped line.
+  sessions), with texts kept to one capped line; each turn's denials (`Denial`: the tool, the
+  call as the activity shows it, and its id in `status.json` only; at most 100 a turn) and the
+  latest turn's (`Status::latest_denials`).
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
@@ -239,7 +260,12 @@ the adapters, and returns a domain value that `output` prints.
   big-endian length, the payload: input `i`, resize `r`, stop `s`, output `o`, exit `x`), their
   incremental decoder, and the scrollback a holder keeps.
 - `domain/setup.rs`: the setup: how it ended, what `worktree.json` records, the variables its
-  script gets, the last line of its log, and the reports of the commands that run it.
+  script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
+  the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
+  commands that run it.
+- `domain/detail.rs`: what `worktree detail` reports (`Detail`): the whole detail
+  (`whole_detail`: the state's own, or a failed turn's whole message), where the setup is
+  (`SetupProgress`) and the drift counted from git's output (`Drift`).
 - `domain/error.rs`: the typed errors a client tells apart, with their `kind` and exit code.
 - `domain/include.rs`: the copy list: which paths `.worktreeinclude` makes copyable, and the
   rule that a path never escapes the worktree.
@@ -305,6 +331,10 @@ validate"):
 - `SetupOutcome`, `SetupReport` and `SetupDone` (`domain/setup.rs`): what running the setup did
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
+- `Denial` (`domain/turn.rs`): a tool call the agent's permission settings denied, its tool and
+  its text; `Detail`, `SetupDetail`, `SetupProgress` and `Drift` (`domain/detail.rs`): what
+  `worktree detail` found, the latest setup and where it is, how far `HEAD` is ahead of and
+  behind the local default branch.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
   `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
@@ -335,7 +365,8 @@ validate"):
   to bottom. Shared steps go in `ops.rs`.
 - **Dependencies point down**: main > edge > ops > adapters > domain. A module uses its own layer
   or a lower one, through `crate::` paths, never a higher one.
-- **Nothing writes on a read path**: `worktree ls` only reads. It probes a worktree's lock with
+- **Nothing writes on a read path**: `worktree ls` and `worktree detail` only read (`detail`
+  runs git for the drift and fetches nothing). It probes a worktree's lock with
   a non-blocking try that it releases at once, reads the setup log only for a failed setup, and
   never rewrites an interrupted setup (ADR 0003: volatile facts are checked on read).
 - **Writes to a worktree's state hold its lock.** The functions that write `worktree.json`
@@ -385,7 +416,7 @@ validate"):
   fails as the typed `session_gone`, naming the reason and `agent start <name> --fresh`.
 - **Hooks report the live status, and never reach claude.** The settings register one
   synchronous handler for SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest,
-  PostToolUse, PostToolUseFailure, Stop, StopFailure and SessionEnd: `/bin/sh -c '"$0" hook
+  PostToolUse, PostToolUseFailure, PostToolBatch, Stop, StopFailure and SessionEnd: `/bin/sh -c '"$0" hook
   claude --admin "$1" "$2" >/dev/null 2>&1; exit 0'` in exec form, with orca-term's absolute path
   and the worktree's admin directory, a timeout of 5 s. It is wrapped because claude reads a
   hook's exit status 2 as a refusal (it rejects the prompt, or keeps working after `Stop`) and
@@ -399,6 +430,14 @@ validate"):
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
   `idle` after a fresh session; `--json` carries the `activity`.
+- **A denial is never a state** (ADR 0007, #42). claude reports a tool call its permission
+  settings denied only in `PostToolBatch`, by the text of the call's `tool_response` (no error
+  flag): a denial starts `Permission to use ` and says ` denied`, or says `denied by your
+  permission settings` or `deny rule in your permission settings`. The person's own refusal
+  (`The user doesn't want to proceed with this tool use.`) is not one, nor is a command the
+  sandbox stopped, which is a failed command. Denials are recorded on their turn (`status.json`
+  while it is open, the end line of `turns.jsonl` once it ends) and only counted: `worktree ls`
+  shows the latest turn's count as `denials`; the state and its derivation ignore them.
 - **The unseen mark is the person's, derived on read.** A worktree is unseen when its latest
   ended turn (an open turn whose holder is gone counts as ended) is after `seen_through` in
   `seen.json`, whatever its outcome, or when the person marked it by hand. Only the person's
@@ -502,6 +541,18 @@ validate"):
 - **A send whose notes could not be consumed after the paste** (another note command holding
   `notes.lock` for more than 2 s) reports the error and leaves the notes pending: sending again
   sends them twice.
+- **Denials depend on claude's words**: `hook::is_denial` matches the text of claude's
+  `tool_response`, which claude may reword in any release; the recordings of claude 2.1.303 in
+  `tests/fixtures/claude-hooks/tui-deny*` and `tui-sandbox` are its guard, replayed by the unit
+  tests of the hook module and by `tests/hooks.rs`. Record them again when the floor moves.
+- **Hooks give a lower bound of the denials**: when the person refuses or presses Esc at a
+  permission prompt, claude sends no `PostToolBatch` for that batch, so a rule denial in the same
+  batch is lost. A turn keeps at most 100 denials, and the count tops out there.
+- **A worktree whose directory is gone has no detail beyond its state**: `worktree detail` gives
+  its state and reason, and no denials, setup or drift, since git no longer names its admin
+  directory or its `HEAD`.
+- **A failed turn's whole message is kept up to 4000 characters**, and only in `status.json`, so
+  only the latest ended turn's.
 - **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
   once saying no session was found with that id, which is why the core checks the transcript
   first and reports `session_gone` instead.
