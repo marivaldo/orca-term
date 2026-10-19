@@ -329,6 +329,37 @@ describe('render', function()
     end
   )
 
+  it("shows a worktree's denials ⊘N before its notes ✎N, and none for zero", function()
+    local rendered = render.fleet(
+      fleet({
+        worktree('both', { denials = 3, notes = 2 }),
+        worktree('denied', { denials = 1, notes = 0 }),
+        worktree('none', { denials = 0, notes = 0 }),
+        worktree('picked', { denials = 12, notes = 1 }),
+      }),
+      '/src/wt/picked'
+    )
+    assert_fits(rendered, render.WIDTH)
+
+    local both = assert(rendered.firsts['/src/wt/both'])
+    assert.are.equal(' · both                       ⊘3 ✎2', rendered.lines[both])
+    assert.are.same(
+      { 'OrcaTermStateNoAgent', 'OrcaTermDenied', 'OrcaTermBadge' },
+      groups_on(rendered, both)
+    )
+    local denied_span = rendered.spans[assert(span_index(rendered, both, 'OrcaTermDenied'))]
+    assert.are.equal('⊘3', rendered.lines[both]:sub(denied_span.first + 1, denied_span.last))
+
+    local denied = assert(rendered.firsts['/src/wt/denied'])
+    assert.are.equal(' · denied                        ⊘1', rendered.lines[denied])
+
+    local none = assert(rendered.firsts['/src/wt/none'])
+    assert.are.equal(' · none', rendered.lines[none])
+
+    local picked = assert(rendered.firsts['/src/wt/picked'])
+    assert.are.equal(' │ · picked                ⊘12 ✎1 │', rendered.lines[picked])
+  end)
+
   it('selects the first worktree shown when the selected one is gone', function()
     local rendered = render.fleet(
       fleet({ worktree('quiet'), worktree('urgent', { state = 'broken' }) }),
@@ -367,5 +398,142 @@ describe('render', function()
     end
     -- Nothing is lost: joined back, the lines hold the whole message.
     assert.are.equal((message:gsub('%s', '')), (table.concat(words):gsub('%s', '')))
+  end)
+end)
+
+describe("render.detail, a worktree's detail", function()
+  ---A detail document shaped like `worktree detail --json`, for the worktree `fix`; a worktree
+  ---field set to `vim.NIL` is left out.
+  ---@param fields? table
+  ---@param worktree_fields? table
+  ---@return orca_term.Detail
+  local function document(fields, worktree_fields)
+    local item = worktree(
+      'fix',
+      vim.tbl_extend('force', {
+        state = 'finished',
+        agent = 'claude-code',
+        holder = false,
+        unseen = false,
+        notes = 0,
+        denials = 0,
+      }, worktree_fields or {})
+    )
+    -- `vim.NIL` leaves a field out, as the core's `null` reads in the client.
+    for key, value in pairs(item) do
+      if value == vim.NIL then
+        item[key] = nil
+      end
+    end
+    return vim.tbl_extend('force', {
+      contract = 1,
+      version = '0.0.0',
+      worktree = item,
+      denials = {},
+    }, fields or {})
+  end
+
+  it(
+    'shows the state, the agent, the branch and its drift, and only that when there is nothing else',
+    function()
+      local rendered =
+        render.detail(document({ drift = { against = 'main', ahead = 2, behind = 1 } }), 50)
+      assert.are.same({ ' ● finished · claude-code', ' fix  ↑2 ↓1 main' }, rendered.lines)
+      assert.are.same(
+        { 'OrcaTermStateFinished', 'OrcaTermStateFinished', 'OrcaTermMuted' },
+        groups_on(rendered, 1)
+      )
+      assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, 2))
+
+      local function branch_line(drift)
+        return render.detail(document({ drift = drift }), 50).lines[2]
+      end
+      assert.are.equal(' fix  ↑2 main', branch_line({ against = 'main', ahead = 2, behind = 0 }))
+      assert.are.equal(' fix  ↓4 main', branch_line({ against = 'main', ahead = 0, behind = 4 }))
+      assert.are.equal(
+        ' fix  up to date with main',
+        branch_line({ against = 'main', ahead = 0, behind = 0 })
+      )
+      -- No local default branch: no drift at all.
+      assert.are.equal(' fix', branch_line(nil))
+
+      -- No agent, no branch.
+      local bare =
+        render.detail(document({}, { state = 'no_agent', agent = vim.NIL, branch = vim.NIL }), 50)
+      assert.are.same({ ' · no agent', ' detached' }, bare.lines)
+    end
+  )
+
+  it('wraps the whole error to the width in the state colour, never cutting it', function()
+    local error = 'API Error: 400 '
+      .. string.rep('a long message that goes on and on ', 8)
+      .. '/a/path/far/too/long/to/fit/on/one/line/of/the/float/at/all/whatever/its/width/is'
+    local rendered = render.detail(document({ detail = error }, { state = 'failed' }), 40)
+    assert_fits(rendered, 39)
+    assert.are.equal('', rendered.lines[3])
+    local words = {}
+    for index = 4, #rendered.lines do
+      assert.are.same({ 'OrcaTermStateFailed' }, groups_on(rendered, index))
+      table.insert(words, vim.trim(rendered.lines[index]))
+    end
+    assert.is_nil(table.concat(rendered.lines):find('…', 1, true))
+    assert.are.equal((error:gsub('%s', '')), (table.concat(words):gsub('%s', '')))
+  end)
+
+  it('lists the denials after a muted heading, each after ⊘, wrapped under its text', function()
+    local long = 'Write: /a/very/long/path/to/a/denied/directory/and/a/file/inside/it.txt'
+    local rendered = render.detail(
+      document({
+        denials = {
+          { tool = 'Bash', text = 'Bash: FOO=bar ls' },
+          { tool = 'Write', text = long },
+        },
+      }),
+      40
+    )
+    assert_fits(rendered, 39)
+    assert.are.same({
+      ' ● finished · claude-code',
+      ' fix',
+      '',
+      ' Denied',
+      ' ⊘ Bash: FOO=bar ls',
+      ' ⊘ Write:',
+      '   /a/very/long/path/to/a/denied/direct',
+      '   ory/and/a/file/inside/it.txt',
+    }, rendered.lines)
+    assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, 4))
+    assert.are.same({ 'OrcaTermDenied' }, groups_on(rendered, 5))
+    local mark = rendered.spans[assert(span_index(rendered, 5, 'OrcaTermDenied'))]
+    assert.are.equal('⊘', rendered.lines[5]:sub(mark.first + 1, mark.last))
+    assert.are.same({}, groups_on(rendered, 7))
+  end)
+
+  it("shows the setup's status and the end of its log, muted, after the error", function()
+    local rendered = render.detail(
+      document({
+        detail = 'setup failed (exit 1): npm ERR! missing script: build',
+        setup = {
+          status = 'failed',
+          log = '/r/setup.log',
+          tail = { 'installing', '', 'npm ERR! missing script: build' },
+        },
+      }, { state = 'not_ready', agent = vim.NIL }),
+      60
+    )
+    assert.are.same({
+      ' △ not ready',
+      ' fix',
+      '',
+      ' setup failed (exit 1): npm ERR! missing script: build',
+      '',
+      ' Setup (failed)',
+      ' installing',
+      ' npm ERR! missing script: build',
+    }, rendered.lines)
+    assert.are.same({ 'OrcaTermStateNotReady' }, groups_on(rendered, 4))
+    for index = 6, 8 do
+      assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, index))
+    end
   end)
 end)

@@ -103,13 +103,18 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         })
         .collect();
     let mut lines: Vec<Vec<String>> = [header].into_iter().chain(rows).map(Vec::from).collect();
-    // The agent, notes and detail columns appear only when some worktree has something in them.
+    // The agent, notes, denials and detail columns appear only when some worktree has something in
+    // them.
     for (title, cells) in [
         (
             "AGENT",
             fleet.worktrees.iter().map(agent_cell).collect::<Vec<_>>(),
         ),
         ("NOTES", fleet.worktrees.iter().map(notes_cell).collect()),
+        (
+            "DENIALS",
+            fleet.worktrees.iter().map(denials_cell).collect(),
+        ),
         (
             "DETAIL",
             fleet
@@ -156,6 +161,16 @@ fn notes_cell(worktree: &Worktree) -> String {
         String::new()
     } else {
         worktree.notes.to_string()
+    }
+}
+
+/// How many tool calls the worktree's latest turn had denied, as the table shows it: the count, or
+/// nothing.
+fn denials_cell(worktree: &Worktree) -> String {
+    if worktree.denials == 0 {
+        String::new()
+    } else {
+        worktree.denials.to_string()
     }
 }
 
@@ -781,6 +796,20 @@ mod tests {
             "NAME  BRANCH  STATE     PATH  NOTES\n\
              a     a       no agent  /l/a  2\n\
              b     b       no agent  /l/b"
+        );
+    }
+
+    #[test]
+    fn the_denials_column_counts_the_latest_turns_denials_when_a_worktree_has_some() {
+        let mut denied = worktree("a", State::NoAgent);
+        denied.denials = 3;
+        let mut noted = worktree("b", State::NoAgent);
+        noted.notes = 1;
+        assert_eq!(
+            render_fleet_table(&fleet(vec![denied, noted])),
+            "NAME  BRANCH  STATE     PATH  NOTES  DENIALS\n\
+             a     a       no agent  /l/a         3\n\
+             b     b       no agent  /l/b  1"
         );
     }
 

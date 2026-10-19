@@ -1,12 +1,12 @@
 -- orca-term's agent terminals: the terminal buffer that shows a worktree's agent, attached to its
 -- holder through `orca-term agent attach` (run by `core.lua`).
 --
--- This module, `sidebar.lua`, `tabs.lua`, `review.lua` and `notes.lua` are the only ones that touch
--- windows and buffers (`cargo xtask client-boundary` checks it). A terminal is never remembered: it
--- is found again, each time, as the buffer whose `b:orca_term_agent` is the worktree's path,
--- compared with symlinks resolved. Closing the terminal only detaches: `:q` on its window hides it,
--- still attached, and `:bwipeout!` ends the attach; the agent keeps running either way, in its
--- holder.
+-- This module, `sidebar.lua`, `detail.lua`, `tabs.lua`, `review.lua` and `notes.lua` are the only
+-- ones that touch windows and buffers (`cargo xtask client-boundary` checks it). A terminal is
+-- never remembered: it is found again, each time, as the buffer whose `b:orca_term_agent` is the
+-- worktree's path, compared with symlinks resolved. Closing the terminal only detaches: `:q` on its
+-- window hides it, still attached, and `:bwipeout!` ends the attach; the agent keeps running either
+-- way, in its holder.
 --
 -- Neovim refuses `:wqa` and `:xa` (E948) while a terminal's job runs, although ending the attach
 -- only detaches. So the first terminal opened adds an `ExitPre` autocommand that stops the attach

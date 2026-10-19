@@ -1,9 +1,10 @@
 -- orca-term's review tabs: a worktree's review shown in diffview.nvim, in a tab of its own.
 --
--- This module, `sidebar.lua`, `tabs.lua`, `terminal.lua` and `notes.lua` are the only ones that
--- touch windows, tabs and buffers (`cargo xtask client-boundary` checks it), and this is the only
--- module that calls diffview.nvim. diffview has no type annotations LuaLS knows, so its modules and
--- views are plain `table`s here, and only the few fields and functions named below are used.
+-- This module, `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua` and `notes.lua` are the only
+-- ones that touch windows, tabs and buffers (`cargo xtask client-boundary` checks it), and this is
+-- the only module that calls diffview.nvim. diffview has no type annotations LuaLS knows, so its
+-- modules and views are plain `table`s here, and only the few fields and functions named below are
+-- used.
 --
 -- A review compares the review's base (the commit the worktree forked from, which the core's
 -- `worktree review` prints) with the worktree's files on disk: `DiffviewOpen <base>`, run with

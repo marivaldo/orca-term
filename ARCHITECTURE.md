@@ -607,7 +607,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   diffview.nvim, pinned in `.rocks/diffview.nvim` by `just lua-rocks` and added to the runtimepath
   for that file only, which closes every view and review tab it opens; `spec/notes_spec.lua` does
   the same to add, draw, list, send, edit and delete notes there, its fake claude recording every
-  line it reads (`support.claude_input`). See "Neovim client" below.
+  line it reads (`support.claude_input`). `spec/detail_spec.lua` opens the detail float with `K` on
+  worktrees whose denials are replayed from a recording, whose setup failed and whose branch
+  drifted, and fires `CursorMoved` itself, since headless Neovim runs no main loop between a spec's
+  calls. See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -642,7 +645,11 @@ what they print.
   body passed as `--body=<body>`), `note_ls`, `note_edit`, `note_rm` and `note_send(target, ids,
   cwd, on_done)` (every pending note when `ids` is empty), typed as `orca_term.Note` (its `anchor`
   as made and its `current` one, the line in the file on disk now) and one class per document; a
-  send with no running agent fails as `no_holder`. Every worktree carries `notes`, its pending count.
+  send with no running agent fails as `no_holder`. Every worktree carries `notes`, its pending count,
+  and `denials`, its latest turn's count. `worktree_detail(target, cwd, on_done)` runs `worktree
+  detail` without waiting (10 s at most), typed as `orca_term.Detail`: the worktree, its whole
+  `detail`, its `denials` (`orca_term.Denial`), its `setup` (`orca_term.SetupDetail`) and its
+  `drift` (`orca_term.Drift`).
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
   `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
@@ -657,10 +664,16 @@ what they print.
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. At the right end of a worktree's name line sit its icons, so far its pending notes `✎N`
-  (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; zero
-  notes shows nothing. No line reaches
-  past the width. It also counts the fleet for the status strip: `counts(fleet)` gives the
+  name. At the right end of a worktree's name line sit its icons, a space apart: the denials of its
+  latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
+  (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; a zero
+  count shows nothing. No line reaches past the width. `detail(detail, width)` lays out what `worktree
+  detail` printed for the detail float, in the same lines and spans: the state glyph and label (in
+  the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
+  main`, nothing without a local default branch), then, a blank line before each and only when it
+  has something, the whole detail in the state's colour, `Denied` and one `⊘ <call>` per denial,
+  and `Setup (<status>)` with the end of its log, muted; the detail, the denials and the log wrap
+  to the width and are never cut. It also counts the fleet for the status strip: `counts(fleet)` gives the
   worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
   `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
   then a state the client does not know yet, by name), leaving out the states no worktree is in,
@@ -669,9 +682,10 @@ what they print.
   `OrcaTermUnseen`. The working glyph does not spin there.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
   `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
-  `OrcaTermBadge` for a row's icons and `OrcaTermNote` for the notes in a review), defined as
-  default links to `Title`, `Comment`, `FloatBorder` and `Diagnostic*` (`OrcaTermUnseen` to
-  `DiagnosticWarn`, `OrcaTermBadge` to `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
+  `OrcaTermBadge` for a row's icons, `OrcaTermDenied` for the denials and `OrcaTermNote` for the
+  notes in a review), defined as default links to `Title`, `Comment`, `FloatBorder` and
+  `Diagnostic*` (`OrcaTermUnseen` and `OrcaTermDenied` to `DiagnosticWarn`, `OrcaTermBadge` to
+  `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
   person's own definition wins; `OrcaTermUnseenName`, the unseen worktree's name, is a default of
   its own, only bold. The sidebar, while open, the status strip, once started, and the notes, once a
   review opened, define them again after every `:colorscheme`.
@@ -723,7 +737,8 @@ what they print.
   the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
   creates a worktree, `u` toggles the unseen mark of the worktree under the cursor, `d` opens its
   review and `.` opens the menu of the worktree under the cursor (through
-  `actions.lua`). It is never shown in a review tab (`review.lua`): `show_in` skips one, also
+  `actions.lua`), and `K` shows or hides its detail float (through `detail.lua`, which closing the
+  sidebar closes too). It is never shown in a review tab (`review.lua`): `show_in` skips one, also
   while a review opens, and on `User DiffviewViewOpened` (a diffview the person opened by hand,
   where the sidebar showed itself before diffview registered its view) it closes the sidebar's
   window there; diffview split its diff windows from that window, so those get back a text window's
@@ -735,6 +750,19 @@ what they print.
   nothing works or the sidebar closes. Opening the sidebar subscribes to `live.lua` after its first
   read, which registers this Neovim from that fleet's primary checkout; closing it unsubscribes, so
   the core's events read nothing for it while it is closed.
+- `lua/orca-term/detail.lua`: the detail float, `K` in the sidebar. `toggle(sidebar, worktree,
+  cwd)` asks the core for `worktree detail` without waiting and opens a float of `render.detail`'s
+  lines in a scratch buffer (`bufhidden=wipe`, highlights in `NAMESPACE`): `relative = 'win'` on the
+  sidebar's window, just right of it at the cursor's row, moved up or left only as far as it takes
+  to stay in the editor, `border = 'rounded'`, the worktree's name as the title, `style =
+  'minimal'`, as wide as its longest line between `MIN_WIDTH` (40) and `MAX_WIDTH` (80) and the room
+  right of the sidebar, as high as its lines up to half the editor. It is never entered: the cursor
+  stays in the sidebar. From the moment `K` asks, the `orca-term-detail` group closes it (and drops
+  the answer still to come) on `CursorMoved` in the sidebar once the cursor left where `K` was
+  pressed, on `WinEnter` of any window but the sidebar or the float, and on `WinClosed` of the
+  sidebar's window; `K` again, `q` or `<Esc>` in the float and `close()` close it too. There is one
+  at most, and an answer for a request closed or replaced meanwhile is dropped; a refusal is told
+  with `vim.notify`. `answered()` counts the answers, shown or dropped, for the specs.
 - `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
   (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
   time, never remembered. A review tab is never a worktree's tab, although diffview makes it from
@@ -837,8 +865,8 @@ Its rules:
 - **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
   other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
   `lua/` or `plugin/`.
-- **Only `sidebar.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` touch windows,
-  tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
+- **Only `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua`
+  touch windows, tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
   functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
   moves between tabs only through `tabs.lua`, opens terminals only through `terminal.lua`, reviews
   only through `review.lua`, the one module that calls diffview.nvim (`notes.lua` asks it what a
@@ -903,3 +931,6 @@ Its known limits:
   back on diffview's next event there, as `gf` does.
 - `gn` and `gN` take the place of Neovim's own `gn` (select the next match) and `gN` in the
   review's buffers, while the review tab is current.
+- The detail float is as high as half the editor at most: a longer detail shows the rest only once
+  the person enters the float (`<C-w>w`) and scrolls. It shows the detail as it was when `K` was
+  pressed, and closes when the sidebar is drawn again with the cursor moved.
