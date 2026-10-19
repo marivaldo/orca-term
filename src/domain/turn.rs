@@ -11,6 +11,9 @@
 //! a schema newer than this core supports.
 //!
 //! Times are Unix milliseconds. Turns are numbered across the whole worktree, never per session.
+//!
+//! A turn also keeps the tool calls the agent was denied during it (`Denial`, from the
+//! `PostToolBatch` hook, `domain/hook.rs`): counted on the turn, never a state (ADR 0007).
 
 use std::path::PathBuf;
 
@@ -25,6 +28,28 @@ pub(crate) const TURNS_SCHEMA: u64 = 1;
 
 /// The most characters a stored text (a prompt, an activity, a detail) keeps.
 pub(crate) const MAX_TEXT_CHARS: usize = 300;
+
+/// The most characters a failed turn's whole error message keeps: far more than an API error
+/// says, only a bound on `status.json`.
+pub(crate) const MAX_MESSAGE_CHARS: usize = 4000;
+
+/// The most denials a turn keeps; any more are dropped, so `status.json` and a line of the turn
+/// log stay small.
+pub(crate) const MAX_DENIALS: usize = 100;
+
+/// A tool call the agent's permission settings denied it, as a `PostToolBatch` hook reported it
+/// (`domain/hook.rs`). It is counted on its turn and never makes a state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Denial {
+    /// The tool that was denied: `Bash`, `Write`, ...
+    pub(crate) tool: String,
+    /// The call in one line, as the activity shows a tool: `Bash: FOO=bar ls`.
+    pub(crate) text: String,
+    /// The agent's id for the call (`tool_use_id`), which tells a call reported twice apart. Kept
+    /// in `status.json` only, never in the turn log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<String>,
+}
 
 /// What the agent is doing in its open turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +89,21 @@ pub(crate) struct OpenTurn {
     pub(crate) phase: Phase,
     /// What the agent is doing, in one line: the prompt, then each tool it runs.
     pub(crate) activity: String,
+    /// The tool calls denied so far in the turn, in the order reported. Added within schema 1: a
+    /// file written before it reads as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) denials: Vec<Denial>,
+}
+
+impl OpenTurn {
+    /// Records `denial` on the turn, unless the turn already holds a denial of the same call (by
+    /// its id) or as many denials as it keeps.
+    pub(crate) fn record_denial(&mut self, denial: Denial) {
+        let known = denial.id.is_some() && self.denials.iter().any(|seen| seen.id == denial.id);
+        if !known && self.denials.len() < MAX_DENIALS {
+            self.denials.push(denial);
+        }
+    }
 }
 
 /// A turn that ended.
@@ -79,6 +119,14 @@ pub(crate) struct ClosedTurn {
     /// The type of the API error a failed turn ended on (`rate_limit`, `unknown`, ...).
     pub(crate) error: Option<String>,
     pub(crate) ended_at: u64,
+    /// The tool calls denied during the turn, in the order reported. Added within schema 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) denials: Vec<Denial>,
+    /// What the agent said last on a failed turn, whole (every line, up to
+    /// [`MAX_MESSAGE_CHARS`]): the error `detail` shows in one line. Kept in `status.json` only.
+    /// Added within schema 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) message: Option<String>,
 }
 
 /// The live status of a worktree's agent, as `status.json` records it.
@@ -104,6 +152,18 @@ pub(crate) struct Status {
     pub(crate) latest: Option<ClosedTurn>,
     #[serde(default)]
     pub(crate) updated_at: u64,
+}
+
+impl Status {
+    /// The denials of the worktree's latest turn: the open one, else the latest that ended,
+    /// whatever its outcome or session. None before any turn.
+    pub(crate) fn latest_denials(&self) -> &[Denial] {
+        match (&self.turn, &self.latest) {
+            (Some(open), _) => &open.denials,
+            (None, Some(closed)) => &closed.denials,
+            (None, None) => &[],
+        }
+    }
 }
 
 /// `status.json` as this core writes it: the status with its schema.
@@ -179,7 +239,7 @@ pub(crate) enum RecordKind {
 }
 
 /// One line of `turns.jsonl`. A start carries the prompt; an end carries the outcome, the
-/// detail and the error.
+/// detail, the error and the denials (without their ids).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnRecord {
     schema: u64,
@@ -197,6 +257,9 @@ pub(crate) struct TurnRecord {
     pub(crate) detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    /// Added within schema 1: a line written before it reads as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) denials: Vec<Denial>,
 }
 
 impl TurnRecord {
@@ -213,6 +276,7 @@ impl TurnRecord {
             outcome: None,
             detail: None,
             error: None,
+            denials: Vec::new(),
         }
     }
 
@@ -229,6 +293,14 @@ impl TurnRecord {
             outcome: Some(turn.outcome),
             detail: turn.detail.clone(),
             error: turn.error.clone(),
+            denials: turn
+                .denials
+                .iter()
+                .map(|denial| Denial {
+                    id: None,
+                    ..denial.clone()
+                })
+                .collect(),
         }
     }
 
@@ -300,6 +372,24 @@ pub(crate) fn one_line(text: &str) -> String {
     cap(line.unwrap_or_default())
 }
 
+/// `text` whole, every line kept, trimmed and cut to at most [`MAX_MESSAGE_CHARS`] characters,
+/// with control characters other than line feeds and tabs turned into spaces. Empty when it is
+/// blank.
+pub(crate) fn message(text: &str) -> String {
+    text.trim()
+        .replace("\r\n", "\n")
+        .chars()
+        .take(MAX_MESSAGE_CHARS)
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// `text` cut to at most [`MAX_TEXT_CHARS`] characters, on a character boundary, with control
 /// characters turned into spaces.
 pub(crate) fn cap(text: &str) -> String {
@@ -330,6 +420,7 @@ mod tests {
             started_at: 10,
             phase: Phase::Working,
             activity: "fix it".to_owned(),
+            denials: Vec::new(),
         }
     }
 
@@ -343,6 +434,16 @@ mod tests {
             detail: Some("API Error".to_owned()),
             error: Some("rate_limit".to_owned()),
             ended_at: 20,
+            denials: Vec::new(),
+            message: None,
+        }
+    }
+
+    fn denial(id: Option<&str>, text: &str) -> Denial {
+        Denial {
+            tool: "Bash".to_owned(),
+            text: text.to_owned(),
+            id: id.map(str::to_owned),
         }
     }
 
@@ -457,6 +558,99 @@ mod tests {
             ..Status::default()
         };
         assert_eq!(next_turn_number(Some(4), &status), 8);
+    }
+
+    #[test]
+    fn a_turn_keeps_each_denied_call_once_and_at_most_its_cap() {
+        let mut turn = open(1);
+        turn.record_denial(denial(Some("t1"), "Bash: ls"));
+        turn.record_denial(denial(Some("t1"), "Bash: ls"));
+        turn.record_denial(denial(Some("t2"), "Bash: ls"));
+        turn.record_denial(denial(None, "Bash: pwd"));
+        turn.record_denial(denial(None, "Bash: pwd"));
+        let ids: Vec<Option<&str>> = turn.denials.iter().map(|d| d.id.as_deref()).collect();
+        assert_eq!(
+            ids,
+            [Some("t1"), Some("t2"), None, None],
+            "deduplicated by the call's id; a call without one cannot be told apart"
+        );
+        for n in 0..MAX_DENIALS * 2 {
+            turn.record_denial(denial(Some(&format!("x{n}")), "Bash: ls"));
+        }
+        assert_eq!(turn.denials.len(), MAX_DENIALS);
+    }
+
+    #[test]
+    fn the_latest_turns_denials_are_the_open_turns_else_the_latest_ended() {
+        assert!(Status::default().latest_denials().is_empty());
+        let mut ended = closed(1);
+        ended.denials = vec![denial(Some("t1"), "Bash: ls")];
+        let mut status = Status {
+            latest: Some(ended),
+            ..Status::default()
+        };
+        assert_eq!(status.latest_denials().len(), 1);
+        status.turn = Some(open(2));
+        assert!(
+            status.latest_denials().is_empty(),
+            "a turn without denials opened since"
+        );
+    }
+
+    #[test]
+    fn an_end_line_carries_the_denials_without_their_ids() {
+        let mut ended = closed(3);
+        ended.denials = vec![denial(Some("toolu_1"), "Bash: FOO=bar ls")];
+        ended.message = Some("API Error: 400\nwhole".to_owned());
+        let line = String::from_utf8(TurnRecord::end(&ended).to_line().unwrap()).unwrap();
+        assert!(
+            line.ends_with(
+                r#""error":"rate_limit","denials":[{"tool":"Bash","text":"Bash: FOO=bar ls"}]}
+"#
+            ),
+            "{line}"
+        );
+        assert!(
+            !line.contains("whole"),
+            "the whole message stays in status.json"
+        );
+        let status = Status {
+            latest: Some(ended.clone()),
+            ..Status::default()
+        };
+        let bytes = status_bytes(&status).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains(r#""id":"toolu_1""#), "{text}");
+        assert_eq!(
+            read_status(Some(&bytes)).usable().unwrap().latest,
+            Some(ended)
+        );
+    }
+
+    #[test]
+    fn lines_and_statuses_written_before_the_denials_still_read() {
+        let old_end = br#"{"schema":1,"kind":"end","turn":3,"session":"s1","prompt_id":"p1","at":20,"outcome":"finished"}"#;
+        let record: TurnRecord = serde_json::from_slice(old_end).unwrap();
+        assert!(record.denials.is_empty());
+        let old = br#"{"schema":1,"session":"s1","turn":{"number":2,"session":"s1","prompt_id":"p2","prompt":"go","started_at":1,"phase":"working","activity":"go"},"latest":{"number":1,"session":"s1","prompt_id":"p1","prompt":"x","outcome":"failed","detail":"API Error","error":"unknown","ended_at":1},"updated_at":5}"#;
+        let status = read_status(Some(old)).usable().unwrap();
+        assert!(status.turn.unwrap().denials.is_empty());
+        let latest = status.latest.unwrap();
+        assert!(latest.denials.is_empty());
+        assert_eq!(latest.message, None);
+    }
+
+    #[test]
+    fn a_message_keeps_every_line_up_to_its_cap() {
+        assert_eq!(
+            message("\n API Error: 400\r\n{\"type\":\"error\"}\tend \u{1b}[0m\n"),
+            "API Error: 400\n{\"type\":\"error\"}\tend  [0m"
+        );
+        assert_eq!(message(" \n "), "");
+        assert_eq!(
+            message(&"x".repeat(MAX_MESSAGE_CHARS + 9)).chars().count(),
+            MAX_MESSAGE_CHARS
+        );
     }
 
     #[test]

@@ -166,5 +166,6 @@ fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktree> {
         holder: derived.holder,
         unseen: derived.unseen,
         notes: derived.notes,
+        denials: derived.denials,
     })
 }

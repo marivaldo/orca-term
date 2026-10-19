@@ -6,8 +6,8 @@
 //! --json`. The fake claude itself sends no hook. Also the guards: a hook exits 0 and prints
 //! nothing whatever it is given, and never makes a command busy.
 //!
-//! The recordings had their absolute paths replaced by `{{worktree}}`, `{{transcripts}}` and
-//! `{{denied}}`, which are written back here with paths of the test's own.
+//! The recordings had their absolute paths replaced by `{{worktree}}`, `{{transcripts}}`,
+//! `{{denied}}` and `{{tasks}}`, which are written back here with paths of the test's own.
 
 #![expect(
     clippy::unwrap_used,
@@ -80,7 +80,8 @@ impl<'a> Played<'a> {
                 let payload = payload
                     .replace("{{worktree}}", self.worktree.to_str().unwrap())
                     .replace("{{transcripts}}", tmp.join("transcripts").to_str().unwrap())
-                    .replace("{{denied}}", tmp.join("denied").to_str().unwrap());
+                    .replace("{{denied}}", tmp.join("denied").to_str().unwrap())
+                    .replace("{{tasks}}", tmp.join("tasks").to_str().unwrap());
                 (event.to_owned(), payload)
             })
             .collect()
@@ -91,6 +92,37 @@ impl<'a> Played<'a> {
         for (event, payload) in self.recording(fixture) {
             self.fire(&event, &payload);
         }
+    }
+
+    /// Plays the hooks of the recording `fixture` from the hook `from` (counted from 0) up to,
+    /// not including, the hook `to`.
+    fn play_part(&self, fixture: &str, from: usize, to: usize) {
+        for (event, payload) in &self.recording(fixture)[from..to] {
+            self.fire(event, payload);
+        }
+    }
+
+    /// `worktree detail --json` of the worktree.
+    fn detail(&self) -> Value {
+        serde_json::from_str(&self.fx.ok(&["worktree", "detail", &self.name, "--json"])).unwrap()
+    }
+
+    /// How many denials `worktree ls --json` counts on the worktree.
+    fn denial_count(&self) -> u64 {
+        self.fx.listed(&self.name)["denials"].as_u64().unwrap()
+    }
+
+    /// Where the recordings' `{{denied}}` directory is, in the test's own directory.
+    fn denied(&self, file: &str) -> String {
+        self.fx
+            .repo
+            .tmp
+            .path()
+            .join("denied")
+            .join(file)
+            .to_str()
+            .unwrap()
+            .to_owned()
     }
 
     /// Plays the recording `fixture` one hook at a time, checking after each the state and the
@@ -1211,4 +1243,180 @@ fn a_live_holder_with_fresh_is_reported_as_live() {
     assert_eq!(doc["holder"]["status"], "already_running");
     assert_eq!(doc["resumed"], NONE);
     assert_eq!(fx.starts(), 1, "no second agent");
+}
+
+#[test]
+fn every_launch_registers_the_batch_hook_that_reports_denials() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    let entries = played.settings["hooks"]["PostToolBatch"]
+        .as_array()
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].get("matcher"), None, "every batch");
+}
+
+#[test]
+fn denials_are_counted_on_the_latest_turn_and_detailed_one_per_line() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    assert_eq!(played.denial_count(), 0);
+    played.play("tui-deny-multi-2.1.303.log");
+    assert_eq!(played.shown().0, "finished", "a denial is never a state");
+    assert_eq!(played.denial_count(), 3);
+    let doc = played.detail();
+    let write =
+        |file: &str| json!({"tool": "Write", "text": format!("Write: {}", played.denied(file))});
+    assert_eq!(
+        doc["denials"],
+        json!([write("a.txt"), write("b.txt"), write("c.txt")])
+    );
+    assert_eq!(doc["worktree"]["denials"], 3);
+    let end = &played.turns()[1];
+    assert_eq!(
+        end["denials"],
+        json!([write("a.txt"), write("b.txt"), write("c.txt")]),
+        "the turn's end line keeps them, without the call ids"
+    );
+
+    let text = fx.ok(&["worktree", "detail", "fix"]);
+    assert!(
+        text.starts_with(&format!(
+            "fix: finished (unseen)\ndenied 3 tool calls in the latest turn:\n  Write: {}\n",
+            played.denied("a.txt")
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_bash_deny_rule_shows_while_the_turn_runs_and_the_turn_still_finishes() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    let ls = activity("Bash: FOO=bar ls");
+    played.play_checking(
+        "tui-deny-rule-bash-2.1.303.log",
+        &[
+            ("idle", NONE),
+            ("working", activity("PERM please")),
+            ("working", ls.clone()),
+            // PostToolBatch: the denial, with no change of state or activity.
+            ("working", ls),
+            ("finished", activity("All done. Second line here.")),
+            ("finished", activity("All done. Second line here.")),
+        ],
+    );
+    assert_eq!(played.denial_count(), 1);
+    assert_eq!(
+        played.detail()["denials"],
+        json!([{"tool": "Bash", "text": "Bash: FOO=bar ls"}])
+    );
+}
+
+#[test]
+fn an_open_turn_counts_its_denials_and_a_new_turn_starts_from_none() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    // SessionStart, UserPromptSubmit, PostToolBatch: the turn is open.
+    played.play_part("tui-deny-rule-2.1.303.log", 0, 3);
+    assert_eq!(played.shown().0, "working");
+    assert_eq!(played.denial_count(), 1);
+    assert_eq!(
+        played.status()["turn"]["denials"][0]["text"],
+        json!(format!("Write: {}", played.denied("from-write.txt")))
+    );
+    played.play_part("tui-deny-rule-2.1.303.log", 3, 5);
+    assert_eq!(played.denial_count(), 1, "the ended turn keeps them");
+
+    // A denial, then Esc and a new prompt: the interrupted turn keeps it, the new one has none.
+    let other = Played::start(&fx, "esc");
+    other.play("tui-deny-esc-2.1.303.log");
+    assert_eq!(other.denial_count(), 0);
+    let ends: Vec<Value> = other
+        .turns()
+        .into_iter()
+        .filter(|line| line["kind"] == "end")
+        .collect();
+    assert_eq!(ends[0]["outcome"], "interrupted");
+    assert_eq!(ends[0]["denials"].as_array().unwrap().len(), 1);
+    assert_eq!(ends[1].get("denials"), None);
+}
+
+#[test]
+fn a_subagents_denial_counts_on_the_main_turn() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    // Up to the main turn's Stop.
+    played.play_part("tui-deny-sub-2.1.303.log", 0, 7);
+    assert_eq!(played.denial_count(), 1);
+    assert_eq!(
+        played.detail()["denials"],
+        json!([{"tool": "Write", "text": format!("Write: {}", played.denied("from-write.txt"))}])
+    );
+    // The subagent's notification is a turn of its own, with none.
+    played.play_part("tui-deny-sub-2.1.303.log", 7, 10);
+    assert_eq!(played.denial_count(), 0);
+}
+
+#[test]
+fn a_refusal_a_sandbox_block_and_a_lost_denial_count_nothing() {
+    let fx = AgentRepo::new();
+    for (name, fixture) in [
+        ("tell", "tui-deny-tell-2.1.303.log"),
+        ("no", "tui-deny-2.1.303.log"),
+        ("mixed", "tui-deny-mixed-no-2.1.303.log"),
+        ("sandbox", "tui-sandbox-2.1.303.log"),
+    ] {
+        let played = Played::start(&fx, name);
+        played.play(fixture);
+        assert_eq!(played.denial_count(), 0, "{fixture}");
+        assert_eq!(played.detail()["denials"], json!([]), "{fixture}");
+        assert!(
+            played
+                .turns()
+                .iter()
+                .all(|line| line.get("denials").is_none()),
+            "{fixture}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_turn_gives_its_whole_error_in_the_detail() {
+    let fx = AgentRepo::new();
+    let played = Played::start(&fx, "fix");
+    let session = r#""session_id":"s1","transcript_path":"/t/s1.jsonl""#;
+    played.fire(
+        "UserPromptSubmit",
+        &format!(
+            r#"{{{session},"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"go"}}"#
+        ),
+    );
+    let body = "x".repeat(400);
+    let message = format!("API Error: 400\n{{\"error\":\"{body}\"}}");
+    played.fire(
+        "StopFailure",
+        &json!({
+            "session_id": "s1",
+            "hook_event_name": "StopFailure",
+            "prompt_id": "p1",
+            "error": "invalid_request",
+            "last_assistant_message": message,
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        played.shown(),
+        ("failed".to_owned(), activity("API Error: 400"))
+    );
+    let doc = played.detail();
+    assert_eq!(doc["detail"], json!(message), "every line, never cut");
+    assert_eq!(doc["worktree"]["activity"], "API Error: 400");
+    let text = fx.ok(&["worktree", "detail", "fix"]);
+    assert!(
+        text.starts_with(&format!(
+            "fix: failed (unseen)\n  API Error: 400\n  {{\"error\":\"{body}\"}}\n"
+        )),
+        "{text}"
+    );
 }

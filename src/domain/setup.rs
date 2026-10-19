@@ -17,6 +17,9 @@ use crate::domain::state::State;
 /// The file, in the worktree's admin directory, that holds the output of its latest setup.
 pub(crate) const LOG_FILE: &str = "setup.log";
 
+/// How many lines of the end of the setup log `worktree detail` shows.
+pub(crate) const TAIL_LINES: usize = 20;
+
 /// How a setup process ended when it did not succeed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Exit {
@@ -94,6 +97,8 @@ pub(crate) struct SetupReport {
     pub(crate) unseen: bool,
     /// How many notes are pending on the worktree (`domain/note.rs`); a setup never changes it.
     pub(crate) notes: usize,
+    /// How many tool calls its agent was denied in its latest turn; a setup never changes it.
+    pub(crate) denials: usize,
 }
 
 /// What `worktree setup` did.
@@ -131,6 +136,85 @@ pub(crate) fn last_line(log: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The last [`TAIL_LINES`] lines of the setup log whose end is `log`, as a person reads them: the
+/// terminal's control sequences (colours, cursor moves, window titles) taken out, a line a
+/// carriage return rewrote showing only its last rewrite, trailing blanks and blank lines at the
+/// end dropped. `cut` says the log is longer than `log`, whose first line is then partial and
+/// left out (unless it is the only one).
+pub(crate) fn log_tail(log: &[u8], cut: bool) -> Vec<String> {
+    let text = String::from_utf8_lossy(log);
+    let mut lines: Vec<String> = text.split('\n').map(readable_line).collect();
+    if cut && lines.len() > 1 {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(TAIL_LINES);
+    lines.split_off(start)
+}
+
+/// One line of a log as a person reads it: what its last carriage return left, without the
+/// terminal's control sequences, trailing blanks trimmed.
+fn readable_line(line: &str) -> String {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let last_rewrite = line.rsplit('\r').next().unwrap_or_default();
+    strip_terminal_codes(last_rewrite).trim_end().to_owned()
+}
+
+/// `text` without the terminal's control sequences and control characters: CSI sequences
+/// (`ESC [ ... m`, colours and cursor moves, also as the one-byte CSI), OSC, DCS and the other
+/// string sequences (ended by BEL or `ESC \`), character set designations (`ESC ( B`) and every
+/// other two-character escape; line feeds and tabs are kept.
+pub(crate) fn strip_terminal_codes(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => skip_escape(&mut chars),
+            '\u{9b}' => skip_csi(&mut chars),
+            '\n' | '\t' => kept.push(c),
+            c if c.is_control() => {}
+            c => kept.push(c),
+        }
+    }
+    kept
+}
+
+/// Skips what follows an ESC: the rest of its sequence.
+fn skip_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        Some('[') => skip_csi(chars),
+        Some(']' | 'P' | 'X' | '^' | '_') => skip_string(chars),
+        Some('(' | ')' | '*' | '+' | '-' | '.' | '/' | '#' | '%' | ' ') => {
+            chars.next();
+        }
+        _ => {}
+    }
+}
+
+/// Skips a CSI sequence's parameters up to its final character (`@` to `~`), included.
+fn skip_csi(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    for c in chars.by_ref() {
+        if ('\u{40}'..='\u{7e}').contains(&c) {
+            break;
+        }
+    }
+}
+
+/// Skips a string sequence (OSC, DCS, ...) up to BEL or `ESC \`, included.
+fn skip_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' {
+            break;
+        }
+        if c == '\u{1b}' {
+            chars.next_if_eq(&'\\');
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +247,54 @@ mod tests {
         assert_eq!(last_line(b"\r\n  done  \r\n"), Some("done".to_owned()));
         assert_eq!(last_line(b""), None);
         assert_eq!(last_line(b"\n\n"), None);
+    }
+
+    #[test]
+    fn the_terminals_control_sequences_are_taken_out() {
+        assert_eq!(
+            strip_terminal_codes("\u{1b}[1;31merror\u{1b}[0m: no lockfile"),
+            "error: no lockfile"
+        );
+        assert_eq!(
+            strip_terminal_codes("\u{1b}]0;title\u{7}a\u{1b}]8;;https://x\u{1b}\\b\u{1b}(Bc"),
+            "abc",
+            "OSC ended by BEL or ESC \\, and a character set designation"
+        );
+        assert_eq!(
+            strip_terminal_codes("\u{1b}[?25l\u{1b}[2K\u{1b}=x\u{9b}1my\u{8}\u{7}z\tw"),
+            "xyz\tw",
+            "private modes, keypad mode, the one-byte CSI and stray control characters"
+        );
+        assert_eq!(strip_terminal_codes("na\u{ef}ve \u{1b}"), "na\u{ef}ve ");
+    }
+
+    #[test]
+    fn the_log_tail_is_the_last_lines_as_a_person_reads_them() {
+        let log = b"\x1b[32mfetching\x1b[0m\r\n 10%\r 50%\r100%\r\nerror: boom  \n\n\n";
+        assert_eq!(log_tail(log, false), ["fetching", "100%", "error: boom"]);
+        assert!(log_tail(b"", false).is_empty());
+        assert!(log_tail(b"\n\n", false).is_empty());
+
+        let many = (1..=30)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail = log_tail(many.as_bytes(), false);
+        assert_eq!(tail.len(), TAIL_LINES);
+        assert_eq!(tail.first().map(String::as_str), Some("line 11"));
+        assert_eq!(tail.last().map(String::as_str), Some("line 30"));
+
+        assert_eq!(
+            log_tail(b"ial line\nwhole\n", true),
+            ["whole"],
+            "the partial first line of a cut log is left out"
+        );
+        assert_eq!(log_tail(b"only a part", true), ["only a part"]);
+        assert_eq!(
+            log_tail(b"\xffbad\n", false),
+            ["\u{fffd}bad"],
+            "bytes that are not UTF-8 are replaced"
+        );
     }
 
     #[test]

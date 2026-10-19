@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::domain::agent::{HolderStatus, StartOutcome, Started, StopOutcome, Stopped};
 use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
+use crate::domain::detail::{Detail, SetupProgress};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::launch::SessionId;
@@ -44,7 +45,8 @@ struct PrimaryView<'a> {
 /// hooks (`working`, `waiting`, `finished`, `failed`, `interrupted`), else null; `agent` is its
 /// recorded agent's name or null, `holder` whether a holder is alive, `unseen` whether its latest
 /// turn ended after the person last reviewed it (or the person marked it so), `notes` how many
-/// notes are pending on it.
+/// notes are pending on it, `denials` how many tool calls its agent was denied in its latest turn
+/// (open or ended; never a state).
 #[derive(Debug, Serialize)]
 struct WorktreeView<'a> {
     name: &'a str,
@@ -57,6 +59,7 @@ struct WorktreeView<'a> {
     holder: bool,
     unseen: bool,
     notes: usize,
+    denials: usize,
 }
 
 /// `worktree new --json`: the worktree as `worktree ls` shows it, and what was done to make it.
@@ -150,6 +153,45 @@ struct ReviewedView<'a> {
     worktree: WorktreeView<'a>,
     base: &'a str,
     against: String,
+}
+
+/// `worktree detail --json`: the worktree as `worktree ls` shows it; `detail`, why it is in its
+/// state, whole (every line: a failed setup's reason, a broken worktree's, or a failed turn's
+/// whole error), else null; `denials`, the tool calls its agent was denied in its latest turn, in
+/// order; `setup`, its latest setup (null when it never ran one); `drift`, how far it is from the
+/// local default branch (null when there is none, or the histories are unrelated).
+#[derive(Debug, Serialize)]
+struct DetailView<'a> {
+    worktree: WorktreeView<'a>,
+    detail: Option<&'a str>,
+    denials: Vec<DenialView<'a>>,
+    setup: Option<SetupDetailView<'a>>,
+    drift: Option<DriftView<'a>>,
+}
+
+/// One denied tool call: `tool` (`Bash`) and `text`, the call in one line (`Bash: FOO=bar ls`).
+#[derive(Debug, Serialize)]
+struct DenialView<'a> {
+    tool: &'a str,
+    text: &'a str,
+}
+
+/// A worktree's latest setup: `status` is `running`, `interrupted`, `succeeded` or `failed`;
+/// `log` is the setup log; `tail` its last lines, terminal control sequences taken out.
+#[derive(Debug, Serialize)]
+struct SetupDetailView<'a> {
+    status: &'static str,
+    log: &'a Path,
+    tail: &'a [String],
+}
+
+/// `ahead`: the worktree's commits the local default branch `against` lacks; `behind`: the
+/// branch's commits the worktree lacks.
+#[derive(Debug, Serialize)]
+struct DriftView<'a> {
+    against: &'a str,
+    ahead: u64,
+    behind: u64,
 }
 
 /// `note add --json` and `note edit --json`: the worktree, and the note as it is now.
@@ -290,6 +332,7 @@ fn set_up_worktree(
         holder: HolderStatus::Gone,
         unseen: setup.unseen,
         notes: setup.notes,
+        denials: setup.denials,
     }
 }
 
@@ -369,6 +412,42 @@ pub(crate) fn reviewed(reviewed: &Reviewed) -> serde_json::Result<String> {
         base: reviewed.base.as_str(),
         against: reviewed.against.to_string(),
     })
+}
+
+/// What `worktree detail` found, as one JSON document.
+pub(crate) fn detail(detail: &Detail) -> serde_json::Result<String> {
+    document(DetailView {
+        worktree: worktree_view(&detail.worktree),
+        detail: detail.why.as_deref(),
+        denials: detail
+            .denials
+            .iter()
+            .map(|denial| DenialView {
+                tool: &denial.tool,
+                text: &denial.text,
+            })
+            .collect(),
+        setup: detail.setup.as_ref().map(|setup| SetupDetailView {
+            status: setup_progress_name(setup.progress),
+            log: &setup.log,
+            tail: &setup.tail,
+        }),
+        drift: detail.drift.as_ref().map(|drift| DriftView {
+            against: drift.against.as_str(),
+            ahead: drift.ahead,
+            behind: drift.behind,
+        }),
+    })
+}
+
+/// How the contract names where a setup is.
+fn setup_progress_name(progress: SetupProgress) -> &'static str {
+    match progress {
+        SetupProgress::Running => "running",
+        SetupProgress::Interrupted => "interrupted",
+        SetupProgress::Succeeded => "succeeded",
+        SetupProgress::Failed(_) => "failed",
+    }
 }
 
 /// What `note add` or `note edit` left, as one JSON document.
@@ -467,6 +546,7 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
         holder: worktree.holder.is_alive(),
         unseen: worktree.unseen,
         notes: worktree.notes,
+        denials: worktree.denials,
     }
 }
 
@@ -505,12 +585,14 @@ mod tests {
     use crate::domain::agent::Agent;
     use crate::domain::branch::StartPoint;
     use crate::domain::config::Setting;
+    use crate::domain::detail::{Drift, SetupDetail};
     use crate::domain::error::{BusyReason, TypedError};
     use crate::domain::fleet::WorktreeEntry;
     use crate::domain::note::{LineRange, NotePath};
     use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
+    use crate::domain::turn::Denial;
     use crate::domain::worktree::KeptReason;
 
     #[test]
@@ -532,7 +614,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0}}]}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -583,7 +665,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}}]}}"#
             )
         );
     }
@@ -599,6 +681,7 @@ mod tests {
             holder: HolderStatus::Alive,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 
@@ -621,7 +704,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -684,12 +767,13 @@ mod tests {
                 agent: None,
                 unseen: true,
                 notes: 0,
+                denials: 0,
             },
         };
         assert_eq!(
             set_up(&done).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true,"notes":0}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true,"notes":0,"denials":0}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
             )
         );
     }
@@ -726,7 +810,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
             )
         );
     }
@@ -808,6 +892,73 @@ mod tests {
                 r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","prompt":"File: a\nScope: file\nUser comment: \"x\"","sent":[1,3],"kept":[3]}}"#
             )
         );
+    }
+
+    #[test]
+    fn the_detail_document_keeps_its_shape() {
+        let doc = detail(&Detail {
+            worktree: Worktree {
+                state: State::Failed,
+                activity: Some("API Error: 400".to_owned()),
+                denials: 1,
+                ..idle_worktree()
+            },
+            why: Some("API Error: 400\n{}".to_owned()),
+            denials: vec![Denial {
+                tool: "Bash".to_owned(),
+                text: "Bash: FOO=bar ls".to_owned(),
+                id: Some("toolu_1".to_owned()),
+            }],
+            setup: Some(SetupDetail {
+                progress: SetupProgress::Failed(Exit::Code(1)),
+                log: PathBuf::from("/a/setup.log"),
+                tail: vec!["installing".to_owned(), "error: boom".to_owned()],
+            }),
+            drift: Some(Drift {
+                against: Branch::new("main"),
+                ahead: 2,
+                behind: 1,
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}}}}"#
+            )
+        );
+        let bare: serde_json::Value = serde_json::from_str(
+            &detail(&Detail {
+                worktree: idle_worktree(),
+                why: None,
+                denials: Vec::new(),
+                setup: None,
+                drift: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(bare["detail"], serde_json::Value::Null);
+        assert_eq!(bare["denials"], serde_json::json!([]));
+        assert_eq!(bare["setup"], serde_json::Value::Null);
+        assert_eq!(bare["drift"], serde_json::Value::Null);
+        for (progress, name) in [
+            (SetupProgress::Running, "running"),
+            (SetupProgress::Interrupted, "interrupted"),
+            (SetupProgress::Succeeded, "succeeded"),
+            (SetupProgress::Failed(Exit::Signal(9)), "failed"),
+        ] {
+            assert_eq!(setup_progress_name(progress), name);
+        }
+    }
+
+    #[test]
+    fn a_worktree_carries_its_denials_count() {
+        let worktree = Worktree {
+            denials: 4,
+            ..idle_worktree()
+        };
+        assert_eq!(worktree_view(&worktree).denials, 4);
     }
 
     #[test]

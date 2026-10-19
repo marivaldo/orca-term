@@ -11,13 +11,22 @@
 //!
 //! Payloads from subagents (and claude's internal agents) carry `agent_id`; they never open or
 //! close a turn, nor set the session's transcript.
+//!
+//! claude reports a tool call its permission settings denied only in `PostToolBatch`, the event
+//! closing each batch of tool calls, by the text of the call's `tool_response` (there is no error
+//! flag): [`is_denial`]. Each denial is recorded on the open turn its `prompt_id` names, a
+//! subagent's too; it never changes the turn's phase or activity, so it is never a state. The
+//! person's own refusal at a permission prompt is not a denial, nor is a command the sandbox
+//! stopped (ADR 0007): that is a failed command. Hooks give a lower bound: when the person
+//! refuses or presses Esc on one call of a batch, claude sends no `PostToolBatch` for it, and a
+//! rule denial in the same batch is lost.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::domain::turn::{self, ClosedTurn, OpenTurn, Outcome, Phase, Status, TurnRecord};
+use crate::domain::turn::{self, ClosedTurn, Denial, OpenTurn, Outcome, Phase, Status, TurnRecord};
 
 /// The events a hook is registered for, each with its matcher (`*`: every tool), in the order
 /// the settings list them.
@@ -28,6 +37,7 @@ pub(crate) const REGISTERED: &[(&str, Option<&str>)] = &[
     ("PermissionRequest", Some("*")),
     ("PostToolUse", Some("*")),
     ("PostToolUseFailure", Some("*")),
+    ("PostToolBatch", None),
     ("Stop", None),
     ("StopFailure", None),
     ("SessionEnd", None),
@@ -36,6 +46,17 @@ pub(crate) const REGISTERED: &[(&str, Option<&str>)] = &[
 /// How the prompt claude submits after compacting a session starts. It continues the turn in
 /// progress, so it opens none.
 const COMPACTION_PROMPT: &str = "This session is being continued from a previous ";
+
+/// How claude's `tool_response` begins when a deny rule on a tool refused the call:
+/// `Permission to use Bash with command FOO=bar ls has been denied.`
+const DENIED_TOOL_START: &str = "Permission to use ";
+
+/// What claude's `tool_response` says when a deny rule refused the call, anywhere in it:
+/// `<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>`.
+const DENIED_PHRASES: &[&str] = &[
+    "denied by your permission settings",
+    "deny rule in your permission settings",
+];
 
 /// The `source` values of `SessionStart` that begin a new process or session: a turn left open
 /// before them was interrupted. `compact` happens mid-turn and closes nothing.
@@ -63,6 +84,61 @@ pub(crate) struct Payload {
     pub(crate) last_message: Option<String>,
     /// The type of the API error on `StopFailure`.
     pub(crate) error: Option<String>,
+    /// The calls of the batch `PostToolBatch` closes, each with what it returned.
+    pub(crate) tool_calls: Vec<ToolCall>,
+}
+
+/// One tool call of a `PostToolBatch` payload, reduced to the fields the rules read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolCall {
+    /// `tool_name`.
+    pub(crate) name: Option<String>,
+    /// `tool_input`, `null` when absent.
+    pub(crate) input: Value,
+    /// `tool_use_id`, the agent's id for the call.
+    pub(crate) id: Option<String>,
+    /// `tool_response`, what the call returned, when it is text; a tool that returned anything
+    /// else (the `Agent` tool's list of blocks) was not denied.
+    pub(crate) response: Option<String>,
+}
+
+impl ToolCall {
+    /// The call in `value`, one entry of `tool_calls`, every field taken when it is there and has
+    /// the expected type.
+    fn parse(value: &Value) -> Self {
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        Self {
+            name: text("tool_name"),
+            input: value.get("tool_input").cloned().unwrap_or(Value::Null),
+            id: text("tool_use_id"),
+            response: text("tool_response"),
+        }
+    }
+
+    /// The denial this call is, when its permission settings denied it: the tool and the call in
+    /// one line, as the activity shows it.
+    pub(crate) fn denial(&self) -> Option<Denial> {
+        let response = self.response.as_deref()?;
+        let tool = self.name.as_deref()?;
+        is_denial(response).then(|| Denial {
+            tool: tool.to_owned(),
+            text: tool_preview(tool, &self.input),
+            id: self.id.clone(),
+        })
+    }
+}
+
+/// Whether a tool call's `tool_response`, `response`, says claude's permission settings denied
+/// it: a deny rule on the tool (`Permission to use Bash with command ... has been denied.`) or on
+/// a path (`... denied by your permission settings.`). Only the text tells: the match is on
+/// claude's own words, kept honest by the recorded payloads in `tests/fixtures/claude-hooks/`.
+/// The person's refusal (`The user doesn't want to proceed with this tool use.`) and a command
+/// the sandbox stopped (`Operation not permitted`) are not denials.
+pub(crate) fn is_denial(response: &str) -> bool {
+    (response.starts_with(DENIED_TOOL_START) && response.contains(" denied"))
+        || DENIED_PHRASES
+            .iter()
+            .any(|phrase| response.contains(phrase))
 }
 
 impl Payload {
@@ -87,6 +163,11 @@ impl Payload {
             tool_input: value.get("tool_input").cloned().unwrap_or(Value::Null),
             last_message: text("last_assistant_message"),
             error: text("error"),
+            tool_calls: value
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(|calls| calls.iter().map(ToolCall::parse).collect())
+                .unwrap_or_default(),
         })
     }
 }
@@ -165,17 +246,46 @@ impl Step {
                 }
             }
             "SessionEnd" => self.close(Outcome::Interrupted, None, None),
+            "PostToolBatch" => self.batch_ended(payload),
             _ => {}
         }
     }
 
     /// An event of a subagent: only a permission request changes the phase, to waiting, and the
-    /// end of a subagent's tool changes it back to working.
+    /// end of a subagent's tool changes it back to working. Its denials count on the open turn
+    /// when its `prompt_id` is that turn's.
     fn subagent_event(&mut self, payload: &Payload) {
         match payload.event.as_str() {
             "PermissionRequest" => self.wait(payload),
             "PostToolUse" | "PostToolUseFailure" => self.work(),
+            "PostToolBatch" => {
+                let same_turn = self.status.turn.as_ref().is_some_and(|turn| {
+                    payload.prompt_id.is_some() && turn.prompt_id == payload.prompt_id
+                });
+                if same_turn {
+                    self.record_denials(payload);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// `PostToolBatch` of the main agent: an event of the turn its `prompt_id` names, which
+    /// records the batch's denials there.
+    fn batch_ended(&mut self, payload: &Payload) {
+        if self.follow_prompt(payload.prompt_id.as_deref()) {
+            self.record_denials(payload);
+        }
+    }
+
+    /// Records on the open turn every call of the batch in `payload` that was denied. The phase
+    /// and the activity stay as they were.
+    fn record_denials(&mut self, payload: &Payload) {
+        let Some(turn) = self.status.turn.as_mut() else {
+            return;
+        };
+        for denial in payload.tool_calls.iter().filter_map(ToolCall::denial) {
+            turn.record_denial(denial);
         }
     }
 
@@ -238,6 +348,14 @@ impl Step {
             "StopFailure" => {
                 let detail = payload.last_message.as_deref().map(turn::one_line);
                 self.close(Outcome::Failed, detail, payload.error.clone());
+                // The whole error, which the one-line detail cuts, for the detail float.
+                if let Some(latest) = self.status.latest.as_mut() {
+                    latest.message = payload
+                        .last_message
+                        .as_deref()
+                        .map(turn::message)
+                        .filter(|text| !text.is_empty());
+                }
             }
             "PreToolUse" => self.run_tool(payload),
             "PermissionRequest" => self.wait(payload),
@@ -284,6 +402,7 @@ impl Step {
             prompt,
             started_at: self.now,
             phase: Phase::Working,
+            denials: Vec::new(),
         };
         self.next_number += 1;
         self.records.push(TurnRecord::start(&turn));
@@ -304,6 +423,8 @@ impl Step {
             detail: detail.filter(|text| !text.is_empty()),
             error,
             ended_at: self.now,
+            denials: turn.denials,
+            message: None,
         };
         self.records.push(TurnRecord::end(&closed));
         self.status.latest = Some(closed);
@@ -367,6 +488,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::domain::agent::HolderStatus;
+    use crate::domain::state;
     use crate::domain::turn::MAX_TEXT_CHARS;
 
     /// A payload of the main agent in session `s1`.
@@ -383,6 +506,7 @@ mod tests {
             tool_input: Value::Null,
             last_message: None,
             error: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -879,6 +1003,316 @@ mod tests {
         }
         let long = tool_preview("Bash", &json!({"command": "x".repeat(1000)}));
         assert_eq!(long.chars().count(), MAX_TEXT_CHARS);
+    }
+
+    /// The recordings of claude 2.1.303 around denied tool calls (`tests/fixtures/claude-hooks/`),
+    /// by name, read at compile time.
+    const DENY_FIXTURES: &[(&str, &str)] = &[
+        (
+            "tui-deny",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-2.1.303.log"),
+        ),
+        (
+            "tui-deny-esc",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-esc-2.1.303.log"),
+        ),
+        (
+            "tui-deny-mixed-no",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-mixed-no-2.1.303.log"),
+        ),
+        (
+            "tui-deny-multi",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-multi-2.1.303.log"),
+        ),
+        (
+            "tui-deny-rule",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-rule-2.1.303.log"),
+        ),
+        (
+            "tui-deny-rule-bash",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-rule-bash-2.1.303.log"),
+        ),
+        (
+            "tui-deny-sub",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-sub-2.1.303.log"),
+        ),
+        (
+            "tui-deny-tell",
+            include_str!("../../tests/fixtures/claude-hooks/tui-deny-tell-2.1.303.log"),
+        ),
+        (
+            "tui-sandbox",
+            include_str!("../../tests/fixtures/claude-hooks/tui-sandbox-2.1.303.log"),
+        ),
+    ];
+
+    /// The payloads of a recording, one per line (the event, a space, the payload).
+    fn recorded(text: &str) -> Vec<Payload> {
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| Payload::parse(line.split_once(' ').unwrap().1.as_bytes()).unwrap())
+            .collect()
+    }
+
+    fn recording(name: &str) -> Vec<Payload> {
+        let (_, text) = DENY_FIXTURES.iter().find(|(n, _)| *n == name).unwrap();
+        recorded(text)
+    }
+
+    /// The denials of each ended turn in `log`, as (turn, texts).
+    fn denials_by_turn(log: &[TurnRecord]) -> Vec<(u64, Vec<String>)> {
+        log.iter()
+            .filter(|record| record.outcome.is_some())
+            .map(|record| {
+                let texts = record.denials.iter().map(|d| d.text.clone()).collect();
+                (record.turn, texts)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_denial_is_recognised_by_claudes_words_only() {
+        for denied in [
+            "Permission to use Bash with command FOO=bar ls has been denied.",
+            "<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>",
+            "Permission to use Write has been denied because of a deny rule in your permission settings.",
+            "blocked: matches a deny rule in your permission settings",
+        ] {
+            assert!(is_denial(denied), "{denied}");
+        }
+        for not_denied in [
+            "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+            "Exit code 1\ntouch: /x/from-bash.txt: Operation not permitted",
+            "Permission to use Bash was granted.",
+            "the file says: access denied",
+            "",
+        ] {
+            assert!(!is_denial(not_denied), "{not_denied}");
+        }
+    }
+
+    #[test]
+    fn each_recorded_batch_gives_the_denials_claude_reported() {
+        let mut by_fixture = Vec::new();
+        for (name, text) in DENY_FIXTURES {
+            let denials: Vec<String> = recorded(text)
+                .iter()
+                .flat_map(|payload| payload.tool_calls.iter().filter_map(ToolCall::denial))
+                .map(|denial| format!("{}|{}", denial.tool, denial.text))
+                .collect();
+            by_fixture.push((*name, denials));
+        }
+        let write = |file: &str| format!("Write|Write: {{{{denied}}}}/{file}");
+        assert_eq!(
+            by_fixture,
+            [
+                ("tui-deny", vec![]),
+                ("tui-deny-esc", vec![write("a.txt")]),
+                ("tui-deny-mixed-no", vec![]),
+                (
+                    "tui-deny-multi",
+                    vec![write("a.txt"), write("b.txt"), write("c.txt")]
+                ),
+                ("tui-deny-rule", vec![write("from-write.txt")]),
+                (
+                    "tui-deny-rule-bash",
+                    vec!["Bash|Bash: FOO=bar ls".to_owned()]
+                ),
+                ("tui-deny-sub", vec![write("from-write.txt")]),
+                ("tui-deny-tell", vec![],),
+                ("tui-sandbox", vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn denials_are_recorded_on_the_turn_their_prompt_id_names() {
+        let (status, log) = replay(&recording("tui-deny-multi"));
+        assert_eq!(
+            denials_by_turn(&log),
+            [(
+                1,
+                vec![
+                    "Write: {{denied}}/a.txt".to_owned(),
+                    "Write: {{denied}}/b.txt".to_owned(),
+                    "Write: {{denied}}/c.txt".to_owned()
+                ]
+            )]
+        );
+        assert_eq!(status.latest_denials().len(), 3);
+
+        // A denial, then Esc: it stays on the interrupted turn; the next turn has none.
+        let (status, log) = replay(&recording("tui-deny-esc"));
+        assert_eq!(
+            denials_by_turn(&log),
+            [(1, vec!["Write: {{denied}}/a.txt".to_owned()]), (2, vec![])]
+        );
+        assert!(status.latest_denials().is_empty());
+
+        // A subagent's denial counts on the main turn; the notification's turn has none.
+        let (status, log) = replay(&recording("tui-deny-sub"));
+        assert_eq!(
+            denials_by_turn(&log),
+            [
+                (1, vec!["Write: {{denied}}/from-write.txt".to_owned()]),
+                (2, vec![])
+            ]
+        );
+        assert!(status.latest_denials().is_empty());
+
+        for name in [
+            "tui-deny",
+            "tui-deny-tell",
+            "tui-deny-mixed-no",
+            "tui-sandbox",
+        ] {
+            let (status, log) = replay(&recording(name));
+            assert!(
+                denials_by_turn(&log)
+                    .iter()
+                    .all(|(_, texts)| texts.is_empty()),
+                "{name}"
+            );
+            assert!(status.latest_denials().is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn denials_show_while_the_turn_is_open() {
+        let events = recording("tui-deny-rule-bash");
+        let (status, _) = replay(&events[..4]);
+        let turn = status.turn.unwrap();
+        assert_eq!(turn.denials.len(), 1);
+        assert_eq!(turn.denials[0].text, "Bash: FOO=bar ls");
+        assert_eq!(
+            turn.denials[0].id.as_deref(),
+            Some("toolu_msg_1792444455766_0")
+        );
+    }
+
+    /// The state and activity a worktree with an agent shows, with its holder alive and gone,
+    /// after each event of `events` but `PostToolBatch`.
+    fn states_shown(events: &[Payload]) -> Vec<(state::State, Option<String>)> {
+        let mut shown = Vec::new();
+        let mut status = Status::default();
+        let mut last = None;
+        for (at, payload) in (1u64..).zip(events) {
+            let next = turn::next_turn_number(last, &status);
+            let applied = apply(status, payload, at, next);
+            status = applied.status;
+            last = applied.records.last().map(|r| r.turn).or(last);
+            if payload.event == "PostToolBatch" {
+                continue;
+            }
+            for holder in [HolderStatus::Alive, HolderStatus::Gone] {
+                shown.push(state::ready(Some("claude-code"), Some(&status), holder));
+            }
+        }
+        shown
+    }
+
+    #[test]
+    fn denials_never_change_the_state() {
+        for (name, text) in DENY_FIXTURES {
+            let all = recorded(text);
+            let without: Vec<Payload> = all
+                .iter()
+                .filter(|payload| payload.event != "PostToolBatch")
+                .cloned()
+                .collect();
+            assert_eq!(states_shown(&all), states_shown(&without), "{name}");
+        }
+    }
+
+    /// A `PostToolBatch` of `prompt_id` whose only call was denied, with the id `id`.
+    fn denied_batch(prompt_id: &str, id: &str) -> Payload {
+        Payload {
+            tool_calls: vec![ToolCall {
+                name: Some("Bash".to_owned()),
+                input: json!({"command": "rm -rf build"}),
+                id: Some(id.to_owned()),
+                response: Some(
+                    "Permission to use Bash with command rm -rf build has been denied.".to_owned(),
+                ),
+            }],
+            ..event("PostToolBatch", Some(prompt_id))
+        }
+    }
+
+    #[test]
+    fn a_batch_outside_an_open_turn_is_ignored_and_a_call_counts_once() {
+        let (status, log) = replay(&[
+            submit("p1", "go"),
+            denied_batch("p1", "t1"),
+            denied_batch("p1", "t1"),
+            stop("p1", "ok"),
+            denied_batch("p1", "t2"),
+        ]);
+        assert_eq!(
+            denials_by_turn(&log),
+            [(1, vec!["Bash: rm -rf build".to_owned()])],
+            "the same call reported twice counts once; a late batch changes nothing"
+        );
+        assert_eq!(status.latest_denials().len(), 1);
+
+        let sub = |payload: Payload| Payload {
+            agent_id: Some("a1".to_owned()),
+            ..payload
+        };
+        let (status, log) = replay(&[sub(denied_batch("p1", "t1"))]);
+        assert!(log.is_empty(), "a subagent's batch opens no turn");
+        assert_eq!(status.turn, None);
+        let (status, _) = replay(&[submit("p1", "go"), sub(denied_batch("p0", "t1"))]);
+        assert!(
+            status.latest_denials().is_empty(),
+            "a subagent's batch of another prompt is not this turn's"
+        );
+        let (status, _) = replay(&[submit("p1", "go"), sub(denied_batch("p1", "t1"))]);
+        assert_eq!(status.latest_denials().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_turn_keeps_its_whole_message() {
+        let (status, log) = replay(&[
+            submit("p1", "go"),
+            Payload {
+                last_message: Some("API Error: 400\n{\"error\":\"bad\"}".to_owned()),
+                error: Some("unknown".to_owned()),
+                ..event("StopFailure", Some("p1"))
+            },
+        ]);
+        let latest = status.latest.unwrap();
+        assert_eq!(latest.detail.as_deref(), Some("API Error: 400"));
+        assert_eq!(
+            latest.message.as_deref(),
+            Some("API Error: 400\n{\"error\":\"bad\"}")
+        );
+        let (status, _) = replay(&[submit("p1", "go"), stop("p1", "done\nmore")]);
+        assert_eq!(
+            status.latest.unwrap().message,
+            None,
+            "only a failure keeps it"
+        );
+        assert_eq!(log[1].detail.as_deref(), Some("API Error: 400"));
+    }
+
+    #[test]
+    fn a_payload_reads_its_tool_calls_leniently() {
+        let payload = Payload::parse(
+            br#"{"hook_event_name":"PostToolBatch","tool_calls":[{"tool_name":"Agent","tool_response":[{"type":"text"}]},{"tool_name":7},"x"]}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.tool_calls.len(), 3);
+        assert_eq!(payload.tool_calls[0].response, None);
+        assert_eq!(payload.tool_calls[1].name, None);
+        assert!(
+            payload
+                .tool_calls
+                .iter()
+                .all(|call| call.denial().is_none())
+        );
+        let none = Payload::parse(br#"{"hook_event_name":"Stop"}"#).unwrap();
+        assert!(none.tool_calls.is_empty());
     }
 
     #[test]

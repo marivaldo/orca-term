@@ -15,6 +15,7 @@ pub(crate) mod note_rm;
 pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
+pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
@@ -62,6 +63,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.holder = derived.holder;
         worktree.unseen = derived.unseen;
         worktree.notes = derived.notes;
+        worktree.denials = derived.denials;
     }
     Ok(fleet)
 }
@@ -80,6 +82,8 @@ pub(crate) struct Derived {
     pub(crate) unseen: bool,
     /// How many notes are pending on it (`domain/note.rs`).
     pub(crate) notes: usize,
+    /// How many tool calls its agent was denied in its latest turn (`domain/turn.rs`).
+    pub(crate) denials: usize,
 }
 
 impl Derived {
@@ -91,6 +95,7 @@ impl Derived {
             holder: HolderStatus::Gone,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 }
@@ -111,13 +116,22 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
     }
 }
 
-/// The state of the worktree whose admin directory is `admin`, whether it is unseen and how many
-/// notes are pending on it. Only reads.
+/// The state of the worktree whose admin directory is `admin`, whether it is unseen, how many
+/// notes are pending on it and how many tool calls its agent was denied in its latest turn. Only
+/// reads.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     let mut derived = derive_agent_state(admin)?;
     derived.unseen = read_unseen(admin, derived.holder);
     derived.notes = read_note_count(admin);
+    derived.denials = read_denial_count(admin);
     Ok(derived)
+}
+
+/// How many tool calls the agent of the worktree whose admin directory is `admin` was denied in
+/// its latest turn, open or ended, from the hooks' live status. Only reads, and never fails: a
+/// `status.json` that cannot be used counts none. It never changes the state.
+fn read_denial_count(admin: &AdminDir) -> usize {
+    read_status(admin).map_or(0, |status| status.latest_denials().len())
 }
 
 /// How many notes are pending on the worktree whose admin directory is `admin`. Only reads, and
@@ -158,6 +172,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 holder: HolderStatus::Gone,
                 unseen: false,
                 notes: 0,
+                denials: 0,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -185,6 +200,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         holder,
         unseen: false,
         notes: 0,
+        denials: 0,
     })
 }
 
@@ -337,6 +353,7 @@ pub(crate) fn set_up(
             agent: derived.agent,
             unseen: derived.unseen,
             notes: derived.notes,
+            denials: derived.denials,
         });
     };
     write_state(lock, Some(SetupRecord::Running))?;
@@ -357,6 +374,7 @@ pub(crate) fn set_up(
         agent: derived.agent,
         unseen: derived.unseen,
         notes: derived.notes,
+        denials: derived.denials,
     })
 }
 
