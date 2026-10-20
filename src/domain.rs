@@ -19,6 +19,7 @@ pub(crate) mod review;
 pub(crate) mod sandbox;
 pub(crate) mod seen;
 pub(crate) mod setup;
+pub(crate) mod snapshot;
 pub(crate) mod state;
 pub(crate) mod turn;
 pub(crate) mod worktree;

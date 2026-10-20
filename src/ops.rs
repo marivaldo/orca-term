@@ -401,12 +401,10 @@ impl Changed {
     /// they cannot be read: then nobody is told, which is never an error.
     pub(crate) fn of(admin: &AdminDir) -> Option<Self> {
         let commondir = admin.commondir_file()?;
-        let gitdir = admin.gitdir_file()?;
         let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
-        let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
         Some(Self {
             common: state::common_dir_from(&commondir, &commondir_text)?,
-            worktree: state::worktree_path_from(&gitdir, &gitdir_text)?,
+            worktree: worktree_of(admin)?,
         })
     }
 
@@ -442,6 +440,14 @@ impl Changed {
             }
         }
     }
+}
+
+/// The path of the worktree whose admin directory is `admin`, as `worktree ls` prints it, from
+/// git's `gitdir` file beside it, without running git. `None` when it cannot be read.
+pub(crate) fn worktree_of(admin: &AdminDir) -> Option<PathBuf> {
+    let gitdir = admin.gitdir_file()?;
+    let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
+    state::worktree_path_from(&gitdir, &gitdir_text)
 }
 
 /// Tells the running Neovims that the worktree whose admin directory is `admin` changed: what

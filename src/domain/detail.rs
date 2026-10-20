@@ -136,6 +136,9 @@ mod tests {
                 ended_at: 1,
                 denials: Vec::new(),
                 message: message.map(str::to_owned),
+                begin: None,
+                end: None,
+                end_observed: false,
             }),
             ..Status::default()
         }

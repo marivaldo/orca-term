@@ -73,6 +73,13 @@ const NOTES_LOCK_FILE: &str = "notes.lock";
 /// The directory of the file contents kept for notes on lines, one file per git blob id.
 const NOTE_COPIES_DIR: &str = "notes";
 
+/// The throwaway copy of the worktree's index a snapshot is taken through (`domain/snapshot.rs`),
+/// removed once the snapshot is taken. The real index is never touched.
+const SNAPSHOT_INDEX_FILE: &str = "snapshot.index";
+
+/// The directory of the git common dir holding git's admin directory of each worktree.
+pub(crate) const GIT_WORKTREES_DIR: &str = "worktrees";
+
 /// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
@@ -161,6 +168,23 @@ impl AdminDir {
     /// The directory of the contents kept for notes on lines, `notes/`.
     pub(crate) fn note_copies(&self) -> PathBuf {
         self.0.join(NOTE_COPIES_DIR)
+    }
+
+    /// The throwaway index a snapshot is taken through, `snapshot.index`.
+    pub(crate) fn snapshot_index(&self) -> PathBuf {
+        self.0.join(SNAPSHOT_INDEX_FILE)
+    }
+
+    /// The id git gave the worktree: the name of git's per-worktree admin directory
+    /// (`<common>/worktrees/<id>`) this directory is in. `None` when it is not in one, as for the
+    /// primary checkout's.
+    pub(crate) fn worktree_id(&self) -> Option<&str> {
+        let git_dir = self.0.parent()?;
+        let worktrees = git_dir.parent()?;
+        if worktrees.file_name()? != GIT_WORKTREES_DIR {
+            return None;
+        }
+        git_dir.file_name()?.to_str()
     }
 
     /// git's `commondir` file beside this directory, in git's per-worktree admin directory
@@ -626,6 +650,8 @@ mod tests {
                 phase,
                 activity: "Bash: npm test".to_owned(),
                 denials: Vec::new(),
+                agent: "claude".to_owned(),
+                begin: None,
             }),
             ..Status::default()
         }
@@ -645,6 +671,9 @@ mod tests {
                 ended_at: 2,
                 denials: Vec::new(),
                 message: None,
+                begin: None,
+                end: None,
+                end_observed: false,
             }),
             ..Status::default()
         }
@@ -913,6 +942,18 @@ mod tests {
     fn a_corrupt_file_is_reported_with_its_path() {
         let err = read(Path::new(PATH), Some(b"{not json")).unwrap_err();
         assert!(format!("{err:#}").starts_with("could not parse /admin/orca-term/worktree.json: "));
+    }
+
+    #[test]
+    fn a_worktrees_id_is_the_name_of_gits_admin_dir_it_is_in() {
+        let admin = AdminDir::new(PathBuf::from("/r/.git/worktrees/fix1/orca-term"));
+        assert_eq!(admin.worktree_id(), Some("fix1"));
+        assert_eq!(
+            admin.snapshot_index(),
+            Path::new("/r/.git/worktrees/fix1/orca-term/snapshot.index")
+        );
+        let primary = AdminDir::new(PathBuf::from("/r/.git/orca-term"));
+        assert_eq!(primary.worktree_id(), None, "the primary checkout has none");
     }
 
     #[test]

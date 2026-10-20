@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped};
 use crate::domain::detail::{Detail, Drift, SetupDetail, SetupProgress};
 use crate::domain::error;
-use crate::domain::fleet::{Fleet, Worktree};
+use crate::domain::fleet::{Fleet, Pruned, Worktree};
 use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
@@ -305,20 +305,22 @@ fn render_worktree_removed(removed: &Removed) -> String {
     )
 }
 
-/// Prints the worktrees `worktree prune` cleaned, one path per line, or that there was nothing to prune.
-pub(crate) fn worktrees_pruned(pruned: &[PathBuf]) {
+/// Prints what `worktree prune` cleaned, one line each: the worktrees by path, then the chains of
+/// snapshots by ref; or that there was nothing to prune.
+pub(crate) fn worktrees_pruned(pruned: &Pruned) {
     out(&render_worktrees_pruned(pruned));
 }
 
-fn render_worktrees_pruned(pruned: &[PathBuf]) -> String {
-    if pruned.is_empty() {
+fn render_worktrees_pruned(pruned: &Pruned) -> String {
+    if pruned.worktrees.is_empty() && pruned.chains.is_empty() {
         return "nothing to prune".to_owned();
     }
-    pruned
+    let worktrees = pruned
+        .worktrees
         .iter()
-        .map(|path| format!("pruned {}", path.display()))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|path| format!("pruned {}", path.display()));
+    let chains = pruned.chains.iter().map(|name| format!("deleted {name}"));
+    worktrees.chain(chains).collect::<Vec<_>>().join("\n")
 }
 
 /// Prints what `agent start` did and, in text, says on stderr which extra paths the sandbox may
@@ -1196,11 +1198,32 @@ mod tests {
     }
 
     #[test]
-    fn worktree_prune_lists_paths_or_says_nothing() {
-        assert_eq!(render_worktrees_pruned(&[]), "nothing to prune");
+    fn worktree_prune_lists_paths_and_chains_or_says_nothing() {
         assert_eq!(
-            render_worktrees_pruned(&[PathBuf::from("/a"), PathBuf::from("/b")]),
+            render_worktrees_pruned(&Pruned::default()),
+            "nothing to prune"
+        );
+        let worktrees = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees: worktrees.clone(),
+                chains: Vec::new(),
+            }),
             "pruned /a\npruned /b"
+        );
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees,
+                chains: vec!["refs/orca-term/worktrees/a".to_owned()],
+            }),
+            "pruned /a\npruned /b\ndeleted refs/orca-term/worktrees/a"
+        );
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees: Vec::new(),
+                chains: vec!["refs/orca-term/worktrees/a".to_owned()],
+            }),
+            "deleted refs/orca-term/worktrees/a"
         );
     }
 }
