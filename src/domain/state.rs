@@ -325,6 +325,9 @@ pub(crate) enum NotReadyReason {
         exit: Exit,
         last_line: Option<String>,
     },
+    /// Its setup script comes from a committed `orca-term.yaml` the person has not approved, so it
+    /// did not run; `name` is the worktree's, for the command that approves it.
+    NotApproved { name: String },
 }
 
 /// The reason as the fleet shows it, in the table's detail and in the JSON `detail`.
@@ -332,6 +335,9 @@ impl fmt::Display for NotReadyReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Interrupted => write!(f, "setup interrupted"),
+            Self::NotApproved { name } => {
+                write!(f, "setup not approved; run orca-term worktree setup {name}")
+            }
             Self::Failed {
                 exit,
                 last_line: Some(line),
@@ -411,6 +417,13 @@ pub(crate) fn setup_failed(exit: Exit, log: &[u8]) -> State {
     })
 }
 
+/// The state of the worktree `name`, whose setup script was not approved.
+pub(crate) fn setup_not_approved(name: &str) -> State {
+    State::NotReady(NotReadyReason::NotApproved {
+        name: name.to_owned(),
+    })
+}
+
 /// Why a worktree is broken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BrokenReason {
@@ -476,8 +489,8 @@ impl WorktreeFile {
     }
 }
 
-/// The `setup` object of `worktree.json`: `{"status": "running" | "succeeded" | "failed"}`, with
-/// `exit_code` or `signal` when it failed.
+/// The `setup` object of `worktree.json`: `{"status": "running" | "succeeded" | "failed" |
+/// "not_approved"}`, with `exit_code` or `signal` when it failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SetupFile {
     status: SetupStatus,
@@ -493,6 +506,7 @@ enum SetupStatus {
     Running,
     Succeeded,
     Failed,
+    NotApproved,
 }
 
 impl SetupFile {
@@ -502,6 +516,7 @@ impl SetupFile {
             SetupRecord::Succeeded => (SetupStatus::Succeeded, None, None),
             SetupRecord::Failed(Exit::Code(code)) => (SetupStatus::Failed, Some(code), None),
             SetupRecord::Failed(Exit::Signal(signal)) => (SetupStatus::Failed, None, Some(signal)),
+            SetupRecord::NotApproved => (SetupStatus::NotApproved, None, None),
         };
         Self {
             status,
@@ -514,6 +529,7 @@ impl SetupFile {
         Ok(match (self.status, self.exit_code, self.signal) {
             (SetupStatus::Running, ..) => SetupRecord::Running,
             (SetupStatus::Succeeded, ..) => SetupRecord::Succeeded,
+            (SetupStatus::NotApproved, ..) => SetupRecord::NotApproved,
             (SetupStatus::Failed, Some(code), _) => SetupRecord::Failed(Exit::Code(code)),
             (SetupStatus::Failed, None, Some(signal)) => SetupRecord::Failed(Exit::Signal(signal)),
             (SetupStatus::Failed, None, None) => {
@@ -618,6 +634,24 @@ mod tests {
         let seen = read(Path::new(PATH), Some(&bytes)).unwrap();
         assert_eq!(seen.agent.as_deref(), Some("claude-code"));
         assert_eq!(seen.setup, Some(SetupRecord::Succeeded));
+    }
+
+    #[test]
+    fn a_setup_not_approved_is_recorded_and_reads_as_not_ready() {
+        let bytes = WorktreeFile::new(None, Some(SetupRecord::NotApproved))
+            .to_bytes()
+            .unwrap();
+        assert_eq!(
+            bytes,
+            br#"{"schema":1,"agent":null,"setup":{"status":"not_approved"}}"#
+        );
+        assert_eq!(recorded(&bytes), Some(SetupRecord::NotApproved));
+        let state = setup_not_approved("fix");
+        assert_eq!(state.label(), "not ready");
+        assert_eq!(
+            state.detail().as_deref(),
+            Some("setup not approved; run orca-term worktree setup fix")
+        );
     }
 
     #[test]

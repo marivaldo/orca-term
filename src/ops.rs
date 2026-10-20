@@ -50,6 +50,7 @@ use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
+use crate::domain::trust::{self, Consent, Gate, Unapproved};
 use crate::domain::turn::{self, Status};
 use crate::domain::worktree::{self, Target};
 
@@ -195,6 +196,9 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
             let log = fs::read_optional(&admin.setup_log())?.unwrap_or_default();
             (state::setup_failed(exit, &log), None)
         }
+        Some(SetupRecord::NotApproved) => {
+            (state::setup_not_approved(&worktree_name_of(admin)), None)
+        }
         Some(SetupRecord::Succeeded) | None => {
             let status = recorded.agent.as_ref().and_then(|_| read_status(admin));
             state::ready(recorded.agent.as_deref(), status.as_ref(), holder)
@@ -209,6 +213,18 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         notes: 0,
         denials: 0,
     })
+}
+
+/// The name of the worktree whose admin directory is `admin`, as the fleet names it: its
+/// directory's basename, from git's `gitdir` file; git's id for it when that cannot be read.
+fn worktree_name_of(admin: &AdminDir) -> String {
+    worktree_of(admin)
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .or_else(|| admin.worktree_id().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 /// The hooks' live status in `admin`, or `None` when there is none this core can use: missing,
@@ -335,15 +351,43 @@ pub(crate) fn config_layers(
     Ok(layers)
 }
 
-/// Runs the setup script of the worktree at `worktree`, read from the worktree's own config, and
-/// records it in `worktree.json`: running before it starts, then how it ended. Its output goes to
-/// the setup log, overwritten, and to `echo`. With no script configured, records that there is
-/// no setup. A failed script is not an error: it leaves the worktree not ready, and nothing is
-/// undone.
+/// How a command that runs a setup gets the person's approval of a setup script from a committed
+/// `orca-term.yaml` (`domain/trust.rs`).
+pub(crate) enum Approval<'a> {
+    /// Given beforehand, with `--approve-setup`.
+    Given,
+    /// Asked of the person at the terminal through this function, which shows the script and says
+    /// whether the person approved it.
+    Ask(&'a mut dyn FnMut(&Unapproved) -> Result<bool>),
+    /// Nobody can be asked: no terminal, or `--json`.
+    Unavailable,
+}
+
+impl Approval<'_> {
+    fn consent(&self) -> Consent {
+        match self {
+            Self::Given => Consent::Given,
+            Self::Ask(_) => Consent::Ask,
+            Self::Unavailable => Consent::Unavailable,
+        }
+    }
+}
+
+/// Runs the setup script of the worktree `name` at `worktree`, read from the worktree's own
+/// config, and records it in `worktree.json`: running before it starts, then how it ended. Its
+/// output goes to the setup log, overwritten, and to `echo`. With no script configured, records
+/// that there is no setup. A failed script is not an error: it leaves the worktree not ready, and
+/// nothing is undone.
+///
+/// A script from a committed `orca-term.yaml` runs only once the person approved its text, through
+/// `approval`. When it is not approved, it does not run: the worktree is recorded not ready and
+/// the typed error `untrusted` is returned.
 pub(crate) fn set_up(
     lock: &WorktreeLock,
     primary: &PrimaryCheckout,
     worktree: &Path,
+    name: &str,
+    approval: &mut Approval<'_>,
     echo: &mut dyn Write,
 ) -> Result<SetupReport> {
     let layers = config_layers(primary, worktree, &env::config_env())?;
@@ -363,6 +407,18 @@ pub(crate) fn set_up(
             denials: derived.denials,
         });
     };
+    if let Some(file) = config::committed_setup_file(&layers) {
+        let unapproved = Unapproved {
+            name: name.to_owned(),
+            script: script.value.clone(),
+            file: file.to_owned(),
+        };
+        if !is_approved(primary, worktree, &unapproved, approval)? {
+            write_state(lock, Some(SetupRecord::NotApproved))?;
+            notify_changed(lock.admin());
+            return Err(unapproved.refused().into());
+        }
+    }
     write_state(lock, Some(SetupRecord::Running))?;
     notify_changed(lock.admin());
     let log_path = lock.admin().setup_log();
@@ -383,6 +439,57 @@ pub(crate) fn set_up(
         notes: derived.notes,
         denials: derived.denials,
     })
+}
+
+/// How long a command waits for another one to finish recording an approval.
+const TRUST_LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// Whether the committed setup script `unapproved` of the worktree at `worktree` may run: it was
+/// approved before in this repository, or it is approved now through `approval` (given
+/// beforehand, or asked at the terminal), which records the approval.
+fn is_approved(
+    primary: &PrimaryCheckout,
+    worktree: &Path,
+    unapproved: &Unapproved,
+    approval: &mut Approval<'_>,
+) -> Result<bool> {
+    let common = git::common_dir(primary)?;
+    let hash = trust::sha256(&unapproved.script);
+    let file = trust::trust_file(&common);
+    let approved = trust::read(fs::read_optional(&file)?.as_deref())?.is_approved(&hash);
+    let approve = match trust::gate(true, approved, approval.consent()) {
+        Gate::Run => return Ok(true),
+        Gate::Refuse => return Ok(false),
+        Gate::ApproveAndRun => true,
+        Gate::Ask => match approval {
+            Approval::Ask(ask) => ask(unapproved)?,
+            Approval::Given | Approval::Unavailable => false,
+        },
+    };
+    if approve {
+        let source = unapproved
+            .file
+            .strip_prefix(worktree)
+            .unwrap_or(&unapproved.file);
+        record_approval(&common, &hash, &source.display().to_string())?;
+    }
+    Ok(approve)
+}
+
+/// Records, in the approvals' file of the repository whose git common dir is `common`, that the
+/// script whose sha256 is `hash`, from `source`, is approved. Holds the approvals' lock from the
+/// read to the write (waiting for another command at most [`TRUST_LOCK_WAIT`]), replaces the file
+/// whole, and never writes over a newer schema.
+fn record_approval(common: &Path, hash: &str, source: &str) -> Result<()> {
+    let lock = trust::trust_lock(common);
+    fs::create_dir_all(lock.parent().unwrap_or(common))?;
+    let _lock = fs::lock_file_waiting(&lock, TRUST_LOCK_WAIT)?.ok_or_else(|| {
+        anyhow!("another orca-term command is recording an approval; try again once it finishes")
+    })?;
+    let file = trust::trust_file(common);
+    let mut approvals = trust::read(fs::read_optional(&file)?.as_deref())?;
+    approvals.approve(hash, source, env::now_millis());
+    fs::write_atomically(&file, &approvals.to_bytes()?)
 }
 
 /// The registry of running Neovims of the repository containing the current directory, in its

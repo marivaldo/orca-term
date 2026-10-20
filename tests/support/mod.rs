@@ -121,6 +121,19 @@ impl Repo {
         cmd
     }
 
+    /// The `orca-term` binary with `args`, to run from `dir` with the fixture's environment on a
+    /// pseudo-terminal, as a person at a terminal runs it: spawn it on the `Pts` of
+    /// `pty_process::blocking::open()`.
+    pub(crate) fn pty_command(&self, dir: &Path, args: &[&str]) -> pty_process::blocking::Command {
+        pty_process::blocking::Command::new(env!("CARGO_BIN_EXE_orca-term"))
+            .args(args)
+            .current_dir(dir)
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.xdg)
+            .env("GIT_CONFIG_GLOBAL", &self.gitconfig)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+    }
+
     fn env<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {
         cmd.env("GIT_CONFIG_GLOBAL", &self.gitconfig)
             .env("GIT_CONFIG_NOSYSTEM", "1")

@@ -8,18 +8,20 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::adapters::terminal::DetachKey;
+use crate::adapters::stdin;
+use crate::adapters::terminal::{self, DetachKey};
 use crate::domain::agent::{Size, StartMode};
 use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
+use crate::domain::trust::{self, Unapproved};
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    agent_attach, agent_holder, agent_start, agent_stop, check_git, doctor, hook, note_add,
-    note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister, turn_blame, turn_diff,
-    turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review,
-    worktree_rm, worktree_seen, worktree_setup,
+    Approval, agent_attach, agent_holder, agent_start, agent_stop, check_git, doctor, hook,
+    note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister, turn_blame,
+    turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
+    worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -118,6 +120,10 @@ enum WorktreeCommand {
         // here, before anything runs.
         #[arg(allow_hyphen_values = true)]
         name: WorktreeName,
+        /// Approve the setup script of a committed orca-term.yaml without being asked, then run
+        /// it.
+        #[arg(long)]
+        approve_setup: bool,
         /// Print JSON carrying the contract integer instead of text, and no setup output.
         #[arg(long)]
         json: bool,
@@ -126,6 +132,10 @@ enum WorktreeCommand {
     Setup {
         /// The worktree's name, or its path when several worktrees share the name.
         worktree: Target,
+        /// Approve the setup script of a committed orca-term.yaml without being asked, then run
+        /// it.
+        #[arg(long)]
+        approve_setup: bool,
         /// Print JSON carrying the contract integer instead of text, and no setup output.
         #[arg(long)]
         json: bool,
@@ -449,18 +459,16 @@ fn run_hook(args: &HookArgs) {
 
 fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
     match command {
-        WorktreeCommand::New { name, .. } => {
-            output::creating_worktree(name, format);
-            let created = worktree_new::run(name, &mut *output::live_echo(format))?;
-            output::worktree_created(&created, format)?;
-            Ok(exit_code(&created.setup))
-        }
-        WorktreeCommand::Setup { worktree, .. } => {
-            output::running_setup(worktree, format);
-            let done = worktree_setup::run(worktree, &mut *output::live_echo(format))?;
-            output::worktree_set_up(&done, format)?;
-            Ok(exit_code(&done.setup))
-        }
+        WorktreeCommand::New {
+            name,
+            approve_setup,
+            ..
+        } => run_worktree_new(name, *approve_setup, format),
+        WorktreeCommand::Setup {
+            worktree,
+            approve_setup,
+            ..
+        } => run_worktree_setup(worktree, *approve_setup, format),
         WorktreeCommand::Rm {
             worktree, force, ..
         } => {
@@ -501,6 +509,50 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Runs `worktree new`: says what it creates, creates it and prints what it made.
+fn run_worktree_new(name: &WorktreeName, approve_setup: bool, format: Format) -> Result<ExitCode> {
+    output::creating_worktree(name, format);
+    let mut ask = ask_at_terminal;
+    let mut approval = approval(approve_setup, format, &mut ask);
+    let created = worktree_new::run(name, &mut approval, &mut *output::live_echo(format))?;
+    output::worktree_created(&created, format)?;
+    Ok(exit_code(&created.setup))
+}
+
+/// Runs `worktree setup`: says whose setup it runs, runs it and prints what it did.
+fn run_worktree_setup(worktree: &Target, approve_setup: bool, format: Format) -> Result<ExitCode> {
+    output::running_setup(worktree, format);
+    let mut ask = ask_at_terminal;
+    let mut approval = approval(approve_setup, format, &mut ask);
+    let done = worktree_setup::run(worktree, &mut approval, &mut *output::live_echo(format))?;
+    output::worktree_set_up(&done, format)?;
+    Ok(exit_code(&done.setup))
+}
+
+/// How `worktree new` and `worktree setup` get the person's approval of a committed setup script:
+/// given beforehand with `--approve-setup`; else asked through `ask` when the output is text and
+/// both stdin and stderr are terminals; else nobody can be asked, and the script does not run.
+fn approval(
+    approve_setup: bool,
+    format: Format,
+    ask: &mut dyn FnMut(&Unapproved) -> Result<bool>,
+) -> Approval<'_> {
+    if approve_setup {
+        Approval::Given
+    } else if format == Format::Text && terminal::is_interactive() {
+        Approval::Ask(ask)
+    } else {
+        Approval::Unavailable
+    }
+}
+
+/// Shows the script `unapproved` and where it comes from on stderr, asks `run this setup script?
+/// [y/N]`, and reads the answer, one line, from stdin: whether the person approved it.
+fn ask_at_terminal(unapproved: &Unapproved) -> Result<bool> {
+    output::ask_setup_approval(unapproved);
+    Ok(trust::is_yes(&stdin::read_line()?))
 }
 
 fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {

@@ -24,6 +24,11 @@
 ---could not start, did not finish in time, or printed no JSON).
 ---@field kind string
 ---@field message string
+---With `untrusted` (a setup script from a committed `orca-term.yaml` that the person has not
+---approved, so it did not run): the script's text.
+---@field script? string
+---With `untrusted`: the committed file the script comes from, absolute.
+---@field source? string
 
 ---The primary checkout, as `worktree ls --json` prints it.
 ---@class orca_term.Primary
@@ -202,7 +207,10 @@ local function decode(result, binary, shown, keep_error)
   end
 
   if document.error and not keep_error then
-    return nil, failure(document.error.kind, document.error.message)
+    local err = failure(document.error.kind, document.error.message)
+    err.script = document.error.script
+    err.source = document.error.source
+    return nil, err
   end
   return document
 end
@@ -302,7 +310,9 @@ end
 ---Creates the worktree `name` in the repository `cwd` is in, without waiting:
 ---`orca-term worktree new <name> --json`. The core runs the setup before it finishes, so
 ---`on_done` may come minutes later. A failed setup is a document whose `setup.status` is
----`failed`, not an error: the worktree exists.
+---`failed`, not an error: the worktree exists. A setup script from a committed `orca-term.yaml`
+---that the person has not approved does not run: the worktree exists, not ready, and the error is
+---`untrusted`, carrying the `script` and its `source`.
 ---@param name string
 ---@param cwd string
 ---@param on_done fun(created: orca_term.Created?, err: orca_term.Error?)
@@ -310,13 +320,20 @@ function M.worktree_new(name, cwd, on_done)
   run_async({ 'worktree', 'new', name }, cwd, on_done)
 end
 
----Runs the setup of the worktree at `path` again, without waiting:
----`orca-term worktree setup <path> --json`. A worktree in use fails as `busy`.
+---Runs the setup of the worktree at `path` (or named `path`) again, without waiting:
+---`orca-term worktree setup <path> --json`, with `--approve-setup` when `approve` is true, which
+---approves a setup script from a committed `orca-term.yaml` before running it. Without it, such a
+---script the person has not approved fails as `untrusted`. A worktree in use fails as `busy`.
 ---@param path string
+---@param approve boolean
 ---@param cwd string
 ---@param on_done fun(set_up: orca_term.SetUp?, err: orca_term.Error?)
-function M.worktree_setup(path, cwd, on_done)
-  run_async({ 'worktree', 'setup', path }, cwd, on_done)
+function M.worktree_setup(path, approve, cwd, on_done)
+  local args = { 'worktree', 'setup', path }
+  if approve then
+    table.insert(args, '--approve-setup')
+  end
+  run_async(args, cwd, on_done)
 end
 
 ---Removes the worktree at `path`, without waiting: `orca-term worktree rm <path> --json`, with
@@ -410,7 +427,7 @@ end
 
 ---A worktree's setup, as `worktree detail --json` prints it.
 ---@class orca_term.SetupDetail
----@field status string `running`, `interrupted`, `succeeded` or `failed`
+---@field status string `running`, `interrupted`, `succeeded`, `failed` or `not_approved`
 ---@field log string the setup log's path
 ---@field tail string[] the log's last lines, terminal control sequences taken out
 

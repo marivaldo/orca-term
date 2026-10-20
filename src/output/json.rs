@@ -10,7 +10,7 @@ use crate::domain::blame::{Blame, Source};
 use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::detail::{Detail, SetupProgress};
-use crate::domain::error;
+use crate::domain::error::{self, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
@@ -335,14 +335,20 @@ struct DoneView {}
 
 /// Any command's failure with `--json`: `kind` is `other` unless the failure is typed.
 #[derive(Debug, Serialize)]
-struct ErrorView {
-    error: ErrorBody,
+struct ErrorView<'a> {
+    error: ErrorBody<'a>,
 }
 
+/// An error: its `kind` and `message`; `untrusted` also carries the setup `script` not approved
+/// and the committed file it comes from (`source`), so the client can show them.
 #[derive(Debug, Serialize)]
-struct ErrorBody {
+struct ErrorBody<'a> {
     kind: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    script: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'a Path>,
 }
 
 /// `doctor --json`: every check in order, and, when one is missing or too old, the `prerequisite`
@@ -351,7 +357,7 @@ struct ErrorBody {
 struct DoctorView<'a> {
     checks: Vec<CheckView<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<ErrorBody>,
+    error: Option<ErrorBody<'a>>,
 }
 
 /// One check: `status` is `ok`, `warn`, `missing`, `too_old` or `info`; `found` what was found
@@ -542,6 +548,7 @@ fn setup_progress_name(progress: SetupProgress) -> &'static str {
         SetupProgress::Interrupted => "interrupted",
         SetupProgress::Succeeded => "succeeded",
         SetupProgress::Failed(_) => "failed",
+        SetupProgress::NotApproved => "not_approved",
     }
 }
 
@@ -708,10 +715,20 @@ pub(crate) fn error(err: &anyhow::Error) -> serde_json::Result<String> {
     })
 }
 
-fn error_body(err: &anyhow::Error) -> ErrorBody {
+/// The error object of `err`: its `kind` and `message`, and for `untrusted` the setup `script` and
+/// its `source`.
+fn error_body(err: &anyhow::Error) -> ErrorBody<'_> {
+    let (script, source) = match error::typed(err) {
+        Some(TypedError::Untrusted { script, file, .. }) => {
+            (Some(script.as_str()), Some(file.as_path()))
+        }
+        _ => (None, None),
+    };
     ErrorBody {
         kind: error::kind(err),
         message: format!("{err:#}"),
+        script,
+        source,
     }
 }
 
@@ -1156,6 +1173,7 @@ mod tests {
             (SetupProgress::Interrupted, "interrupted"),
             (SetupProgress::Succeeded, "succeeded"),
             (SetupProgress::Failed(Exit::Signal(9)), "failed"),
+            (SetupProgress::NotApproved, "not_approved"),
         ] {
             assert_eq!(setup_progress_name(progress), name);
         }
@@ -1239,5 +1257,26 @@ mod tests {
             serde_json::from_str(&error(&anyhow::anyhow!("git failed")).unwrap()).unwrap();
         assert_eq!(other["error"]["kind"], "other");
         assert_eq!(other["error"]["message"], "git failed");
+        assert!(other["error"].get("script").is_none());
+        assert!(other["error"].get("source").is_none());
+    }
+
+    #[test]
+    fn an_untrusted_error_carries_the_script_and_its_source() {
+        let err = anyhow::Error::new(TypedError::Untrusted {
+            name: "fix".to_owned(),
+            script: "make\necho done\n".to_owned(),
+            file: PathBuf::from("/l/fix/orca-term.yaml"),
+        });
+        let doc: serde_json::Value = serde_json::from_str(&error(&err).unwrap()).unwrap();
+        assert_eq!(doc["error"]["kind"], "untrusted");
+        assert_eq!(doc["error"]["script"], "make\necho done\n");
+        assert_eq!(doc["error"]["source"], "/l/fix/orca-term.yaml");
+        assert!(
+            doc["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("is not approved in this repository")
+        );
     }
 }

@@ -57,6 +57,21 @@ pub(crate) enum TypedError {
     /// are the doctor's lines for each one, which name the fix. Nothing is installed.
     #[error("{}; {DOCTOR_HINT}", problems.join("; "))]
     Prerequisite { problems: Vec<String> },
+    /// The worktree's setup script comes from a committed `orca-term.yaml` whose text the person
+    /// has not approved in this repository (`domain/trust.rs`): nobody could be asked, or the
+    /// person said no. It did not run, and the worktree is not ready. `script` is its text and
+    /// `file` the committed file it comes from, so a client can show them before approving.
+    #[error(
+        "the setup script of worktree {name}, from {}, is not approved in this repository, so it \
+         did not run and the worktree is not ready; read it, then run `orca-term worktree setup \
+         {name}` in a terminal to be asked, or pass --approve-setup",
+        file.display()
+    )]
+    Untrusted {
+        name: String,
+        script: String,
+        file: PathBuf,
+    },
 }
 
 /// Why a recorded session cannot be resumed.
@@ -136,6 +151,7 @@ impl TypedError {
             Self::SessionGone { .. } => "session_gone",
             Self::NoHolder { .. } => "no_holder",
             Self::Prerequisite { .. } => "prerequisite",
+            Self::Untrusted { .. } => "untrusted",
         }
     }
 
@@ -148,12 +164,13 @@ impl TypedError {
             Self::SessionGone { .. } => 4,
             Self::NoHolder { .. } => 7,
             Self::Prerequisite { .. } => 9,
+            Self::Untrusted { .. } => 8,
         }
     }
 }
 
 /// The typed error inside `err`, at any depth of its context chain.
-fn typed(err: &anyhow::Error) -> Option<&TypedError> {
+pub(crate) fn typed(err: &anyhow::Error) -> Option<&TypedError> {
     err.chain()
         .find_map(|cause| cause.downcast_ref::<TypedError>())
 }
@@ -303,6 +320,24 @@ mod tests {
             err.to_string(),
             "git 2.30.1: orca-term needs 2.38 or later; claude: not found on PATH; install Claude \
              Code; run orca-term doctor for the full report"
+        );
+    }
+
+    #[test]
+    fn a_setup_script_not_approved_has_its_own_kind_and_exit_code() {
+        let err = anyhow::Error::new(TypedError::Untrusted {
+            name: "fix".to_owned(),
+            script: "make\n".to_owned(),
+            file: PathBuf::from("/w/repo/fix/orca-term.yaml"),
+        });
+        assert_eq!(kind(&err), "untrusted");
+        assert_eq!(exit_code(&err), 8);
+        assert_eq!(
+            err.to_string(),
+            "the setup script of worktree fix, from /w/repo/fix/orca-term.yaml, is not approved \
+             in this repository, so it did not run and the worktree is not ready; read it, then \
+             run `orca-term worktree setup fix` in a terminal to be asked, or pass \
+             --approve-setup"
         );
     }
 

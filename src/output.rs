@@ -26,6 +26,7 @@ use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
+use crate::domain::trust::Unapproved;
 use crate::domain::turn::{Outcome, Phase};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
@@ -64,6 +65,28 @@ fn progress(line: &str, format: Format) {
             eprintln!("{line}");
         }
     }
+}
+
+/// Shows on stderr the committed setup script `unapproved` and the file it comes from, then asks
+/// `run this setup script? [y/N] `, leaving the cursor after the question for the answer.
+pub(crate) fn ask_setup_approval(unapproved: &Unapproved) {
+    let mut stderr = io::stderr().lock();
+    let _ = write!(stderr, "{}", render_setup_approval(unapproved));
+    let _ = stderr.flush();
+}
+
+fn render_setup_approval(unapproved: &Unapproved) -> String {
+    let mut text = format!(
+        "the setup script of worktree {} comes from {}, committed to the repository, and is not \
+         approved yet:\n\n",
+        unapproved.name,
+        unapproved.file.display()
+    );
+    for line in unapproved.script.lines() {
+        let _ = writeln!(text, "    {line}");
+    }
+    text.push_str("\nrun this setup script? [y/N] ");
+    text
 }
 
 /// Where a setup script's output is echoed while it runs: stderr for a person, nowhere with
@@ -475,6 +498,7 @@ fn render_setup_detail(setup: &SetupDetail) -> String {
         SetupProgress::Interrupted => "setup interrupted".to_owned(),
         SetupProgress::Succeeded => "setup succeeded".to_owned(),
         SetupProgress::Failed(exit) => exit.to_string(),
+        SetupProgress::NotApproved => "setup not approved".to_owned(),
     };
     let mut text = format!("{progress} (log {})", setup.log.display());
     text.push_str(if setup.tail.is_empty() { "\n" } else { ":\n" });

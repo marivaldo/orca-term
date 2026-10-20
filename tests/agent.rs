@@ -413,6 +413,7 @@ fn the_launch_carries_the_settings_file_accept_edits_and_no_forbidden_flag() {
         format!("{common_text}/worktrees/*/orca-term"),
         format!("{common_text}/refs/orca-term"),
         format!("{common_text}/orca-term.yaml"),
+        format!("{common_text}/orca-term-trust.json"),
         format!("{common_text}/orca-term"),
     ] {
         assert!(
@@ -426,6 +427,7 @@ fn the_launch_carries_the_settings_file_accept_edits_and_no_forbidden_flag() {
             format!("Edit(/{common_text}/worktrees/*/orca-term/**)"),
             format!("Edit(/{common_text}/refs/orca-term/**)"),
             format!("Edit(/{common_text}/orca-term.yaml)"),
+            format!("Edit(/{common_text}/orca-term-trust.json)"),
             format!("Edit(/{common_text}/orca-term/**)"),
         ])
     );
@@ -641,7 +643,7 @@ fn start_refuses_a_worktree_that_is_not_ready_and_a_claude_that_is_old_or_missin
     fx.repo
         .write("orca-term.yaml", "scripts:\n  setup: exit 3\n");
     fx.repo.commit_all("failing setup");
-    let out = fx.run(&["worktree", "new", "fix"]);
+    let out = fx.run(&["worktree", "new", "fix", "--approve-setup"]);
     assert_eq!(out.status.code(), Some(1));
     let worktree = fx.repo.home.join("orca-term/worktrees/repo/fix");
     let admin = fx.admin_dir(&worktree);

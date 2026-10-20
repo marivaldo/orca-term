@@ -61,6 +61,51 @@ M.AGENTS = { 'claude-code', 'No agent' }
 ---The answers offered when a worktree's recorded session can no longer be resumed.
 M.SESSION_GONE = { 'Start a fresh session', 'Cancel' }
 
+---The answers offered when a worktree's setup script, from a committed `orca-term.yaml`, is not
+---approved yet.
+M.APPROVE_SETUP = { 'Run it', 'Cancel' }
+
+---The question that shows a setup script not approved yet (`err`, kind `untrusted`) of the
+---worktree `name`: where it comes from, then its lines, indented.
+---@param name string
+---@param err orca_term.Error
+---@return string
+function M.approval_prompt(name, err)
+  local lines = {
+    ('Run the setup script of %s from %s?'):format(name, err.source or 'orca-term.yaml'),
+    'It is committed to the repository and not approved yet:',
+    '',
+  }
+  for _, line in ipairs(vim.split(vim.trim(err.script or ''), '\n')) do
+    table.insert(lines, '    ' .. line)
+  end
+  return table.concat(lines, '\n')
+end
+
+---Shows the setup script of the worktree `name` that the core refused to run (`err`, kind
+---`untrusted`) and asks whether to run it. `Run it` approves it and runs it (`worktree setup
+---<target> --approve-setup`, `target` being the worktree's name or path), handing what the core
+---printed to `on_done`; `Cancel` runs nothing and leaves the worktree not ready, as the core
+---recorded it.
+---@param name string
+---@param target string
+---@param primary string the primary checkout's path, where the core runs
+---@param err orca_term.Error
+---@param on_done fun(set_up: orca_term.SetUp?, err: orca_term.Error?)
+local function offer_approval(name, target, primary, err, on_done)
+  vim.ui.select(M.APPROVE_SETUP, { prompt = M.approval_prompt(name, err) }, function(choice)
+    if choice ~= M.APPROVE_SETUP[1] then
+      warn(('the setup script of %s was not approved; the worktree is not ready'):format(name))
+      return
+    end
+    core.worktree_setup(target, true, primary, function(set_up, setup_err)
+      refresh_sidebar()
+      on_done(set_up, setup_err)
+    end)
+    refresh_shortly()
+  end)
+end
+
 ---Why the core cannot resume a session, out of its `session_gone` message: what follows the
 ---session id, up to the fix the message names, on one line. The whole message, without its
 ---`orca-term: `, when it does not read that way.
@@ -134,33 +179,52 @@ function M.open(worktree, primary)
   end
 end
 
----Creates the worktree `name` through the core, without waiting for its setup. Once created, even
----when its setup failed, the worktree's tab becomes current; then, when the setup did not fail and
----`with_agent` is true, its agent starts and shows there.
+---What follows the creation of the worktree `name` once its setup ran (`created`, the document
+---of `worktree new` or of `worktree setup`): its tab becomes current, even when its setup failed;
+---then, when the setup did not fail and `with_agent` is true, its agent starts and shows there.
+---@param name string
+---@param with_agent boolean
+---@param primary string
+---@param created orca_term.Created|orca_term.SetUp
+local function land_in_created(name, with_agent, primary, created)
+  local path = created.worktree.path
+  tabs.go_to(path)
+  if created.setup.status == 'failed' then
+    local detail = created.worktree.detail or 'see its setup log'
+    local message = ('created worktree %s, but its setup failed: %s'):format(name, detail)
+    if with_agent then
+      message = message .. '; its agent was not started'
+    end
+    warn(message)
+    return
+  end
+  info('created worktree ' .. name)
+  if with_agent then
+    start_and_attach(created.worktree, primary, false)
+  end
+end
+
+---Creates the worktree `name` through the core, without waiting for its setup, then lands in it
+---(`land_in_created`). A setup script from a committed `orca-term.yaml` not approved yet is shown
+---first and runs only once the person chooses `Run it`; `Cancel` leaves the worktree not ready.
 ---@param name string
 ---@param with_agent boolean
 ---@param primary string
 local function create_worktree(name, with_agent, primary)
   core.worktree_new(name, primary, function(created, err)
     refresh_sidebar()
-    if not created then
+    if created then
+      land_in_created(name, with_agent, primary, created)
+    elseif err and err.kind == 'untrusted' then
+      offer_approval(name, name, primary, err, function(set_up, setup_err)
+        if set_up then
+          land_in_created(name, with_agent, primary, set_up)
+        else
+          fail(setup_err)
+        end
+      end)
+    else
       fail(err)
-      return
-    end
-    local path = created.worktree.path
-    tabs.go_to(path)
-    if created.setup.status == 'failed' then
-      local detail = created.worktree.detail or 'see its setup log'
-      local message = ('created worktree %s, but its setup failed: %s'):format(name, detail)
-      if with_agent then
-        message = message .. '; its agent was not started'
-      end
-      warn(message)
-      return
-    end
-    info('created worktree ' .. name)
-    if with_agent then
-      start_and_attach(created.worktree, primary, false)
     end
   end)
   refresh_shortly()
@@ -183,20 +247,37 @@ function M.create(primary)
   end)
 end
 
----Runs the setup of `worktree` again through the core, without waiting for it.
+---Tells the person what running the setup of `worktree` again did: it is ready, or its setup
+---failed, or the core refused.
+---@param worktree orca_term.Worktree
+---@param set_up? orca_term.SetUp
+---@param err? orca_term.Error
+local function tell_setup(worktree, set_up, err)
+  if not set_up then
+    fail(err)
+  elseif set_up.setup.status == 'failed' then
+    local detail = set_up.worktree.detail or 'see its setup log'
+    warn(('the setup of %s failed: %s'):format(worktree.name, detail))
+  else
+    info(('worktree %s is ready'):format(worktree.name))
+  end
+end
+
+---Runs the setup of `worktree` again through the core, without waiting for it. A setup script
+---from a committed `orca-term.yaml` not approved yet is shown first and runs only once the person
+---chooses `Run it`; `Cancel` leaves the worktree not ready.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 function M.run_setup(worktree, primary)
-  core.worktree_setup(worktree.path, primary, function(set_up, err)
+  core.worktree_setup(worktree.path, false, primary, function(set_up, err)
     refresh_sidebar()
-    if not set_up then
-      fail(err)
-    elseif set_up.setup.status == 'failed' then
-      local detail = set_up.worktree.detail or 'see its setup log'
-      warn(('the setup of %s failed: %s'):format(worktree.name, detail))
-    else
-      info(('worktree %s is ready'):format(worktree.name))
+    if not set_up and err and err.kind == 'untrusted' then
+      offer_approval(worktree.name, worktree.path, primary, err, function(approved, approved_err)
+        tell_setup(worktree, approved, approved_err)
+      end)
+      return
     end
+    tell_setup(worktree, set_up, err)
   end)
   refresh_shortly()
 end

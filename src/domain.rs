@@ -24,5 +24,6 @@ pub(crate) mod seen;
 pub(crate) mod setup;
 pub(crate) mod snapshot;
 pub(crate) mod state;
+pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod worktree;

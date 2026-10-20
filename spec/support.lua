@@ -373,6 +373,20 @@ function M.set_setup(repo, lines)
   vim.fn.writefile(yaml, path)
 end
 
+---Commits the repository's `orca-term.yaml` with `lines` as its setup script: a script the core
+---runs only once the person has approved it.
+---@param repo spec.Repo
+---@param lines string[]
+function M.commit_setup(repo, lines)
+  local yaml = { 'scripts:', '  setup: |' }
+  for _, line in ipairs(lines) do
+    table.insert(yaml, '    ' .. line)
+  end
+  vim.fn.writefile(yaml, repo.root .. '/orca-term.yaml')
+  M.git(repo, { 'add', 'orca-term.yaml' })
+  M.git(repo, { 'commit', '--quiet', '-m', 'setup script' })
+end
+
 ---The path of the worktree named `name`, as `worktree ls --json` prints it.
 ---@param repo spec.Repo
 ---@param name string
