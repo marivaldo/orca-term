@@ -47,6 +47,9 @@ the adapters, and returns a domain value that `output` prints.
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
+  `doctor [--json]` needs no repository; every other command but the hidden `hook` and `agent
+  holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
+  git as the typed `prerequisite` before anything else runs.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -60,7 +63,10 @@ the adapters, and returns a domain value that `output` prints.
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
-  handed by `cli` to the ops module.
+  handed by `cli` to the ops module. `doctor`'s report is one line per check, its status padded
+  to 8 columns (`ok`, `warn`, `missing`, `too old`, `info`) then its message; when a check is
+  missing or too old, the whole report comes first, then the `prerequisite` error as any command
+  prints it, and its exit code.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm`, `worktree review`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
   and `version` envelope. Each worktree carries `agent` (`"claude-code"` or null) and `holder`
@@ -85,7 +91,10 @@ the adapters, and returns a domain value that `output` prints.
   open; nulls for what a turn from before the snapshots lacks); `turn diff` the `turn`, its
   `begin` and `end`, `end_observed` and the `patch`; `turn blame` the `file` (relative to the
   worktree) and its `lines`, each `{"line", "source": "turn"|"between_turns"|"since_snapshot",
-  "turn", "agent", "snapshot", "text"}`.
+  "turn", "agent", "snapshot", "text"}`. `doctor` prints `checks`, each `{"name", "status",
+  "found", "need", "message"}` (`status` `ok`, `warn`, `missing`, `too_old` or `info`; `found` and
+  `need` null when there is nothing to say), and `error` (kind `prerequisite`) only when a check
+  is missing or too old.
 
 ### ops
 
@@ -101,7 +110,11 @@ the adapters, and returns a domain value that `output` prints.
   and `notify_changed`, which every command calls after it writes a worktree's state. The turn
   commands share `find_turned` (refusing a worktree whose directory is gone) and `read_history`
   (the whole `turns.jsonl` and `status.json`, read with no lock: the hook only appends to the one
-  and replaces the other whole).
+  and replaces the other whole). The prerequisites: `check_program` finds a program on PATH as a
+  shell would and asks its `--version`; `check_git` (called once per command by `cli`) and
+  `find_claude` (by `agent start`) refuse a missing or too old one as the typed `prerequisite`.
+- `ops/doctor.rs`: `doctor`: check git, claude's sandbox tools, each agent and the contract, in
+  that order. It only looks, needs no repository and never fails.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
   lock it, copy the copy list, run the setup.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
@@ -130,7 +143,8 @@ the adapters, and returns a domain value that `output` prints.
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
-  `no_sandbox`), find claude on PATH and check its version, resolve the extra writable paths,
+  `no_sandbox`), find claude on PATH and check its version (or fail as `prerequisite`), resolve
+  the extra writable paths,
   pre-create the admin directories, pick the session (none with `--fresh` or without a recorded
   one; else the current session `status.json` records, once its id is checked and its transcript
   found on disk, or the typed `session_gone`), build and check the settings and the command line
@@ -250,7 +264,7 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/launch.rs`: claude's launch: the command line (`--settings <file>
   --permission-mode acceptEdits`, plus `--resume <id>` on a cold start), the session a cold start
   resumes (`session_to_resume`, `check_transcript`), the settings file that turns its sandbox on and denies our
-  state (ADR 0007) and registers the hooks, the version floor (2.1.285), the variables stripped
+  state (ADR 0007) and registers the hooks, the variables stripped
   from its environment, and the guard that refuses a launch bypassing permissions. The
   forbidden flags and modes are listed here and nowhere else.
 - `domain/hook.rs`: what claude's hook payloads report and how each event changes a worktree's
@@ -304,7 +318,13 @@ the adapters, and returns a domain value that `output` prints.
   (with its seven-character short form), what `worktree review` found (`Reviewed`), and its
   refusals (a worktree whose directory is gone, a history unrelated to the default branch).
 - `domain/sandbox.rs`: whether claude's sandbox can run here: `sandbox-exec` on macOS, `bwrap`
-  and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`.
+  and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`, whose message is
+  the doctor's sandbox check (`check`, `diagnosis`) word for word.
+- `domain/prerequisite.rs`: the programs orca-term needs (`Requirement`: git from 2.38, claude
+  from 2.1.295 and tested up to 2.1.303, opencode from 1.18.0 and optional until #35), read from
+  what `--version` printed (`Version`, `Probe`), and each `Check` of the doctor's `Report`: `ok`,
+  `warn` (claude newer than tested, an old optional program), `missing`, `too_old` or `info` (the
+  contract). A missing or too old check is the typed `prerequisite` (`refusal`, `require`).
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
   big-endian length, the payload: input `i`, resize `r`, stop `s`, output `o`, exit `x`), their
   incremental decoder, and the scrollback a holder keeps.
@@ -397,7 +417,8 @@ validate"):
   `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
-  to start it).
+  to start it) and `Prerequisite` (a program the command needs is missing or too old, as the
+  doctor's lines say).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -452,7 +473,7 @@ validate"):
   `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` (so an orca-term run from inside a
   Claude Code session never starts a child session). The settings turn claude's sandbox on with
   `failIfUnavailable`, `allowUnsandboxedCommands: false` (which also makes the repository's own
-  `.claude/settings*.json` unable to loosen it, on claude 2.1.285 or newer, the floor `agent
+  `.claude/settings*.json` unable to loosen it, on claude 2.1.295 or newer, the floor `agent
   start` checks), every weakening key pinned, the network open, writes denied to every worktree's
   `orca-term` admin directory (each one listed, plus the `*` glob), `refs/orca-term` and
   `orca-term.yaml` and the `orca-term` directory (the Neovim registry) in the git common dir,
@@ -547,7 +568,8 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`) or `other`.
+  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `prerequisite`)
+  or `other`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
@@ -555,7 +577,8 @@ validate"):
   cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
   or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
-  running.
+  running; 9 for `prerequisite`, a program the command needs (git, claude) that is missing or too
+  old, and for `doctor` when any check is.
 
 ## Known limits of the agent holder
 
@@ -741,7 +764,15 @@ what they print.
   and `denials`, its latest turn's count. `worktree_detail(target, cwd, on_done)` runs `worktree
   detail` without waiting (10 s at most), typed as `orca_term.Detail`: the worktree, its whole
   `detail`, its `denials` (`orca_term.Denial`), its `setup` (`orca_term.SetupDetail`) and its
-  `drift` (`orca_term.Drift`).
+  `drift` (`orca_term.Drift`). `doctor()` runs `doctor` in Neovim's current directory and waits
+  for it (10 s at most), for `:checkhealth orca-term` only, typed as `orca_term.Report`: a report
+  with a missing or too old program is returned whole, its `error` inside, rather than as an
+  error.
+- `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
+  `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
+  (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
+  `core.lua`), Neovim 0.11 or later, and diffview.nvim through `review.available()` (missing: a
+  warning, the review needs it). It only reports.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
   `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
