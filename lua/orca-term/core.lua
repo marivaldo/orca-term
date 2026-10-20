@@ -8,7 +8,7 @@
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`) are not waited for, and hand their result to a
 -- callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
--- waited for, briefly.
+-- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
 -- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
 -- made current, for the person to use, until it detaches or the agent ends. The client never works
 -- the fleet out by itself: it shows what the core prints.
@@ -168,14 +168,15 @@ local function command_line(binary, args)
 end
 
 ---The JSON document a finished core command printed, checked against the contract, or the error
----it stands for: the core's own `error`, a usage error, output that is not JSON, or another
----contract.
+---it stands for: the core's own `error` (unless `keep_error`, which returns the document with its
+---`error` inside, for `doctor`), a usage error, output that is not JSON, or another contract.
 ---@param result vim.SystemCompleted
 ---@param binary string
 ---@param shown string the command line, for messages
+---@param keep_error? boolean
 ---@return table? document
 ---@return orca_term.Error? err
-local function decode(result, binary, shown)
+local function decode(result, binary, shown, keep_error)
   -- `luanil` turns JSON `null` into Lua `nil`, so a missing branch reads as `nil`.
   local decoded, document = pcall(vim.json.decode, result.stdout or '', {
     luanil = { object = true, array = true },
@@ -200,7 +201,7 @@ local function decode(result, binary, shown)
     return nil, failure('contract', message)
   end
 
-  if document.error then
+  if document.error and not keep_error then
     return nil, failure(document.error.kind, document.error.message)
   end
   return document
@@ -212,15 +213,16 @@ end
 ---@param binary string
 ---@param shown string the command line, for messages
 ---@param timeout? integer the time limit it ran with, in seconds; `nil` when it had none
+---@param keep_error? boolean return a document carrying an `error` as it is (`decode`)
 ---@return table? document
 ---@return orca_term.Error? err
-local function finished(result, binary, shown, timeout)
+local function finished(result, binary, shown, timeout, keep_error)
   -- vim.system reports a command stopped for taking too long with exit code 124.
   if timeout and result.code == 124 then
     local message = ('`%s` did not finish within %d seconds'):format(shown, timeout)
     return nil, failure('failed', message)
   end
-  return decode(result, binary, shown)
+  return decode(result, binary, shown, keep_error)
 end
 
 ---Runs `orca-term <args> --json` in `cwd`, waits for it (`timeout` seconds at most, 10 when
@@ -228,9 +230,10 @@ end
 ---@param args string[]
 ---@param cwd string
 ---@param timeout? integer
+---@param keep_error? boolean return a document carrying an `error` as it is (`decode`)
 ---@return table? document
 ---@return orca_term.Error? err
-local function run(args, cwd, timeout)
+local function run(args, cwd, timeout, keep_error)
   timeout = timeout or TIMEOUT_SECONDS
   local binary, find_err = M.find_binary()
   if not binary then
@@ -245,7 +248,7 @@ local function run(args, cwd, timeout)
   if not started then
     return nil, failure('failed', ('could not run `%s` in %s: %s'):format(shown, cwd, result))
   end
-  return finished(result, binary, shown, timeout)
+  return finished(result, binary, shown, timeout, keep_error)
 end
 
 ---Runs `orca-term <args> --json` in `cwd` without waiting for it, and hands the document it
@@ -618,6 +621,32 @@ function M.agent_attach(path, cwd)
     return nil, failure('failed', ('could not run `%s` in %s: %s'):format(shown, cwd, why))
   end
   return job
+end
+
+---One check of `doctor --json`.
+---@class orca_term.Check
+---@field name string `git`, `sandbox`, `claude`, `opencode` or `contract`
+---@field status string `ok`, `warn`, `missing`, `too_old` or `info`
+---@field found? string what was found, such as a version
+---@field need? string what orca-term needs, such as the oldest version
+---@field message string the report's line, naming the fix when there is one
+
+---What `doctor --json` prints: every check, and the `prerequisite` error when one is missing or
+---too old.
+---@class orca_term.Report
+---@field contract integer
+---@field version string the core's version
+---@field checks orca_term.Check[]
+---@field error? { kind: string, message: string }
+
+---The core's report on the programs it needs, waited for (10 seconds at most), for
+---`:checkhealth orca-term` only: `orca-term doctor --json`, run in Neovim's current directory
+---(doctor needs no repository). A report with a missing or too old program is still returned,
+---its `error` inside; an error is returned only when there is no report to show.
+---@return orca_term.Report? report
+---@return orca_term.Error? err
+function M.doctor()
+  return run({ 'doctor' }, vim.fn.getcwd(), TIMEOUT_SECONDS, true)
 end
 
 return M

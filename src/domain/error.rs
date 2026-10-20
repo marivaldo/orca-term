@@ -7,6 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::prerequisite::DOCTOR_HINT;
+use crate::domain::sandbox;
+
 /// The exit code of a failure that is not typed.
 pub(crate) const FAILURE_EXIT: u8 = 1;
 
@@ -50,6 +53,10 @@ pub(crate) enum TypedError {
         path.display()
     )]
     NoHolder { name: String, path: PathBuf },
+    /// A program the command needs is missing or too old (`domain/prerequisite.rs`): `problems`
+    /// are the doctor's lines for each one, which name the fix. Nothing is installed.
+    #[error("{}; {DOCTOR_HINT}", problems.join("; "))]
+    Prerequisite { problems: Vec<String> },
 }
 
 /// Why a recorded session cannot be resumed.
@@ -110,13 +117,12 @@ fn session_gone_message(name: &str, session: &str, reason: &GoneReason) -> Strin
 /// The most characters of a session id an error message shows.
 const SHOWN_ID_CHARS: usize = 128;
 
+/// The message of [`TypedError::NoSandbox`]: the diagnosis `orca-term doctor` shows for the
+/// sandbox, word for word.
 fn no_sandbox_message(missing: &[String], hint: &str) -> String {
-    if missing.is_empty() {
-        return format!("claude's sandbox is not available: {hint}");
-    }
     format!(
-        "claude's sandbox is not available: {} not found on PATH; {hint}",
-        missing.join(" and ")
+        "claude's sandbox is not available: {}; {DOCTOR_HINT}",
+        sandbox::diagnosis(missing, hint)
     )
 }
 
@@ -129,6 +135,7 @@ impl TypedError {
             Self::Dirty { .. } => "dirty",
             Self::SessionGone { .. } => "session_gone",
             Self::NoHolder { .. } => "no_holder",
+            Self::Prerequisite { .. } => "prerequisite",
         }
     }
 
@@ -140,6 +147,7 @@ impl TypedError {
             Self::Dirty { .. } => 6,
             Self::SessionGone { .. } => 4,
             Self::NoHolder { .. } => 7,
+            Self::Prerequisite { .. } => 9,
         }
     }
 }
@@ -208,7 +216,8 @@ mod tests {
         assert_eq!(exit_code(&err), 5);
         assert_eq!(
             err.to_string(),
-            "claude's sandbox is not available: bwrap and socat not found on PATH; install them"
+            "claude's sandbox is not available: bwrap and socat not found on PATH; install them; \
+             run orca-term doctor for the full report"
         );
     }
 
@@ -277,6 +286,23 @@ mod tests {
             err.to_string(),
             "worktree fix at /w/repo/fix has no running agent to send notes to; start it with \
              `orca-term agent start fix`, then send again (the notes stay pending)"
+        );
+    }
+
+    #[test]
+    fn a_missing_prerequisite_has_its_own_kind_and_exit_code() {
+        let err = anyhow::Error::new(TypedError::Prerequisite {
+            problems: vec![
+                "git 2.30.1: orca-term needs 2.38 or later".to_owned(),
+                "claude: not found on PATH; install Claude Code".to_owned(),
+            ],
+        });
+        assert_eq!(kind(&err), "prerequisite");
+        assert_eq!(exit_code(&err), 9);
+        assert_eq!(
+            err.to_string(),
+            "git 2.30.1: orca-term needs 2.38 or later; claude: not found on PATH; install Claude \
+             Code; run orca-term doctor for the full report"
         );
     }
 

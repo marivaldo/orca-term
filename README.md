@@ -21,7 +21,8 @@ Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the cu
 any terminal can attach to. `orca-term note
 add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
 agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
-turns, show what one turn changed and say which turn wrote each line of a file.
+turns, show what one turn changed and say which turn wrote each line of a file. `orca-term doctor`
+checks what orca-term needs on the machine.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
@@ -177,6 +178,33 @@ red), `●` interrupted (muted), `!` broken, `△` not ready, `◐` working, `�
 To build a strip of your own, `require('orca-term.strip').counts()` gives the counts of the fleet
 last read: `{ states = { { state = 'waiting', count = 1 }, ... }, unseen = 2 }`, in the same order,
 leaving out the states no worktree is in.
+
+## Doctor
+
+`orca-term doctor` checks everything orca-term needs and says how to fix what is missing. It
+installs nothing, and works outside a repository:
+
+```
+ok       git 2.55.0
+ok       sandbox sandbox-exec
+warn     claude 2.1.310: newer than the tested 2.1.303; it may still work
+ok       opencode not installed (optional)
+info     contract 1, orca-term 0.1.0
+```
+
+It needs git 2.38 or later, claude's sandbox tools (`sandbox-exec` on macOS, `bwrap` and `socat`
+on Linux) and claude 2.1.295 or later. A claude newer than the one orca-term was tested with is
+only a warning. opencode is optional for now. With `--json` it prints the same checks as one
+document. It exits 0 unless something is missing or too old; then it prints the whole report and
+exits 9.
+
+Every command that needs a missing or outdated program refuses with the same line, exit 9: git for
+every command, claude for `agent start`, such as
+`orca-term: git 2.30.1: orca-term needs 2.38 or later; run orca-term doctor for the full report`.
+
+In Neovim, `:checkhealth orca-term` shows the core binary the client uses, the doctor's checks,
+whether the core speaks the client's contract, the Neovim version (0.11 or later) and whether
+diffview.nvim is there for the review.
 
 ## Development
 

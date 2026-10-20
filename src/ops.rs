@@ -1,12 +1,14 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
-//! notes, reading its turns and telling the running Neovims that a worktree changed.
+//! notes, reading its turns, telling the running Neovims that a worktree changed and checking the
+//! programs a command needs (git, claude).
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
+pub(crate) mod doctor;
 pub(crate) mod hook;
 pub(crate) mod note_add;
 pub(crate) mod note_edit;
@@ -35,7 +37,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::adapters::fs::{self, WorktreeLock};
 use crate::adapters::nvim::Sent;
-use crate::adapters::{self, env, git, script};
+use crate::adapters::{self, env, git, program, script};
 use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
@@ -44,6 +46,7 @@ use crate::domain::history::{self, History};
 use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
+use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
@@ -598,4 +601,36 @@ pub(crate) fn read_history(worktree: &Worktree, admin: &AdminDir) -> Result<Hist
         path: worktree.path.clone(),
         turns: history::turns(&records, status.as_ref()),
     })
+}
+
+/// The check of the program `requirement` names, as a shell would find it on `path_dirs`: not
+/// found, or what its `--version` printed. Returns the program's path too, when found.
+pub(crate) fn check_program(
+    path_dirs: &[PathBuf],
+    requirement: &Requirement,
+) -> (Option<PathBuf>, Check) {
+    let path = fs::executable_in(path_dirs, requirement.program);
+    let probe = match &path {
+        None => Probe::NotFound,
+        Some(path) => match program::version(path) {
+            Ok(printed) => Probe::Printed(printed),
+            Err(err) => Probe::Failed(format!("{err:#}")),
+        },
+    };
+    (path, prerequisite::check_program(requirement, &probe))
+}
+
+/// Refuses, as the typed `prerequisite`, when git is not on PATH or older than orca-term needs.
+/// Every command that runs git calls it once, as it starts, before its first git call.
+pub(crate) fn check_git() -> Result<()> {
+    let (_, check) = check_program(&env::path_dirs(), &prerequisite::GIT);
+    prerequisite::require(&check)
+}
+
+/// claude's path on `path_dirs`, refusing as the typed `prerequisite` when it is not there or
+/// older than orca-term needs. A claude newer than the tested version is not refused.
+pub(crate) fn find_claude(path_dirs: &[PathBuf]) -> Result<PathBuf> {
+    let (path, check) = check_program(path_dirs, &prerequisite::CLAUDE);
+    prerequisite::require(&check)?;
+    path.context("claude is not on PATH")
 }

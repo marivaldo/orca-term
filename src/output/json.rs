@@ -15,6 +15,7 @@ use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
+use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
@@ -342,6 +343,27 @@ struct ErrorView {
 struct ErrorBody {
     kind: &'static str,
     message: String,
+}
+
+/// `doctor --json`: every check in order, and, when one is missing or too old, the `prerequisite`
+/// error other commands would print for it.
+#[derive(Debug, Serialize)]
+struct DoctorView<'a> {
+    checks: Vec<CheckView<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ErrorBody>,
+}
+
+/// One check: `status` is `ok`, `warn`, `missing`, `too_old` or `info`; `found` what was found
+/// (such as a version) and `need` what orca-term needs (such as the oldest version), each null
+/// when there is nothing to say; `message` the report's line after the status.
+#[derive(Debug, Serialize)]
+struct CheckView<'a> {
+    name: &'static str,
+    status: &'static str,
+    found: Option<&'a str>,
+    need: Option<&'a str>,
+    message: &'a str,
 }
 
 /// Wraps `body` in the envelope and renders it.
@@ -682,10 +704,35 @@ pub(crate) fn done() -> serde_json::Result<String> {
 /// A failure as one JSON document, with the kind the client tells failures apart by.
 pub(crate) fn error(err: &anyhow::Error) -> serde_json::Result<String> {
     document(ErrorView {
-        error: ErrorBody {
-            kind: error::kind(err),
-            message: format!("{err:#}"),
-        },
+        error: error_body(err),
+    })
+}
+
+fn error_body(err: &anyhow::Error) -> ErrorBody {
+    ErrorBody {
+        kind: error::kind(err),
+        message: format!("{err:#}"),
+    }
+}
+
+/// The doctor's report as one JSON document, with `refusal` as its `error` when there is one.
+pub(crate) fn doctor(
+    report: &Report,
+    refusal: Option<&anyhow::Error>,
+) -> serde_json::Result<String> {
+    document(DoctorView {
+        checks: report
+            .checks
+            .iter()
+            .map(|check| CheckView {
+                name: check.name,
+                status: check.status.name(),
+                found: check.found.as_deref(),
+                need: check.need.as_deref(),
+                message: &check.message,
+            })
+            .collect(),
+        error: refusal.map(error_body),
     })
 }
 

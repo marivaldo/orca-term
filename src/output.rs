@@ -22,6 +22,7 @@ use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
+use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
@@ -646,6 +647,35 @@ pub(crate) fn attach_ended(end: &AttachEnd) {
         AttachEnd::AgentEnded(text) => format!("[agent ended: {text}]"),
     };
     progress(&line, Format::Text);
+}
+
+/// Prints the doctor's report: one line per check, or one JSON document. When a check is missing
+/// or too old, the whole report is printed first, then the `prerequisite` error as any command
+/// prints it (on stderr as text, inside the same document with `--json`), and the exit code is
+/// that error's.
+pub(crate) fn doctor(report: &Report, format: Format) -> anyhow::Result<ExitCode> {
+    let refusal = report.refusal().map(anyhow::Error::new);
+    match format {
+        Format::Text => {
+            out(&render_doctor(report));
+            if let Some(err) = &refusal {
+                return Ok(error(err, Format::Text));
+            }
+        }
+        Format::Json => out(&json::doctor(report, refusal.as_ref())?),
+    }
+    Ok(refusal.map_or(ExitCode::SUCCESS, |err| {
+        ExitCode::from(error::exit_code(&err))
+    }))
+}
+
+fn render_doctor(report: &Report) -> String {
+    report
+        .checks
+        .iter()
+        .map(|check| format!("{:<8} {}", check.status.label(), check.message))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Prints an error, with its causes: to stderr as text, or to stdout as a JSON document carrying

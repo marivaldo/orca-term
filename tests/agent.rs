@@ -658,20 +658,20 @@ fn start_refuses_a_worktree_that_is_not_ready_and_a_claude_that_is_old_or_missin
     fx.repo
         .write(".git/orca-term.yaml", "scripts:\n  setup: ''\n");
     fx.ok(&["worktree", "setup", "fix"]);
-    fx.write_claude("2.1.284 (Claude Code)", "");
+    fx.write_claude("2.1.294 (Claude Code)", "");
     let out = fx.run(&["agent", "start", "fix"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(9));
     assert!(
-        stderr(&out).contains("claude 2.1.284 is too old: orca-term needs 2.1.285 or newer"),
+        stderr(&out).contains("claude 2.1.294: orca-term needs 2.1.295 or later"),
         "{}",
         stderr(&out)
     );
 
     fx.remove_tool("claude");
     let out = fx.run(&["agent", "start", "fix"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(9));
     assert!(
-        stderr(&out).contains("claude is not on PATH"),
+        stderr(&out).contains("claude: not found on PATH; install Claude Code"),
         "{}",
         stderr(&out)
     );
