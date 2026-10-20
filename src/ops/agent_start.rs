@@ -4,11 +4,11 @@
 //! is not an error: the report says so. With no holder alive, the agent continues the current
 //! session `status.json` records (`--resume`), unless the person asks for a fresh one.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::adapters::fs;
 use crate::adapters::holder::{self, HolderArgs};
-use crate::adapters::{env, git, program, terminal};
+use crate::adapters::{env, git, terminal};
 use crate::domain::agent::{Agent, HolderRecord, Size, StartMode, StartOutcome, Started};
 use crate::domain::config;
 use crate::domain::fleet::Worktree;
@@ -18,14 +18,15 @@ use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
 use crate::domain::turn;
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
-    config_layers, derive_state, find_target_admin, lock_worktree, notify_changed, read_fleet,
-    write_agent,
+    config_layers, derive_state, find_claude, find_target_admin, lock_worktree, notify_changed,
+    read_fleet, write_agent,
 };
 
 /// Starts claude in the worktree `target` names or locates in the repository containing the
 /// current directory, with `rows` and `cols` as its first terminal size where given (else the
 /// starter's terminal size, else 24 by 80), on the session `mode` says. Fails as `busy` when the
-/// worktree's lock is held, as `no_sandbox` when claude's sandbox cannot run here, and as
+/// worktree's lock is held, as `no_sandbox` when claude's sandbox cannot run here, as
+/// `prerequisite` when claude is not on PATH or older than orca-term needs, and as
 /// `session_gone` when the recorded session can no longer be resumed.
 pub(crate) fn run(
     target: &Target,
@@ -48,13 +49,7 @@ pub(crate) fn run(
     sandbox::check_available(Platform::current(), &|tool| {
         fs::executable_in(&path_dirs, tool).is_some()
     })?;
-    let claude = fs::executable_in(&path_dirs, agent.program()).with_context(|| {
-        format!(
-            "{} is not on PATH; install Claude Code, or add it to PATH",
-            agent.program()
-        )
-    })?;
-    launch::check_version(&program::version(&claude)?)?;
+    let claude = find_claude(&path_dirs)?;
 
     let config_env = env::config_env();
     let layers = config_layers(&fleet.primary, &worktree.path, &config_env)?;

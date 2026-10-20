@@ -1,11 +1,12 @@
 //! Domain: whether claude's native sandbox can run on this machine (ADR 0007). claude runs
 //! `sandbox-exec` on macOS and `bwrap` with `socat` on Linux; on any other system it has no
-//! sandbox. The adapters say which tools are on PATH; this module decides what is missing and
-//! which typed error says so.
+//! sandbox. The adapters say which tools are on PATH; this module decides what is missing, what
+//! `orca-term doctor` shows for it and which typed error says so, in the same words.
 
 use anyhow::Result;
 
 use crate::domain::error::TypedError;
+use crate::domain::prerequisite::{Check, Status};
 
 /// The operating systems claude's sandbox knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,18 +38,14 @@ pub(crate) fn required_tools(os: Platform) -> &'static [&'static str] {
     }
 }
 
-/// Refuses to launch when the sandbox cannot run on `os`: no sandbox exists there, or one of its
-/// tools is missing, `found` saying which tools are on PATH. The error is the typed `no_sandbox`.
-pub(crate) fn check_available(os: Platform, found: &dyn Fn(&str) -> bool) -> Result<()> {
+/// Why the sandbox cannot run on `os`, `found` saying which tools are on PATH: the tools missing
+/// (none when the system has no sandbox at all) and the fix; `None` when it can run.
+fn problem(os: Platform, found: &dyn Fn(&str) -> bool) -> Option<(Vec<String>, &'static str)> {
     let hint = match os {
         Platform::MacOs => "sandbox-exec ships with macOS in /usr/bin; is /usr/bin on PATH?",
         Platform::Linux => "install bubblewrap and socat (`sudo apt-get install bubblewrap socat`)",
         Platform::Other => {
-            return Err(TypedError::NoSandbox {
-                missing: Vec::new(),
-                hint: "claude's sandbox runs on macOS and Linux only".to_owned(),
-            }
-            .into());
+            return Some((Vec::new(), "claude's sandbox runs on macOS and Linux only"));
         }
     };
     let missing: Vec<String> = required_tools(os)
@@ -57,13 +54,54 @@ pub(crate) fn check_available(os: Platform, found: &dyn Fn(&str) -> bool) -> Res
         .map(|tool| (*tool).to_owned())
         .collect();
     if missing.is_empty() {
-        return Ok(());
+        return None;
     }
-    Err(TypedError::NoSandbox {
-        missing,
-        hint: hint.to_owned(),
+    Some((missing, hint))
+}
+
+/// What is wrong with the sandbox, as both `orca-term doctor` and the `no_sandbox` error say it:
+/// the `missing` tools and the `hint`, or the hint alone when no tool is named.
+pub(crate) fn diagnosis(missing: &[String], hint: &str) -> String {
+    if missing.is_empty() {
+        return hint.to_owned();
     }
-    .into())
+    format!("{} not found on PATH; {hint}", missing.join(" and "))
+}
+
+/// The doctor's check of the sandbox on `os`, `found` saying which tools are on PATH: ok naming
+/// its tools, or missing with the same diagnosis as the `no_sandbox` error.
+pub(crate) fn check(os: Platform, found: &dyn Fn(&str) -> bool) -> Check {
+    let (status, found, message) = match problem(os, found) {
+        None => {
+            let tools = required_tools(os).join(" and ");
+            (Status::Ok, Some(tools.clone()), format!("sandbox {tools}"))
+        }
+        Some((missing, hint)) => (
+            Status::Missing,
+            None,
+            format!("sandbox: {}", diagnosis(&missing, hint)),
+        ),
+    };
+    Check {
+        name: "sandbox",
+        status,
+        found,
+        need: None,
+        message,
+    }
+}
+
+/// Refuses to launch when the sandbox cannot run on `os`: no sandbox exists there, or one of its
+/// tools is missing, `found` saying which tools are on PATH. The error is the typed `no_sandbox`.
+pub(crate) fn check_available(os: Platform, found: &dyn Fn(&str) -> bool) -> Result<()> {
+    match problem(os, found) {
+        None => Ok(()),
+        Some((missing, hint)) => Err(TypedError::NoSandbox {
+            missing,
+            hint: hint.to_owned(),
+        }
+        .into()),
+    }
 }
 
 #[cfg(test)]
@@ -87,7 +125,8 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "claude's sandbox is not available: socat not found on PATH; install bubblewrap and \
-             socat (`sudo apt-get install bubblewrap socat`)"
+             socat (`sudo apt-get install bubblewrap socat`); run orca-term doctor for the full \
+             report"
         );
         let err = check_available(Platform::MacOs, &|_| false).unwrap_err();
         assert!(
@@ -102,7 +141,35 @@ mod tests {
         assert_eq!(error::kind(&err), "no_sandbox");
         assert_eq!(
             err.to_string(),
-            "claude's sandbox is not available: claude's sandbox runs on macOS and Linux only"
+            "claude's sandbox is not available: claude's sandbox runs on macOS and Linux only; \
+             run orca-term doctor for the full report"
         );
+    }
+
+    #[test]
+    fn the_doctor_check_names_the_tools_or_says_what_the_error_says() {
+        let ok = check(Platform::Linux, &|_| true);
+        assert_eq!(ok.status, Status::Ok);
+        assert_eq!(ok.message, "sandbox bwrap and socat");
+        assert_eq!(ok.found.as_deref(), Some("bwrap and socat"));
+        assert_eq!(
+            check(Platform::MacOs, &|_| true).message,
+            "sandbox sandbox-exec"
+        );
+        for (os, found) in [
+            (
+                Platform::Linux,
+                &(|tool: &str| tool == "bwrap") as &dyn Fn(&str) -> bool,
+            ),
+            (Platform::MacOs, &|_: &str| false),
+            (Platform::Other, &|_: &str| true),
+        ] {
+            let missing = check(os, found);
+            assert_eq!(missing.status, Status::Missing);
+            assert_eq!(missing.found, None);
+            let diagnosis = missing.message.strip_prefix("sandbox: ").unwrap();
+            let err = check_available(os, found).unwrap_err().to_string();
+            assert!(err.contains(diagnosis), "{err} / {diagnosis}");
+        }
     }
 }

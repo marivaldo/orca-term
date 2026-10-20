@@ -16,6 +16,7 @@ pub(crate) mod launch;
 pub(crate) mod note;
 pub(crate) mod nvim;
 pub(crate) mod porcelain;
+pub(crate) mod prerequisite;
 pub(crate) mod protocol;
 pub(crate) mod review;
 pub(crate) mod sandbox;

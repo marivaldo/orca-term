@@ -94,9 +94,13 @@ impl AgentRepo {
         self.write_tool("claude", &script);
     }
 
-    /// Writes an executable `name` on the isolated PATH.
+    /// Writes an executable `name` on the isolated PATH. Whatever was there goes first, so that
+    /// replacing the link to the real `git` never writes through it.
     pub(crate) fn write_tool(&self, name: &str, script: &str) {
         let path = self.bin.join(name);
+        if path.symlink_metadata().is_ok() {
+            fs::remove_file(&path).unwrap();
+        }
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }

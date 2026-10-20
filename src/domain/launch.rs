@@ -1,8 +1,8 @@
 //! Domain: how claude is launched in a worktree (ADR 0007, ADR 0009): its arguments, the settings
 //! file that turns its native sandbox on, keeps our state out of its reach and registers the hooks
-//! that report its turns (ADR 0008: per launch, never in claude's own config), the version it
-//! needs, the variables kept from its environment, the session a cold start resumes, and the
-//! guard that no launch ever bypasses permissions.
+//! that report its turns (ADR 0008: per launch, never in claude's own config), the variables kept
+//! from its environment, the session a cold start resumes, and the guard that no launch ever
+//! bypasses permissions. The version it needs is `domain/prerequisite.rs`'s.
 //!
 //! The forbidden flags and modes are listed here and nowhere else in the source:
 //! `cargo xtask launch-guard` rejects their literals in any other file.
@@ -21,10 +21,6 @@ use crate::domain::turn::Status;
 /// The permission mode every launch runs under: edits inside the worktree go through without
 /// asking; the sandbox confines everything else (ADR 0007).
 pub(crate) const PERMISSION_MODE: &str = "acceptEdits";
-
-/// The oldest claude whose sandbox honours our settings as "admin-required", so the repository's
-/// own `.claude/settings*.json` cannot loosen them.
-pub(crate) const MIN_CLAUDE_VERSION: (u64, u64, u64) = (2, 1, 285);
 
 /// Variables removed from the agent's environment, so that an orca-term run from inside a Claude
 /// Code session never starts the agent as a child session of it. Everything else passes through:
@@ -337,33 +333,6 @@ fn check_resume(arg: &str, value: Option<&str>) -> Result<()> {
         bail!("refusing to launch the agent with `{RESUME_FLAG} {session}`, not a session id");
     }
     Ok(())
-}
-
-/// Checks what `claude --version` printed (`2.1.296 (Claude Code)`) against
-/// [`MIN_CLAUDE_VERSION`].
-pub(crate) fn check_version(output: &str) -> Result<()> {
-    let text = output.trim();
-    let Some(version) = parse_version(text) else {
-        bail!("could not read claude's version from `claude --version` (it printed `{text}`)");
-    };
-    if version < MIN_CLAUDE_VERSION {
-        let (a, b, c) = MIN_CLAUDE_VERSION;
-        bail!(
-            "claude {}.{}.{} is too old: orca-term needs {a}.{b}.{c} or newer, whose sandbox \
-             honours the settings orca-term passes; upgrade claude",
-            version.0,
-            version.1,
-            version.2
-        );
-    }
-    Ok(())
-}
-
-/// The leading `major.minor.patch` of `text`, if it starts with one.
-fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    let first = text.split_whitespace().next()?;
-    let mut parts = first.split('.').map(|p| p.parse::<u64>().ok());
-    Some((parts.next()??, parts.next()??, parts.next()??))
 }
 
 #[cfg(test)]
@@ -724,19 +693,6 @@ mod tests {
         )
         .unwrap();
         check_launch(&argv(&[]), &good).unwrap();
-    }
-
-    #[test]
-    fn claude_older_than_the_floor_is_refused_with_the_fix() {
-        check_version("2.1.296 (Claude Code)\n").unwrap();
-        check_version("2.1.285").unwrap();
-        let err = check_version("2.1.284 (Claude Code)")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("2.1.284 is too old"), "{err}");
-        assert!(err.contains("2.1.285 or newer"), "{err}");
-        let err = check_version("Claude Code").unwrap_err().to_string();
-        assert!(err.contains("could not read claude's version"), "{err}");
     }
 
     #[test]

@@ -16,10 +16,10 @@ use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    agent_attach, agent_holder, agent_start, agent_stop, hook, note_add, note_edit, note_ls,
-    note_rm, note_send, nvim_register, nvim_unregister, turn_blame, turn_diff, turn_ls,
-    worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm,
-    worktree_seen, worktree_setup,
+    agent_attach, agent_holder, agent_start, agent_stop, check_git, doctor, hook, note_add,
+    note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister, turn_blame, turn_diff,
+    turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review,
+    worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -56,6 +56,13 @@ enum Command {
     Turn {
         #[command(subcommand)]
         command: TurnCommand,
+    },
+    /// Check every program orca-term needs (git, claude's sandbox, the agents) and say how to fix
+    /// what is missing; installs nothing. Works outside a repository.
+    Doctor {
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// What the agent's hooks run: `hook claude --admin <dir> <event>`, the event's payload on
     /// stdin. Its arguments are taken as they come, unchecked, so that clap never refuses them
@@ -357,6 +364,7 @@ impl Cli {
                 | TurnCommand::Diff { json, .. }
                 | TurnCommand::Blame { json, .. } => *json,
             },
+            Command::Doctor { json } => *json,
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -364,12 +372,31 @@ impl Cli {
         };
         Format::from_json_flag(json)
     }
+
+    /// Whether the command runs git, and so checks git first. `doctor` reports on git instead,
+    /// the hook must stay fast and silent, and the holder is started by `agent start`, which
+    /// checked.
+    fn runs_git(&self) -> bool {
+        match &self.command {
+            Command::Doctor { .. } | Command::Hook { .. } => false,
+            Command::Agent { command } => !matches!(command, AgentCommand::Holder { .. }),
+            Command::Worktree { .. }
+            | Command::Note { .. }
+            | Command::Turn { .. }
+            | Command::Nvim { .. } => true,
+        }
+    }
 }
 
 /// Runs the command `cli` names and returns the process's exit code: 1 when a setup failed,
-/// although the command itself did its job.
+/// although the command itself did its job. A command that runs git first refuses, as the typed
+/// `prerequisite`, when git is missing or too old.
 pub fn run(cli: &Cli) -> Result<ExitCode> {
+    if cli.runs_git() {
+        check_git()?;
+    }
     match &cli.command {
+        Command::Doctor { .. } => Ok(output::doctor(&doctor::run(), cli.format())?),
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),
         Command::Note { command } => run_note(command, cli.format()),
@@ -625,6 +652,38 @@ mod tests {
         );
         assert_eq!(HookArgs::parse(&[]), HookArgs::default());
         assert_eq!(HookArgs::parse(&words(&["claude", "--admin"])).admin, None);
+    }
+
+    #[test]
+    fn only_doctor_the_hook_and_the_holder_skip_the_git_check() {
+        let runs_git = |args: &[&str]| Cli::try_parse_from(args).unwrap().runs_git();
+        assert!(!runs_git(&["orca-term", "doctor"]));
+        assert!(!runs_git(&["orca-term", "hook", "claude", "Stop"]));
+        assert!(!runs_git(&[
+            "orca-term",
+            "agent",
+            "holder",
+            "--admin",
+            "/a",
+            "--worktree",
+            "/w",
+            "--rows",
+            "1",
+            "--cols",
+            "1",
+            "--",
+            "claude",
+        ]));
+        for args in [
+            &["orca-term", "worktree", "ls"][..],
+            &["orca-term", "worktree", "prune"],
+            &["orca-term", "agent", "attach", "fix"],
+            &["orca-term", "note", "ls", "fix"],
+            &["orca-term", "turn", "ls", "fix"],
+            &["orca-term", "nvim", "unregister", "/tmp/n.sock"],
+        ] {
+            assert!(runs_git(args), "{args:?}");
+        }
     }
 
     #[test]
