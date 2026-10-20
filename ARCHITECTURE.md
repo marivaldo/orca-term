@@ -119,6 +119,12 @@ the adapters, and returns a domain value that `output` prints.
   lock it, copy the copy list, run the setup.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
   the setup again.
+- Both run the setup through `ops::set_up`, which, for a script from a committed
+  `orca-term.yaml`, first checks its approval (#58): the sha256 of its text in
+  `<git common dir>/orca-term-trust.json`, else the person's `Approval` (`Given` by
+  `--approve-setup`, `Ask` at a terminal through the function `cli` hands down, `Unavailable`
+  otherwise). Approving records it under `<git common dir>/orca-term/trust.lock`; refusing writes
+  `not_approved` to `worktree.json`, notifies, and returns the typed `untrusted`.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
   primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
@@ -210,7 +216,8 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
   `PATH`.
 - `adapters/program.rs`: running a program for its `--version`.
-- `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload.
+- `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
+  the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
   (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, typing into the
   agent's terminal as one more client (`type_input`: two input frames with a pause between, no
@@ -239,7 +246,8 @@ the adapters, and returns a domain value that `output` prints.
   followed by a reset of the screen modes an agent leaves behind), the size sent on connect and on
   every `SIGWINCH`, what is typed forwarded as input (Ctrl-\ detaches unless `--no-detach-key`),
   the holder's output written to stdout. Without a terminal it only moves bytes, and the end of
-  its input detaches.
+  its input detaches. `is_interactive` says whether stdin and stderr are both terminals, so a
+  setup script can be approved at a prompt.
 
 ### domain
 
@@ -338,6 +346,11 @@ the adapters, and returns a domain value that `output` prints.
   script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
   the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
   commands that run it.
+- `domain/trust.rs`: the approval of a committed setup script (#58): `orca-term-trust.json` in
+  the git common dir (`{"schema": 1, "approved": [{"sha256", "source", "approved_at"}]}`, read
+  from any schema, never written over a newer one, a corrupt file refused by name), the sha256 of
+  the script's exact bytes, the answers that approve (`y`, `yes`, any case) and `gate`, what to do
+  with a script given whether it is committed, whether it is approved and the person's `Consent`.
 - `domain/detail.rs`: what `worktree detail` reports (`Detail`): the whole detail
   (`whole_detail`: the state's own, or a failed turn's whole message), where the setup is
   (`SetupProgress`) and the drift counted from git's output (`Drift`).
@@ -371,7 +384,8 @@ validate"):
   `Broken(BrokenReason)`. A ready worktree is `Idle` when an agent is recorded (whether or not
   its holder is alive) with no turn reported yet, and `NoAgent` otherwise. `NotReadyReason` is
   `Interrupted` (a setup recorded as running whose lock nobody holds) or `Failed` with its `Exit`
-  and the last line of its log. `BrokenReason` says the directory is missing, git marks it
+  and the last line of its log, or `NotApproved` with the worktree's name (a committed script not
+  approved, so it did not run). `BrokenReason` says the directory is missing, git marks it
   prunable, or the state file cannot be read. Broken wins over every other state.
 - `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
@@ -405,7 +419,13 @@ validate"):
 - `LockStatus` (`domain/state.rs`): `Held` or `Free`, what the read-only probe of a worktree's
   lock found.
 - `SetupRecord` and `Exit` (`domain/setup.rs`): what `worktree.json` records about the setup,
-  `Running`, `Succeeded` or `Failed(Exit)`, where `Exit` is a non-zero `Code` or a `Signal`.
+  `Running`, `Succeeded` or `Failed(Exit)`, where `Exit` is a non-zero `Code` or a `Signal`, or
+  `NotApproved` (`{"status": "not_approved"}`).
+- `Trust`, `Approval`, `Unapproved`, `Consent` and `Gate` (`domain/trust.rs`): every approval of
+  a repository, one approved script, a committed script not approved yet (the worktree's name,
+  the script, its file), how the person may approve (`Given`, `Ask`, `Unavailable`) and what to do
+  (`Run`, `ApproveAndRun`, `Ask`, `Refuse`). `ops::Approval` is `Consent` with the function that
+  asks.
 - `SetupOutcome`, `SetupReport` and `SetupDone` (`domain/setup.rs`): what running the setup did
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
@@ -425,8 +445,9 @@ validate"):
   `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
-  to start it) and `Prerequisite` (a program the command needs is missing or too old, as the
-  doctor's lines say).
+  to start it), `Prerequisite` (a program the command needs is missing or too old, as the
+  doctor's lines say) and `Untrusted` (a setup script from a committed `orca-term.yaml` not
+  approved, with its text and file, which the client shows before approving it).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -466,6 +487,15 @@ validate"):
   held.
 - **A failed setup undoes nothing**: the worktree, its branch and its log stay, and the worktree
   is not ready until `worktree setup` succeeds.
+- **A committed setup script runs only once approved** (#58). A script whose winning config
+  layer is a committed `orca-term.yaml` (the worktree's own) runs only when the sha256 of its
+  exact text is in `<git common dir>/orca-term-trust.json`, or once the person approves it:
+  `--approve-setup`, or `y`/`yes` at the prompt, shown only when stdin and stderr are terminals and
+  the output is text. Otherwise nothing runs, `worktree.json` records `not_approved` (the
+  worktree is not ready, `setup not approved; run orca-term worktree setup <name>`) and the
+  command fails as `untrusted`; `worktree new` leaves the worktree in place. A script from
+  `.git/orca-term.yaml` or the global config file always runs. The approvals' file is replaced
+  whole under its lock and never written over a newer schema; `worktree ls` only reads the record.
 - **One agent process per worktree, and its pid and socket are never trusted on their own**
   (ADR 0003, ADR 0009). The holder holds an exclusive `flock` on `agent.lock` for its whole life;
   `agent.json` (its pid and socket) and `agent.sock` are believed only while that lock is held,
@@ -484,7 +514,8 @@ validate"):
   `.claude/settings*.json` unable to loosen it, on claude 2.1.295 or newer, the floor `agent
   start` checks), every weakening key pinned, the network open, writes denied to every worktree's
   `orca-term` admin directory (each one listed, plus the `*` glob), `refs/orca-term` and
-  `orca-term.yaml` and the `orca-term` directory (the Neovim registry) in the git common dir,
+  `orca-term.yaml`, `orca-term-trust.json` (the approved setup scripts) and the `orca-term`
+  directory (the Neovim registry) in the git common dir,
   pre-created before the launch, through both the sandbox's `denyWrite` and `Edit(...)`
   deny rules; the only configurable part is `sandbox.writable` in `orca-term.yaml`, extra
   writable paths, the highest config layer replacing the lower ones and printed with its source.
@@ -585,8 +616,9 @@ validate"):
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
-  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `prerequisite`)
-  or `other`.
+  the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `untrusted`,
+  `prerequisite`) or `other`. The error of `untrusted` also carries `script` and `source` (the
+  committed file).
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
@@ -594,8 +626,9 @@ validate"):
   cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
   or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
-  running; 9 for `prerequisite`, a program the command needs (git, claude) that is missing or too
-  old, and for `doctor` when any check is.
+  running; 8 for `untrusted`, a setup script from a committed `orca-term.yaml` not approved, so
+  `worktree new` or `worktree setup` did not run it; 9 for `prerequisite`, a program the command
+  needs (git, claude) that is missing or too old, and for `doctor` when any check is.
 
 ## Known limits of the agent holder
 
@@ -726,6 +759,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
   `tests/snapshots.rs` and `tests/turns.rs` build turns by firing the real hooks as claude does
   (`tests/support/turns.rs`), then ask git, and the turn commands, what the snapshots hold.
+  `tests/setup_approval.rs` drives the approval of a committed setup script, without a terminal
+  and, for the prompt, on a real pseudo-terminal (`Repo::pty_command`, through `pty-process`).
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
@@ -770,12 +805,13 @@ what they print.
   `target/release/orca-term` or `target/debug/orca-term` in the repository the client is loaded
   from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
   and refuses a document whose `contract` differs from the client's own `CONTRACT`.
-  `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` and `worktree_rm`
+  `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` (with
+  `--approve-setup` when asked to approve) and `worktree_rm`
   (which may run a setup for minutes) do not: `vim.system` runs them with no time limit and their
   result reaches a callback through `vim.schedule`. Each gives the document, or `nil` and an error
   `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
   client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
-  throws. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
+  throws. An `untrusted` error also carries the core's `script` and `source`. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
   events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting;
   `worktree_review(target, cwd, on_done)` runs `worktree review` without waiting (10 s at most),
   handing over the worktree (now seen), the review's `base` and the branch it was found `against`.
@@ -1003,7 +1039,11 @@ what they print.
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
-  they start (showing *setting up*) and when they finish. `remove` always asks first; a
+  they start (showing *setting up*) and when they finish. When either fails as `untrusted`, a
+  `vim.ui.select` (`approval_prompt`: the worktree, the source and the script's lines) asks
+  `Run it` or `Cancel` (`APPROVE_SETUP`); `Run it` runs `worktree setup --approve-setup` (by name
+  after `a`, by path after `.`) and goes on as the command would have, `Cancel` runs nothing and
+  says the worktree is not ready. `remove` always asks first; a
   `dirty` refusal asks once more before `--force`; `busy` is only reported; a removed worktree's
   tabs close, its review tabs included. It touches no window or buffer.
 

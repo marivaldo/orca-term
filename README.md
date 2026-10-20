@@ -40,6 +40,21 @@ keys to `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermRevie
 `<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
 client sets no global key.
 
+## Setup
+
+`worktree new` runs the setup script `scripts.setup` from `orca-term.yaml` in the new worktree, and
+`worktree setup <worktree>` runs it again. A script from a committed `orca-term.yaml` was written
+by whoever committed it, so it runs only once you have approved its exact text in this repository.
+At a terminal, orca-term prints the script and the file it comes from, then asks
+`run this setup script? [y/N]`; `y` approves it and runs it, anything else leaves the worktree
+*not ready* until you run `orca-term worktree setup <worktree>` again. Without a terminal, or with
+`--json`, nothing is asked: the command fails with the error `untrusted` (exit code 8) and the
+worktree stays not ready. `--approve-setup` approves the script without asking, and the Neovim
+client shows the script and asks `Run it` or `Cancel` before passing it. An approval is the sha256
+of the script, kept in `.git/orca-term-trust.json`, outside every worktree and out of the agent's
+reach; any change to the script, in the primary checkout or on a branch, asks again. A script from
+`.git/orca-term.yaml` or from your global config file is yours and always runs.
+
 ## Review
 
 The review shows what a worktree changed since it forked from the default branch: the commit it
