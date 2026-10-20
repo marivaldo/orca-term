@@ -10,16 +10,17 @@ use crate::adapters::fs;
 use crate::adapters::holder::{self, HolderArgs};
 use crate::adapters::{env, git, terminal};
 use crate::domain::agent::{Agent, HolderRecord, Size, StartMode, StartOutcome, Started};
-use crate::domain::config;
-use crate::domain::fleet::Worktree;
+use crate::domain::config::{self, Layer};
+use crate::domain::fleet::{PrimaryCheckout, Worktree};
 use crate::domain::launch::{self, SessionId};
 use crate::domain::sandbox::{self, Platform};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
+use crate::domain::trust::{Subject, Unapproved};
 use crate::domain::turn;
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
-    config_layers, derive_state, find_claude, find_target_admin, lock_worktree, notify_changed,
-    read_fleet, write_agent,
+    Approval, config_layers, derive_state, find_claude, find_target_admin, is_approved,
+    lock_worktree, notify_changed, read_fleet, write_agent,
 };
 
 /// Starts claude in the worktree `target` names or locates in the repository containing the
@@ -27,12 +28,15 @@ use crate::ops::{
 /// starter's terminal size, else 24 by 80), on the session `mode` says. Fails as `busy` when the
 /// worktree's lock is held, as `no_sandbox` when claude's sandbox cannot run here, as
 /// `prerequisite` when claude is not on PATH or older than orca-term needs, and as
-/// `session_gone` when the recorded session can no longer be resumed.
+/// `session_gone` when the recorded session can no longer be resumed. Extra writable paths from a
+/// committed `orca-term.yaml` not approved through `approval` start nothing: the typed error
+/// `untrusted`.
 pub(crate) fn run(
     target: &Target,
     rows: Option<u16>,
     cols: Option<u16>,
     mode: StartMode,
+    approval: &mut Approval<'_>,
 ) -> Result<Started> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
@@ -54,6 +58,7 @@ pub(crate) fn run(
     let config_env = env::config_env();
     let layers = config_layers(&fleet.primary, &worktree.path, &config_env)?;
     let writable = config::resolve_writable(&layers, &config_env)?;
+    check_writable_approved(&fleet.primary, worktree, &layers, approval)?;
     let common = fs::canonicalize(&git::common_dir(&fleet.primary)?)?;
     let admin_dirs = prepare_admin_dirs(&common)?;
     let admin = AdminDir::new(fs::canonicalize(admin.path())?);
@@ -89,6 +94,32 @@ pub(crate) fn run(
         outcome: StartOutcome::Started { pid, resumed },
         writable: Some(writable),
     })
+}
+
+/// Refuses, as the typed `untrusted`, extra writable paths that come from a committed
+/// `orca-term.yaml` of `worktree` and that the person has not approved, before or now through
+/// `approval`. Paths from the override or the global config file need no approval.
+fn check_writable_approved(
+    primary: &PrimaryCheckout,
+    worktree: &Worktree,
+    layers: &[Layer],
+    approval: &mut Approval<'_>,
+) -> Result<()> {
+    let Some((file, paths)) = config::committed_writable(layers) else {
+        return Ok(());
+    };
+    let unapproved = Unapproved {
+        name: worktree.name.clone(),
+        subject: Subject::Sandbox {
+            writable: paths.to_vec(),
+        },
+        file: fs::canonicalize(file)?,
+    };
+    if is_approved(primary, &worktree.path, &unapproved, approval)? {
+        Ok(())
+    } else {
+        Err(unapproved.refused().into())
+    }
 }
 
 /// The report of a holder already alive in `worktree`, whose admin directory is `admin`, with

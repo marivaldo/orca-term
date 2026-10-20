@@ -20,6 +20,7 @@ use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
+use crate::domain::trust::Subject;
 use crate::domain::turn::{Outcome, Phase};
 use crate::domain::worktree::{BranchOutcome, Created, Removed};
 
@@ -339,14 +340,19 @@ struct ErrorView<'a> {
     error: ErrorBody<'a>,
 }
 
-/// An error: its `kind` and `message`; `untrusted` also carries the setup `script` not approved
-/// and the committed file it comes from (`source`), so the client can show them.
+/// An error: its `kind` and `message`; `untrusted` also carries `what` was not approved
+/// (`setup` or `sandbox`), the setup `script` or the `writable` paths as written, and the
+/// committed file they come from (`source`), so the client can show them.
 #[derive(Debug, Serialize)]
 struct ErrorBody<'a> {
     kind: &'static str,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    what: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     script: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    writable: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a Path>,
 }
@@ -715,21 +721,26 @@ pub(crate) fn error(err: &anyhow::Error) -> serde_json::Result<String> {
     })
 }
 
-/// The error object of `err`: its `kind` and `message`, and for `untrusted` the setup `script` and
-/// its `source`.
+/// The error object of `err`: its `kind` and `message`, and for `untrusted` `what` was not
+/// approved, the setup `script` or the `writable` paths, and their `source`.
 fn error_body(err: &anyhow::Error) -> ErrorBody<'_> {
-    let (script, source) = match error::typed(err) {
-        Some(TypedError::Untrusted { script, file, .. }) => {
-            (Some(script.as_str()), Some(file.as_path()))
-        }
-        _ => (None, None),
-    };
-    ErrorBody {
+    let mut body = ErrorBody {
         kind: error::kind(err),
         message: format!("{err:#}"),
-        script,
-        source,
+        what: None,
+        script: None,
+        writable: None,
+        source: None,
+    };
+    if let Some(TypedError::Untrusted { subject, file, .. }) = error::typed(err) {
+        body.what = Some(subject.kind().name());
+        body.source = Some(file.as_path());
+        match subject {
+            Subject::Setup { script } => body.script = Some(script.as_str()),
+            Subject::Sandbox { writable } => body.writable = Some(writable.as_slice()),
+        }
     }
+    body
 }
 
 /// The doctor's report as one JSON document, with `refusal` as its `error` when there is one.
@@ -1258,18 +1269,43 @@ mod tests {
         assert_eq!(other["error"]["kind"], "other");
         assert_eq!(other["error"]["message"], "git failed");
         assert!(other["error"].get("script").is_none());
+        assert!(other["error"].get("what").is_none());
         assert!(other["error"].get("source").is_none());
+    }
+
+    #[test]
+    fn an_untrusted_sandbox_carries_the_writable_paths_and_their_source() {
+        let err = anyhow::Error::new(TypedError::Untrusted {
+            name: "fix".to_owned(),
+            subject: Subject::Sandbox {
+                writable: vec!["~/.cache".to_owned(), "../shared".to_owned()],
+            },
+            file: PathBuf::from("/l/fix/orca-term.yaml"),
+        });
+        let doc: serde_json::Value = serde_json::from_str(&error(&err).unwrap()).unwrap();
+        assert_eq!(doc["error"]["kind"], "untrusted");
+        assert_eq!(doc["error"]["what"], "sandbox");
+        assert_eq!(
+            doc["error"]["writable"],
+            serde_json::json!(["~/.cache", "../shared"])
+        );
+        assert_eq!(doc["error"]["source"], "/l/fix/orca-term.yaml");
+        assert!(doc["error"].get("script").is_none());
     }
 
     #[test]
     fn an_untrusted_error_carries_the_script_and_its_source() {
         let err = anyhow::Error::new(TypedError::Untrusted {
             name: "fix".to_owned(),
-            script: "make\necho done\n".to_owned(),
+            subject: Subject::Setup {
+                script: "make\necho done\n".to_owned(),
+            },
             file: PathBuf::from("/l/fix/orca-term.yaml"),
         });
         let doc: serde_json::Value = serde_json::from_str(&error(&err).unwrap()).unwrap();
         assert_eq!(doc["error"]["kind"], "untrusted");
+        assert_eq!(doc["error"]["what"], "setup");
+        assert!(doc["error"].get("writable").is_none());
         assert_eq!(doc["error"]["script"], "make\necho done\n");
         assert_eq!(doc["error"]["source"], "/l/fix/orca-term.yaml");
         assert!(

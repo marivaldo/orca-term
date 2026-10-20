@@ -26,7 +26,7 @@ use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
-use crate::domain::trust::Unapproved;
+use crate::domain::trust::{Subject, Unapproved};
 use crate::domain::turn::{Outcome, Phase};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
@@ -67,25 +67,41 @@ fn progress(line: &str, format: Format) {
     }
 }
 
-/// Shows on stderr the committed setup script `unapproved` and the file it comes from, then asks
-/// `run this setup script? [y/N] `, leaving the cursor after the question for the answer.
-pub(crate) fn ask_setup_approval(unapproved: &Unapproved) {
+/// Shows on stderr what a committed file asks for, `unapproved` (a setup script, or the sandbox's
+/// writable paths), and the file, then asks `run this setup script? [y/N] ` or `widen the sandbox
+/// with these writable paths? [y/N] `, leaving the cursor after the question for the answer.
+pub(crate) fn ask_approval(unapproved: &Unapproved) {
     let mut stderr = io::stderr().lock();
-    let _ = write!(stderr, "{}", render_setup_approval(unapproved));
+    let _ = write!(stderr, "{}", render_approval(unapproved));
     let _ = stderr.flush();
 }
 
-fn render_setup_approval(unapproved: &Unapproved) -> String {
-    let mut text = format!(
-        "the setup script of worktree {} comes from {}, committed to the repository, and is not \
-         approved yet:\n\n",
-        unapproved.name,
-        unapproved.file.display()
-    );
-    for line in unapproved.script.lines() {
+fn render_approval(unapproved: &Unapproved) -> String {
+    let (name, file) = (&unapproved.name, unapproved.file.display());
+    let (intro, lines, question): (String, Vec<&str>, &str) = match &unapproved.subject {
+        Subject::Setup { script } => (
+            format!(
+                "the setup script of worktree {name} comes from {file}, committed to the \
+                 repository, and is not approved yet:"
+            ),
+            script.lines().collect(),
+            "run this setup script? [y/N] ",
+        ),
+        Subject::Sandbox { writable } => (
+            format!(
+                "the sandbox's extra writable paths of worktree {name} come from {file}, \
+                 committed to the repository, and are not approved yet:"
+            ),
+            writable.iter().map(String::as_str).collect(),
+            "widen the sandbox with these writable paths? [y/N] ",
+        ),
+    };
+    let mut text = format!("{intro}\n\n");
+    for line in lines {
         let _ = writeln!(text, "    {line}");
     }
-    text.push_str("\nrun this setup script? [y/N] ");
+    text.push('\n');
+    text.push_str(question);
     text
 }
 

@@ -24,10 +24,14 @@
 ---could not start, did not finish in time, or printed no JSON).
 ---@field kind string
 ---@field message string
----With `untrusted` (a setup script from a committed `orca-term.yaml` that the person has not
----approved, so it did not run): the script's text.
+---With `untrusted` (what a committed `orca-term.yaml` asks for is not approved): `setup` (its
+---setup script did not run) or `sandbox` (its extra writable paths: the agent did not start).
+---@field what? string
+---With `untrusted` and `what == 'setup'`: the script's text.
 ---@field script? string
----With `untrusted`: the committed file the script comes from, absolute.
+---With `untrusted` and `what == 'sandbox'`: the writable paths, as the file writes them.
+---@field writable? string[]
+---With `untrusted`: the committed file they come from, absolute.
 ---@field source? string
 
 ---The primary checkout, as `worktree ls --json` prints it.
@@ -208,7 +212,9 @@ local function decode(result, binary, shown, keep_error)
 
   if document.error and not keep_error then
     local err = failure(document.error.kind, document.error.message)
+    err.what = document.error.what
     err.script = document.error.script
+    err.writable = document.error.writable
     err.source = document.error.source
     return nil, err
   end
@@ -357,17 +363,23 @@ end
 ---worktree recorded (`resumed`), unless `fresh`; one it can no longer resume fails as
 ---`session_gone`. An agent already running is not an error: `holder.status` is then
 ---`already_running`. A worktree that is not ready fails as `other`, a missing sandbox as
----`no_sandbox`; the message says why and names the fix.
+---`no_sandbox`; the message says why and names the fix. Extra writable paths from a committed
+---`orca-term.yaml` not approved fail as `untrusted` (`what` is `sandbox`, with the `writable`
+---paths and their `source`), unless `approve` passes `--approve-sandbox`, which approves them.
 ---@param path string
 ---@param size { rows: integer, cols: integer }
 ---@param fresh boolean
+---@param approve boolean
 ---@param cwd string
 ---@param on_done fun(started: orca_term.Started?, err: orca_term.Error?)
-function M.agent_start(path, size, fresh, cwd, on_done)
+function M.agent_start(path, size, fresh, approve, cwd, on_done)
   local rows, cols = tostring(size.rows), tostring(size.cols)
   local args = { 'agent', 'start', path, '--rows', rows, '--cols', cols }
   if fresh then
     table.insert(args, '--fresh')
+  end
+  if approve then
+    table.insert(args, '--approve-sandbox')
   end
   run_async(args, cwd, on_done)
 end

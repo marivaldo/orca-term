@@ -303,6 +303,10 @@ enum AgentCommand {
         /// when the agent is already running).
         #[arg(long)]
         fresh: bool,
+        /// Approve the sandbox's extra writable paths of a committed orca-term.yaml without being
+        /// asked, then start.
+        #[arg(long)]
+        approve_sandbox: bool,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -531,15 +535,17 @@ fn run_worktree_setup(worktree: &Target, approve_setup: bool, format: Format) ->
     Ok(exit_code(&done.setup))
 }
 
-/// How `worktree new` and `worktree setup` get the person's approval of a committed setup script:
-/// given beforehand with `--approve-setup`; else asked through `ask` when the output is text and
-/// both stdin and stderr are terminals; else nobody can be asked, and the script does not run.
+/// How `worktree new`, `worktree setup` and `agent start` get the person's approval of what a
+/// committed `orca-term.yaml` asks for (a setup script, the sandbox's writable paths): given
+/// beforehand with `--approve-setup` or `--approve-sandbox` (`approved`); else asked through `ask`
+/// when the output is text and both stdin and stderr are terminals; else nobody can be asked, and
+/// it is not used.
 fn approval(
-    approve_setup: bool,
+    approved: bool,
     format: Format,
     ask: &mut dyn FnMut(&Unapproved) -> Result<bool>,
 ) -> Approval<'_> {
-    if approve_setup {
+    if approved {
         Approval::Given
     } else if format == Format::Text && terminal::is_interactive() {
         Approval::Ask(ask)
@@ -548,10 +554,11 @@ fn approval(
     }
 }
 
-/// Shows the script `unapproved` and where it comes from on stderr, asks `run this setup script?
-/// [y/N]`, and reads the answer, one line, from stdin: whether the person approved it.
+/// Shows the script or the paths `unapproved` and where they come from on stderr, asks `run this
+/// setup script? [y/N]` or `widen the sandbox with these writable paths? [y/N]`, and reads the
+/// answer, one line, from stdin: whether the person approved them.
 fn ask_at_terminal(unapproved: &Unapproved) -> Result<bool> {
-    output::ask_setup_approval(unapproved);
+    output::ask_approval(unapproved);
     Ok(trust::is_yes(&stdin::read_line()?))
 }
 
@@ -562,6 +569,7 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
             rows,
             cols,
             fresh,
+            approve_sandbox,
             ..
         } => {
             let mode = if *fresh {
@@ -569,7 +577,9 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
             } else {
                 StartMode::Resume
             };
-            let started = agent_start::run(worktree, *rows, *cols, mode)?;
+            let mut ask = ask_at_terminal;
+            let mut approval = approval(*approve_sandbox, format, &mut ask);
+            let started = agent_start::run(worktree, *rows, *cols, mode, &mut approval)?;
             output::agent_started(&started, format)?;
         }
         AgentCommand::Attach {

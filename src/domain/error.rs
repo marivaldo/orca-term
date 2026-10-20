@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::prerequisite::DOCTOR_HINT;
 use crate::domain::sandbox;
+use crate::domain::trust::Subject;
 
 /// The exit code of a failure that is not typed.
 pub(crate) const FAILURE_EXIT: u8 = 1;
@@ -57,21 +58,35 @@ pub(crate) enum TypedError {
     /// are the doctor's lines for each one, which name the fix. Nothing is installed.
     #[error("{}; {DOCTOR_HINT}", problems.join("; "))]
     Prerequisite { problems: Vec<String> },
-    /// The worktree's setup script comes from a committed `orca-term.yaml` whose text the person
-    /// has not approved in this repository (`domain/trust.rs`): nobody could be asked, or the
-    /// person said no. It did not run, and the worktree is not ready. `script` is its text and
-    /// `file` the committed file it comes from, so a client can show them before approving.
-    #[error(
-        "the setup script of worktree {name}, from {}, is not approved in this repository, so it \
-         did not run and the worktree is not ready; read it, then run `orca-term worktree setup \
-         {name}` in a terminal to be asked, or pass --approve-setup",
-        file.display()
-    )]
+    /// What the worktree's committed `orca-term.yaml` asks for, its setup script or its sandbox's
+    /// writable paths (`subject`), is not approved in this repository (`domain/trust.rs`): nobody
+    /// could be asked, or the person said no. A script did not run, and the worktree is not ready;
+    /// an agent did not start. `file` is the committed file, so a client can show both before
+    /// approving.
+    #[error("{}", untrusted_message(name, subject, file))]
     Untrusted {
         name: String,
-        script: String,
+        subject: Subject,
         file: PathBuf,
     },
+}
+
+/// The message of [`TypedError::Untrusted`], naming the command that asks.
+fn untrusted_message(name: &str, subject: &Subject, file: &Path) -> String {
+    let file = file.display();
+    match subject {
+        Subject::Setup { .. } => format!(
+            "the setup script of worktree {name}, from {file}, is not approved in this \
+             repository, so it did not run and the worktree is not ready; read it, then run \
+             `orca-term worktree setup {name}` in a terminal to be asked, or pass --approve-setup"
+        ),
+        Subject::Sandbox { writable } => format!(
+            "the sandbox's extra writable paths of worktree {name} ({}), from {file}, are not \
+             approved in this repository, so the agent did not start; read them, then run \
+             `orca-term agent start {name}` in a terminal to be asked, or pass --approve-sandbox",
+            writable.join(", ")
+        ),
+    }
 }
 
 /// Why a recorded session cannot be resumed.
@@ -327,7 +342,9 @@ mod tests {
     fn a_setup_script_not_approved_has_its_own_kind_and_exit_code() {
         let err = anyhow::Error::new(TypedError::Untrusted {
             name: "fix".to_owned(),
-            script: "make\n".to_owned(),
+            subject: Subject::Setup {
+                script: "make\n".to_owned(),
+            },
             file: PathBuf::from("/w/repo/fix/orca-term.yaml"),
         });
         assert_eq!(kind(&err), "untrusted");
@@ -338,6 +355,26 @@ mod tests {
              in this repository, so it did not run and the worktree is not ready; read it, then \
              run `orca-term worktree setup fix` in a terminal to be asked, or pass \
              --approve-setup"
+        );
+    }
+
+    #[test]
+    fn writable_paths_not_approved_are_untrusted_too_and_name_agent_start() {
+        let err = anyhow::Error::new(TypedError::Untrusted {
+            name: "fix".to_owned(),
+            subject: Subject::Sandbox {
+                writable: vec!["~".to_owned(), "../shared".to_owned()],
+            },
+            file: PathBuf::from("/w/repo/fix/orca-term.yaml"),
+        });
+        assert_eq!(kind(&err), "untrusted");
+        assert_eq!(exit_code(&err), 8);
+        assert_eq!(
+            err.to_string(),
+            "the sandbox's extra writable paths of worktree fix (~, ../shared), from \
+             /w/repo/fix/orca-term.yaml, are not approved in this repository, so the agent did \
+             not start; read them, then run `orca-term agent start fix` in a terminal to be \
+             asked, or pass --approve-sandbox"
         );
     }
 

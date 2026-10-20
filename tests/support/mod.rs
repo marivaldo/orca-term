@@ -5,8 +5,12 @@
 //! a `HOME` and an `XDG_CONFIG_HOME` inside the fixture, so it never reads the developer's global
 //! orca-term config nor places worktrees under the developer's home.
 
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_fs::TempDir;
@@ -144,5 +148,64 @@ impl Repo {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.xdg);
+    }
+}
+
+/// What a run of the binary at a terminal printed (stdout and stderr together, as the terminal
+/// shows them) and its exit code.
+pub(crate) struct TerminalRun {
+    pub(crate) screen: String,
+    pub(crate) code: Option<i32>,
+}
+
+/// Runs `command` (made by [`Repo::pty_command`]) on a pseudo-terminal, waits for `prompt` on the
+/// screen (at most 30 seconds), types `answer` and a newline, and waits for it to exit.
+pub(crate) fn run_at_terminal(
+    command: pty_process::blocking::Command,
+    prompt: &str,
+    answer: &str,
+) -> TerminalRun {
+    let (pty, pts) = pty_process::blocking::open().unwrap();
+    let mut child = command.spawn(pts).unwrap();
+    let pty = Arc::new(pty);
+    let screen = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let (pty, screen) = (Arc::clone(&pty), Arc::clone(&screen));
+        thread::spawn(move || copy_screen(&pty, &screen))
+    };
+    let start = Instant::now();
+    while !String::from_utf8_lossy(&screen.lock().unwrap()).contains(prompt) {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "no prompt: {}",
+            String::from_utf8_lossy(&screen.lock().unwrap())
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    (&*pty).write_all(format!("{answer}\n").as_bytes()).unwrap();
+    let status = child.wait().unwrap();
+    // On macOS the read may not end while the master is open: give the reader a moment, then
+    // take what it has.
+    let start = Instant::now();
+    while !reader.is_finished() && start.elapsed() < Duration::from_secs(2) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let screen = String::from_utf8_lossy(&screen.lock().unwrap()).replace("\r\n", "\n");
+    TerminalRun {
+        screen,
+        code: status.code(),
+    }
+}
+
+/// Copies what the binary writes to its terminal into `screen`, until the read fails (EIO on
+/// Linux) or ends once the binary has exited.
+fn copy_screen(pty: &pty_process::blocking::Pty, screen: &Mutex<Vec<u8>>) {
+    let mut buf = [0u8; 4096];
+    let mut reader = pty;
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        screen.lock().unwrap().extend_from_slice(&buf[..n]);
     }
 }

@@ -65,6 +65,30 @@ M.SESSION_GONE = { 'Start a fresh session', 'Cancel' }
 ---approved yet.
 M.APPROVE_SETUP = { 'Run it', 'Cancel' }
 
+---The answers offered when a worktree's extra writable paths, from a committed `orca-term.yaml`,
+---are not approved yet.
+M.APPROVE_SANDBOX = { 'Allow', 'Cancel' }
+
+---The question that shows the extra writable paths not approved yet (`err`, kind `untrusted`,
+---`what` `sandbox`) of the worktree `name`: where they come from, then the paths, indented.
+---@param name string
+---@param err orca_term.Error
+---@return string
+function M.sandbox_prompt(name, err)
+  local lines = {
+    ('Widen the sandbox of %s with these writable paths from %s?'):format(
+      name,
+      err.source or 'orca-term.yaml'
+    ),
+    'They are committed to the repository and not approved yet:',
+    '',
+  }
+  for _, path in ipairs(err.writable or {}) do
+    table.insert(lines, '    ' .. path)
+  end
+  return table.concat(lines, '\n')
+end
+
 ---The question that shows a setup script not approved yet (`err`, kind `untrusted`) of the
 ---worktree `name`: where it comes from, then its lines, indented.
 ---@param name string
@@ -128,7 +152,27 @@ local function offer_fresh_session(worktree, primary, err)
   local prompt = ('Cannot resume the session of %s: %s'):format(worktree.name, gone_reason(err))
   vim.ui.select(M.SESSION_GONE, { prompt = prompt }, function(choice)
     if choice == M.SESSION_GONE[1] then
-      start_and_attach(worktree, primary, true)
+      start_and_attach(worktree, primary, true, false)
+    end
+  end)
+end
+
+---Shows the extra writable paths of `worktree` that the core refused to widen the sandbox with
+---(`err`, kind `untrusted`, `what` `sandbox`) and asks whether to allow them. `Allow` approves them
+---and starts the agent (`agent start --approve-sandbox`, `fresh` as asked before); `Cancel` starts
+---nothing.
+---@param worktree orca_term.Worktree
+---@param primary string
+---@param fresh boolean
+---@param err orca_term.Error
+local function offer_sandbox(worktree, primary, fresh, err)
+  local prompt = M.sandbox_prompt(worktree.name, err)
+  vim.ui.select(M.APPROVE_SANDBOX, { prompt = prompt }, function(choice)
+    if choice == M.APPROVE_SANDBOX[1] then
+      start_and_attach(worktree, primary, fresh, true)
+    else
+      local message = 'the writable paths of %s were not approved; its agent was not started'
+      warn(message:format(worktree.name))
     end
   end)
 end
@@ -137,18 +181,23 @@ end
 ---in terminal mode. Starting is idempotent: an agent already running is only attached to, and one
 ---whose holder is gone (after a reboot, or after the agent exited) starts again, resuming the
 ---session the worktree recorded unless `fresh`. A session the core can no longer resume asks
----whether to start a fresh one. Any other refusal, such as a worktree not ready or no sandbox, is
----told with the core's reason and opens no terminal. The caller has gone to the worktree's tab.
+---whether to start a fresh one; extra writable paths from a committed `orca-term.yaml` not
+---approved yet are shown and asked about (`approve` passes the approval). Any other refusal, such
+---as a worktree not ready or no sandbox, is told with the core's reason and opens no terminal. The
+---caller has gone to the worktree's tab.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 ---@param fresh boolean
-function start_and_attach(worktree, primary, fresh)
+---@param approve boolean
+function start_and_attach(worktree, primary, fresh, approve)
   local path = worktree.path
-  core.agent_start(path, terminal.size(), fresh, primary, function(started, err)
+  core.agent_start(path, terminal.size(), fresh, approve, primary, function(started, err)
     refresh_sidebar()
     if not started then
       if err and err.kind == 'session_gone' and not fresh then
         offer_fresh_session(worktree, primary, err)
+      elseif err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
+        offer_sandbox(worktree, primary, fresh, err)
       else
         fail(err)
       end
@@ -175,7 +224,7 @@ end
 function M.open(worktree, primary)
   tabs.go_to(worktree.path)
   if worktree.agent then
-    start_and_attach(worktree, primary, false)
+    start_and_attach(worktree, primary, false, false)
   end
 end
 
@@ -200,7 +249,7 @@ local function land_in_created(name, with_agent, primary, created)
   end
   info('created worktree ' .. name)
   if with_agent then
-    start_and_attach(created.worktree, primary, false)
+    start_and_attach(created.worktree, primary, false, false)
   end
 end
 

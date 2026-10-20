@@ -1,14 +1,17 @@
-//! Domain: the approval of a committed setup script (#58). A setup script that comes from a
-//! committed `orca-term.yaml`, the primary checkout's or a worktree's, was written by whoever
-//! committed it, so it runs only once the person has approved its exact text in this repository.
-//! A script from `.git/orca-term.yaml` or from the global config file was written by the person
-//! and always runs.
+//! Domain: the approval of what a committed `orca-term.yaml` asks for (#58): its setup script,
+//! which runs with the person's permissions outside any sandbox, and its `sandbox.writable` list,
+//! which widens claude's sandbox. A committed file, the primary checkout's or a worktree's, was
+//! written by whoever committed it, so its script runs, and its list is used, only once the person
+//! has approved that exact text in this repository. What `.git/orca-term.yaml` or the global
+//! config file says was written by the person and needs no approval.
 //!
-//! An approval is the sha256 of the script's bytes, recorded per repository in the git common dir
-//! as `orca-term-trust.json`: `{"schema": 1, "approved": [{"sha256", "source", "approved_at"}]}`,
-//! where `source` is the file the script came from, relative to its checkout (informational), and
-//! `approved_at` the time in milliseconds since the Unix epoch. Any change to the script needs a
-//! new approval. The file is outside every worktree, and claude's sandbox denies writes to it.
+//! An approval is the sha256 of the script's bytes, or of the list's paths as written joined by
+//! `\n`, recorded per repository in the git common dir as `orca-term-trust.json`:
+//! `{"schema": 1, "approved": [{"kind", "sha256", "source", "approved_at"}]}`, where `kind` is
+//! `setup` or `sandbox` (a missing `kind` reads as `setup`), `source` is the file it came from,
+//! relative to its checkout (informational), and `approved_at` the time in milliseconds since the
+//! Unix epoch. Any change needs a new approval. The file is outside every worktree, and claude's
+//! sandbox denies writes to it.
 //!
 //! Like every state file it carries `schema`: reading takes the fields it knows from any schema,
 //! and a schema newer than this core supports is never written over.
@@ -47,10 +50,34 @@ pub(crate) const TRUST_SCHEMA: u64 = 1;
 /// What the person answers to approve a script at the prompt; anything else refuses it.
 const YES_ANSWERS: &[&str] = &["y", "yes"];
 
-/// One approved script.
+/// What an approval covers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Kind {
+    /// A setup script (`scripts.setup`).
+    #[default]
+    Setup,
+    /// The sandbox's extra writable paths (`sandbox.writable`).
+    Sandbox,
+}
+
+impl Kind {
+    /// How the error `untrusted` names it in `--json`, as `what`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+/// One approved script or list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Approval {
-    /// The sha256 of the script's text, in lowercase hex.
+    /// What it covers; an approval written before the kind existed is a setup script's.
+    #[serde(default)]
+    pub(crate) kind: Kind,
+    /// The sha256 of the script's text or of the list, in lowercase hex.
     pub(crate) sha256: String,
     /// The file the script came from, relative to its checkout, for a person reading the file.
     #[serde(default)]
@@ -70,20 +97,22 @@ pub(crate) struct Trust {
 }
 
 impl Trust {
-    /// Whether the script whose sha256 is `sha256` is approved.
-    pub(crate) fn is_approved(&self, sha256: &str) -> bool {
+    /// Whether the script or list of `kind` whose sha256 is `sha256` is approved.
+    pub(crate) fn is_approved(&self, kind: Kind, sha256: &str) -> bool {
         self.approved
             .iter()
-            .any(|approval| approval.sha256 == sha256)
+            .any(|approval| approval.kind == kind && approval.sha256 == sha256)
     }
 
-    /// Records the approval of the script whose sha256 is `sha256`, from `source`, at `now` (in
-    /// milliseconds since the Unix epoch). A script approved already is left as it was.
-    pub(crate) fn approve(&mut self, sha256: &str, source: &str, now: u64) {
-        if self.is_approved(sha256) {
+    /// Records the approval of the script or list of `kind` whose sha256 is `sha256`, from
+    /// `source`, at `now` (in milliseconds since the Unix epoch). One approved already is left as
+    /// it was.
+    pub(crate) fn approve(&mut self, kind: Kind, sha256: &str, source: &str, now: u64) {
+        if self.is_approved(kind, sha256) {
             return;
         }
         self.approved.push(Approval {
+            kind,
             sha256: sha256.to_owned(),
             source: source.to_owned(),
             approved_at: now,
@@ -98,7 +127,7 @@ impl Trust {
         {
             bail!(
                 "{TRUST_FILE} has schema {schema}, newer than the schema {TRUST_SCHEMA} this \
-                 orca-term supports; upgrade orca-term to approve a setup script"
+                 orca-term supports; upgrade orca-term to approve it"
             );
         }
         let file = Self {
@@ -132,40 +161,72 @@ pub(crate) fn sha256(script: &str) -> String {
     hex
 }
 
-/// Whether `answer`, a line the person typed at the prompt, approves the script: `y` or `yes`,
+/// The sha256 of a `sandbox.writable` list: its paths as written, in order, joined by `\n`.
+pub(crate) fn writable_sha256(paths: &[String]) -> String {
+    sha256(&paths.join("\n"))
+}
+
+/// Whether `answer`, a line the person typed at the prompt, approves it: `y` or `yes`,
 /// whatever the case and the blanks around it. Anything else, an empty line included, refuses it.
 pub(crate) fn is_yes(answer: &str) -> bool {
     let answer = answer.trim().to_lowercase();
     YES_ANSWERS.contains(&answer.as_str())
 }
 
-/// A committed setup script the person has not approved yet, as the prompt, the error `untrusted`
-/// and the client show it.
+/// What a committed `orca-term.yaml` asks for that needs the person's approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Subject {
+    /// A setup script, its text exactly as the config file holds it.
+    Setup { script: String },
+    /// The sandbox's extra writable paths, as the config file writes them, in order.
+    Sandbox { writable: Vec<String> },
+}
+
+impl Subject {
+    /// What an approval of it covers.
+    pub(crate) fn kind(&self) -> Kind {
+        match self {
+            Self::Setup { .. } => Kind::Setup,
+            Self::Sandbox { .. } => Kind::Sandbox,
+        }
+    }
+
+    /// The sha256 an approval of it records.
+    pub(crate) fn sha256(&self) -> String {
+        match self {
+            Self::Setup { script } => sha256(script),
+            Self::Sandbox { writable } => writable_sha256(writable),
+        }
+    }
+}
+
+/// What a committed `orca-term.yaml` asks for that the person has not approved yet, as the prompt,
+/// the error `untrusted` and the client show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Unapproved {
-    /// The worktree whose setup it is, by name.
+    /// The worktree it is for, by name.
     pub(crate) name: String,
-    /// The script's text, exactly as the config file holds it.
-    pub(crate) script: String,
+    /// The script or the list.
+    pub(crate) subject: Subject,
     /// The committed file it comes from, absolute.
     pub(crate) file: PathBuf,
 }
 
 impl Unapproved {
-    /// The typed error `untrusted` for this script: it did not run.
+    /// The typed error `untrusted` for it: the script did not run, or the agent did not start.
     pub(crate) fn refused(&self) -> TypedError {
         TypedError::Untrusted {
             name: self.name.clone(),
-            script: self.script.clone(),
+            subject: self.subject.clone(),
             file: self.file.clone(),
         }
     }
 }
 
-/// How a command that runs a setup may get the person's approval of a committed script.
+/// How a command may get the person's approval of what a committed file asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Consent {
-    /// The person approved it beforehand (`--approve-setup`).
+    /// The person approved it beforehand (`--approve-setup`, `--approve-sandbox`).
     Given,
     /// The person is at a terminal and can be asked.
     Ask,
@@ -173,7 +234,7 @@ pub(crate) enum Consent {
     Unavailable,
 }
 
-/// What a command does with a setup script before running it.
+/// What a command does with a setup script, or a writable list, before using it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Gate {
     /// Run it: it needs no approval, or it is approved already.
@@ -186,8 +247,9 @@ pub(crate) enum Gate {
     Refuse,
 }
 
-/// What to do with a setup script that comes from a committed file when `committed` is true, and
-/// that is approved already when `approved` is true, given the person's `consent`.
+/// What to do with a setup script or a writable list that comes from a committed file when
+/// `committed` is true, and that is approved already when `approved` is true, given the person's
+/// `consent`.
 pub(crate) fn gate(committed: bool, approved: bool, consent: Consent) -> Gate {
     if !committed || approved {
         return Gate::Run;
@@ -236,26 +298,30 @@ mod tests {
     #[test]
     fn a_missing_file_approves_nothing() {
         let trust = read(None).unwrap();
-        assert!(!trust.is_approved(&sha256("make")));
+        assert!(!trust.is_approved(Kind::Setup, &sha256("make")));
     }
 
     #[test]
     fn an_approval_is_written_with_the_schema_and_read_back() {
         let mut trust = Trust::default();
         let hash = sha256("make\n");
-        trust.approve(&hash, "orca-term.yaml", 1_700_000_000_000);
-        trust.approve(&hash, "orca-term.yaml", 1_800_000_000_000);
+        trust.approve(Kind::Setup, &hash, "orca-term.yaml", 1_700_000_000_000);
+        trust.approve(Kind::Setup, &hash, "orca-term.yaml", 1_800_000_000_000);
         let bytes = trust.to_bytes().unwrap();
         assert_eq!(
             String::from_utf8(bytes.clone()).unwrap(),
             format!(
-                r#"{{"schema":1,"approved":[{{"sha256":"{hash}","source":"orca-term.yaml","approved_at":1700000000000}}]}}"#
+                r#"{{"schema":1,"approved":[{{"kind":"setup","sha256":"{hash}","source":"orca-term.yaml","approved_at":1700000000000}}]}}"#
             ),
             "approving twice records it once, at the first time"
         );
         let read_back = read(Some(&bytes)).unwrap();
-        assert!(read_back.is_approved(&hash));
-        assert!(!read_back.is_approved(&sha256("make")));
+        assert!(read_back.is_approved(Kind::Setup, &hash));
+        assert!(
+            !read_back.is_approved(Kind::Sandbox, &hash),
+            "one approval per kind"
+        );
+        assert!(!read_back.is_approved(Kind::Setup, &sha256("make")));
     }
 
     #[test]
@@ -264,10 +330,30 @@ mod tests {
         let bytes =
             format!(r#"{{"schema":2,"approved":[{{"sha256":"{hash}","extra":true}}],"other":1}}"#);
         let mut trust = read(Some(bytes.as_bytes())).unwrap();
-        assert!(trust.is_approved(&hash));
-        trust.approve(&sha256("other"), "orca-term.yaml", 1);
+        assert!(
+            trust.is_approved(Kind::Setup, &hash),
+            "no kind reads as setup"
+        );
+        trust.approve(Kind::Setup, &sha256("other"), "orca-term.yaml", 1);
         let err = trust.to_bytes().unwrap_err().to_string();
         assert!(err.contains("schema 2, newer than the schema 1"), "{err}");
+    }
+
+    #[test]
+    fn a_writable_list_is_hashed_as_its_paths_joined_by_newlines() {
+        let list = vec!["~/.cache/pnpm".to_owned(), "../shared".to_owned()];
+        assert_eq!(writable_sha256(&list), sha256("~/.cache/pnpm\n../shared"));
+        let reordered = vec!["../shared".to_owned(), "~/.cache/pnpm".to_owned()];
+        assert_ne!(
+            writable_sha256(&list),
+            writable_sha256(&reordered),
+            "order counts"
+        );
+        let subject = Subject::Sandbox { writable: list };
+        assert_eq!(subject.kind(), Kind::Sandbox);
+        assert_eq!(subject.sha256(), sha256("~/.cache/pnpm\n../shared"));
+        assert_eq!(Kind::Sandbox.name(), "sandbox");
+        assert_eq!(Kind::Setup.name(), "setup");
     }
 
     #[test]

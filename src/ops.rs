@@ -50,7 +50,7 @@ use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
-use crate::domain::trust::{self, Consent, Gate, Unapproved};
+use crate::domain::trust::{self, Consent, Gate, Kind, Subject, Unapproved};
 use crate::domain::turn::{self, Status};
 use crate::domain::worktree::{self, Target};
 
@@ -351,13 +351,13 @@ pub(crate) fn config_layers(
     Ok(layers)
 }
 
-/// How a command that runs a setup gets the person's approval of a setup script from a committed
-/// `orca-term.yaml` (`domain/trust.rs`).
+/// How a command gets the person's approval of what a committed `orca-term.yaml` asks for, a
+/// setup script or the sandbox's writable paths (`domain/trust.rs`).
 pub(crate) enum Approval<'a> {
-    /// Given beforehand, with `--approve-setup`.
+    /// Given beforehand, with `--approve-setup` or `--approve-sandbox`.
     Given,
-    /// Asked of the person at the terminal through this function, which shows the script and says
-    /// whether the person approved it.
+    /// Asked of the person at the terminal through this function, which shows the script or the
+    /// paths and says whether the person approved them.
     Ask(&'a mut dyn FnMut(&Unapproved) -> Result<bool>),
     /// Nobody can be asked: no terminal, or `--json`.
     Unavailable,
@@ -410,8 +410,10 @@ pub(crate) fn set_up(
     if let Some(file) = config::committed_setup_file(&layers) {
         let unapproved = Unapproved {
             name: name.to_owned(),
-            script: script.value.clone(),
-            file: file.to_owned(),
+            subject: Subject::Setup {
+                script: script.value.clone(),
+            },
+            file: fs::canonicalize(file)?,
         };
         if !is_approved(primary, worktree, &unapproved, approval)? {
             write_state(lock, Some(SetupRecord::NotApproved))?;
@@ -444,19 +446,21 @@ pub(crate) fn set_up(
 /// How long a command waits for another one to finish recording an approval.
 const TRUST_LOCK_WAIT: Duration = Duration::from_secs(2);
 
-/// Whether the committed setup script `unapproved` of the worktree at `worktree` may run: it was
-/// approved before in this repository, or it is approved now through `approval` (given
-/// beforehand, or asked at the terminal), which records the approval.
-fn is_approved(
+/// Whether what the committed file of the worktree at `worktree` asks for (`unapproved`: its setup
+/// script or its writable paths) may be used: it was approved before in this repository, or it is
+/// approved now through `approval` (given beforehand, or asked at the terminal), which records the
+/// approval.
+pub(crate) fn is_approved(
     primary: &PrimaryCheckout,
     worktree: &Path,
     unapproved: &Unapproved,
     approval: &mut Approval<'_>,
 ) -> Result<bool> {
     let common = git::common_dir(primary)?;
-    let hash = trust::sha256(&unapproved.script);
+    let kind = unapproved.subject.kind();
+    let hash = unapproved.subject.sha256();
     let file = trust::trust_file(&common);
-    let approved = trust::read(fs::read_optional(&file)?.as_deref())?.is_approved(&hash);
+    let approved = trust::read(fs::read_optional(&file)?.as_deref())?.is_approved(kind, &hash);
     let approve = match trust::gate(true, approved, approval.consent()) {
         Gate::Run => return Ok(true),
         Gate::Refuse => return Ok(false),
@@ -467,20 +471,21 @@ fn is_approved(
         },
     };
     if approve {
+        let checkout = fs::canonicalize(worktree)?;
         let source = unapproved
             .file
-            .strip_prefix(worktree)
+            .strip_prefix(&checkout)
             .unwrap_or(&unapproved.file);
-        record_approval(&common, &hash, &source.display().to_string())?;
+        record_approval(&common, kind, &hash, &source.display().to_string())?;
     }
     Ok(approve)
 }
 
 /// Records, in the approvals' file of the repository whose git common dir is `common`, that the
-/// script whose sha256 is `hash`, from `source`, is approved. Holds the approvals' lock from the
-/// read to the write (waiting for another command at most [`TRUST_LOCK_WAIT`]), replaces the file
-/// whole, and never writes over a newer schema.
-fn record_approval(common: &Path, hash: &str, source: &str) -> Result<()> {
+/// script or list of `kind` whose sha256 is `hash`, from `source`, is approved. Holds the
+/// approvals' lock from the read to the write (waiting for another command at most
+/// [`TRUST_LOCK_WAIT`]), replaces the file whole, and never writes over a newer schema.
+fn record_approval(common: &Path, kind: Kind, hash: &str, source: &str) -> Result<()> {
     let lock = trust::trust_lock(common);
     fs::create_dir_all(lock.parent().unwrap_or(common))?;
     let _lock = fs::lock_file_waiting(&lock, TRUST_LOCK_WAIT)?.ok_or_else(|| {
@@ -488,7 +493,7 @@ fn record_approval(common: &Path, hash: &str, source: &str) -> Result<()> {
     })?;
     let file = trust::trust_file(common);
     let mut approvals = trust::read(fs::read_optional(&file)?.as_deref())?;
-    approvals.approve(hash, source, env::now_millis());
+    approvals.approve(kind, hash, source, env::now_millis());
     fs::write_atomically(&file, &approvals.to_bytes()?)
 }
 
