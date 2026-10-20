@@ -50,10 +50,11 @@ local function git_line()
   return 'git ' .. version
 end
 
----The binary's version, from its own report.
+---The binary's version, from `--version`, which needs no prerequisite (`doctor` exits 9 on a
+---machine without claude, as CI is).
 ---@return string
 local function core_version()
-  return vim.json.decode(support.run({ support.binary, 'doctor', '--json' })).version
+  return vim.trim(support.run({ support.binary, '--version' })):match('^orca%-term (%S+)$')
 end
 
 ---The Neovim section, for a Neovim of at least 0.11 and diffview `present` or not.
