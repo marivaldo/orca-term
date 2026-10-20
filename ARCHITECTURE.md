@@ -188,8 +188,8 @@ the adapters, and returns a domain value that `output` prints.
   `update_ref`, `delete_ref`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
-  missing), resolving paths through symlinks, finding an executable in the PATH directories,
-  and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
+  missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
+  for the holder's peer check), finding an executable in the PATH directories, and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
   `agent.lock`, and the read-only probes `ls` uses for both.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
@@ -212,6 +212,11 @@ the adapters, and returns a domain value that `output` prints.
   the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
   a second later) so the agent redraws for the new terminal. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
+  Each connection is first checked by `holder/peer.rs`; one it refuses is closed at once.
+- `adapters/holder/peer.rs`: whether the holder serves a client (#61). On Linux it reads the
+  client's pid from the socket (`SO_PEERCRED`), then its network namespace
+  (`/proc/<pid>/ns/net`) and the holder's own (`/proc/self/ns/net`), and asks
+  `protocol::admit`; elsewhere every client is served.
 - `adapters/nvim.rs`: a running Neovim's server socket: `send` connects, writes one message and
   hangs up, on a thread of its own, within 200 ms, and only says whether it was `Delivered`, the
   Neovim is `Gone` (no socket, or nobody listening) or it was `Skipped` (anything else); it never
@@ -307,7 +312,8 @@ the adapters, and returns a domain value that `output` prints.
   and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`.
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
   big-endian length, the payload: input `i`, resize `r`, stop `s`, output `o`, exit `x`), their
-  incremental decoder, and the scrollback a holder keeps.
+  incremental decoder, and the scrollback a holder keeps; and `admit`, the rule for which
+  clients a holder serves (both network namespaces read, and the same).
 - `domain/setup.rs`: the setup: how it ended, what `worktree.json` records, the variables its
   script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
   the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
@@ -367,6 +373,8 @@ validate"):
   `nvim register|unregister` (a relative one is refused as a usage error).
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
   decoder and the replay buffer.
+- `NsId` (`domain/protocol.rs`): a network namespace, parsed from a `/proc/<pid>/ns/net` link
+  (`net:[<number>]`).
 - `NotePath`, `LineRange`, `Anchor` and `BlobId` (`domain/note.rs`): a note's path (relative to
   the worktree, `/`-separated, no `..`), a range of two or more lines (`S-E`, parsed by clap for
   `--lines`), where a note is attached (`Line`, `Lines` or `File`), and the git blob id naming a
@@ -541,6 +549,15 @@ validate"):
   Translation never writes, and `worktree ls` only reads `notes.json` to count the pending notes.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
   given, and knows nothing of claude. Building that command line is domain code.
+- **On Linux, the holder serves only clients from its own network namespace** (#61). claude's
+  sandbox runs commands in a network namespace of their own (bwrap `--unshare-net`), and without
+  its optional seccomp helper nothing else stops a sandboxed command from connecting to another
+  worktree's `agent.sock`. So the holder compares each client's namespace with its own, and
+  closes a client from another namespace, or one whose namespace it cannot read, before writing
+  it any replay or reading any of its input; it says nothing to the client, keeps serving the
+  others, and the agent is untouched. `agent attach`, `agent stop`, `note send` and Neovim run
+  in the person's own namespace and are served as before. macOS needs no check: Seatbelt blocks
+  unix sockets.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
   `thiserror` enums (`WorktreeNameError`, `BranchNameError`) whose messages a person can read.
   Failures the client must tell apart are `TypedError` cases (`domain/error.rs`), carried inside
@@ -559,10 +576,13 @@ validate"):
 
 ## Known limits of the agent holder
 
-- **No socket peer check on Linux.** Without claude's optional seccomp helper, a sandboxed
-  command may connect to any worktree's `agent.sock` (connecting to a socket on a read-only bind
-  mount is allowed) and type into another agent. macOS blocks unix sockets by default. A later
-  slice may have the holder refuse peers from another network namespace.
+- **The Linux peer check is network namespace equality, nothing finer.** A client is served
+  when it shares the holder's network namespace, so a client run from another one on purpose
+  (inside a container, under `unshare --net`, from another agent's sandbox) is refused too, with
+  no message: it simply sees the connection close. A sandbox that kept the host's network
+  namespace would not be told apart. The namespace is read from the client's pid as the kernel
+  recorded it when it connected: a client that hands its connection to a child and exits leaves
+  a pid that could be reused before the holder reads it.
 - **The person's own `~/.claude/settings.json` can widen the sandbox**: array keys such as
   `sandbox.excludedCommands`, `sandbox.filesystem.allowWrite`, `permissions.additionalDirectories`
   and `Edit(...)` allow rules merge across scopes, and hooks, MCP servers and status lines run
@@ -675,7 +695,11 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   directory and environment variable names, echoes what is typed and exits on request), symlinks
   to the real `git` and `bash`, and fake `sandbox-exec`, `bwrap` and `socat`; attaches over
   pipes, where the end of stdin detaches; and stops every holder when a test ends. It needs no
-  claude, no sandbox and no network. `tests/notes.rs` drives the note commands with the same
+  claude, no sandbox and no network. On Linux only, it also attaches from another network
+  namespace, through the real `unshare --user --map-root-user --net` or `bwrap --unshare-net`,
+  to check the holder refuses it; where neither can make a namespace, that test says why and
+  skips (CI's `rust` job on Ubuntu lifts AppArmor's restriction on unprivileged user namespaces
+  so it runs). `tests/notes.rs` drives the note commands with the same
   fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
   `tests/snapshots.rs` and `tests/turns.rs` build turns by firing the real hooks as claude does
   (`tests/support/turns.rs`), then ask git, and the turn commands, what the snapshots hold.
