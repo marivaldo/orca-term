@@ -162,6 +162,16 @@ pub(crate) fn canonicalize(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("could not resolve {}", path.display()))
 }
 
+/// The text the symlink at `path` points to, or `None` when it cannot be read or is not UTF-8.
+#[cfg(target_os = "linux")]
+pub(crate) fn link_text(path: &Path) -> Option<String> {
+    fs::read_link(path)
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
+}
+
 /// Whether `a` and `b` are the same path, literally or once both are resolved through symlinks.
 pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     a == b

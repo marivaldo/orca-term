@@ -34,6 +34,11 @@ jobs:
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
           tool: just
+      # Ubuntu's AppArmor forbids unprivileged user namespaces by default; the holder's peer check
+      # test (#61) needs one to run a client in another network namespace, else it skips.
+      - name: Allow unprivileged user namespaces
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: just rust
 
   deny:

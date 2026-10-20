@@ -734,3 +734,120 @@ fn an_agent_that_exits_at_once_is_reported_by_start_and_not_recorded() {
     assert_eq!(state_file(&admin)["agent"], Value::Null);
     assert_eq!(fx.listed("fix")["state"], "no_agent");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn on_linux_a_client_from_the_holders_own_network_namespace_is_served() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+
+    let mut attach = fx.attach("fix");
+    attach.wait_for("fake claude ready");
+    attach.send("hello\n");
+    attach.wait_for("you said: hello");
+    fx.ok(&["agent", "stop", "fix"]);
+    let ended = attach.wait_ended();
+
+    assert!(
+        ended.stdout.contains("got HUP"),
+        "the stop reached the agent:\n{}",
+        ended.stdout
+    );
+    wait_until("the holder ending", || !holder_alive(&admin));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn on_linux_a_client_from_another_network_namespace_gets_no_replay_and_types_nothing() {
+    let wrapper = match another_network_namespace() {
+        Ok(wrapper) => wrapper,
+        Err(reason) => {
+            eprintln!("skipped: no other network namespace can be made here ({reason})");
+            return;
+        }
+    };
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+    fx.wait_for_output("fix", "fake claude ready");
+
+    let mut outsider = fx.attach_inside(&wrapper, "fix");
+    outsider.offer("from the sandbox\n");
+    let ended = outsider.wait_ended();
+
+    assert_eq!(
+        ended.stderr, "[detached]\n",
+        "the attach reached the holder, which closed it"
+    );
+    assert!(
+        !ended.stdout.contains("fake claude ready"),
+        "no replay:\n{}",
+        ended.stdout
+    );
+    assert!(holder_alive(&admin), "the agent runs on");
+
+    let mut insider = fx.attach("fix");
+    insider.wait_for("fake claude ready");
+    insider.send("from the shell\n");
+    insider.wait_for("you said: from the shell");
+    let seen = insider.detach().stdout;
+    assert!(
+        !seen.contains("from the sandbox"),
+        "the outsider's input never reached the agent:\n{seen}"
+    );
+}
+
+/// A command line that runs the rest of its arguments in a network namespace of its own, as
+/// claude's sandbox runs its commands (bwrap `--unshare-net`), or why none can be made here:
+/// GitHub's Ubuntu runners, for one, may forbid unprivileged user namespaces.
+#[cfg(target_os = "linux")]
+fn another_network_namespace() -> Result<Vec<String>, String> {
+    let candidates: [&[&str]; 2] = [
+        &["unshare", "--user", "--map-root-user", "--net"],
+        &[
+            "bwrap",
+            "--unshare-net",
+            "--die-with-parent",
+            "--dev-bind",
+            "/",
+            "/",
+        ],
+    ];
+    let mut reasons = Vec::new();
+    for candidate in candidates {
+        let Some(program) = real_tool(candidate[0]) else {
+            reasons.push(format!("{} is not installed", candidate[0]));
+            continue;
+        };
+        let mut wrapper = vec![program];
+        wrapper.extend(candidate[1..].iter().map(ToString::to_string));
+        let probe = std::process::Command::new(&wrapper[0])
+            .args(&wrapper[1..])
+            .arg("true")
+            .output();
+        match probe {
+            Ok(out) if out.status.success() => return Ok(wrapper),
+            Ok(out) => reasons.push(format!(
+                "{} could not make one: {}",
+                candidate[0],
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+            Err(err) => reasons.push(format!("{} did not run: {err}", candidate[0])),
+        }
+    }
+    Err(reasons.join("; "))
+}
+
+/// The real `tool`, as the test's own PATH finds it, or `None`.
+#[cfg(target_os = "linux")]
+fn real_tool(tool: &str) -> Option<String> {
+    let out = std::process::Command::new("sh")
+        .args(["-c", &format!("command -v {tool}")])
+        .output()
+        .ok()?;
+    let path = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (!path.is_empty()).then_some(path)
+}

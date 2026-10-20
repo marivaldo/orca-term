@@ -11,6 +11,7 @@
     reason = "this adapter is the one place that starts the holder process"
 )]
 
+pub(crate) mod peer;
 pub(crate) mod process;
 
 use std::io::{BufRead as _, BufReader, Write as _};

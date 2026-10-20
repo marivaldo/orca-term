@@ -206,6 +206,34 @@ impl AgentRepo {
         StuckAttach(self.spawn_attach(name))
     }
 
+    /// Starts `agent attach` on `name` over pipes, run through `wrapper` (a command line that runs
+    /// the rest of its arguments, such as `unshare --net`), with the same environment and
+    /// directory as [`Self::command`].
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_inside(&self, wrapper: &[String], name: &str) -> Attach {
+        let inner = self.command(&["agent", "attach", name]);
+        let mut cmd = Command::new(&wrapper[0]);
+        cmd.args(&wrapper[1..])
+            .arg(inner.get_program())
+            .args(inner.get_args());
+        for (key, value) in inner.get_envs() {
+            match value {
+                Some(value) => cmd.env(key, value),
+                None => cmd.env_remove(key),
+            };
+        }
+        if let Some(dir) = inner.get_current_dir() {
+            cmd.current_dir(dir);
+        }
+        let child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Attach::new(child)
+    }
+
     fn spawn_attach(&self, name: &str) -> Child {
         self.command(&["agent", "attach", name])
             .stdin(Stdio::piped())
@@ -319,6 +347,15 @@ impl Attach {
         let stdin = self.stdin.as_mut().unwrap();
         stdin.write_all(text.as_bytes()).unwrap();
         stdin.flush().unwrap();
+    }
+
+    /// Types `text` into the attach if it still reads its stdin: for an attach the holder may
+    /// already have closed.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn offer(&mut self, text: &str) {
+        let stdin = self.stdin.as_mut().unwrap();
+        let _ = stdin.write_all(text.as_bytes());
+        let _ = stdin.flush();
     }
 
     /// Closes the attach's stdin, which detaches, and waits for it to end.
