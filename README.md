@@ -35,10 +35,11 @@ log. The float closes when the cursor moves, on `K` again, or on `q` once you en
 right of a row, `⊘N` counts the tool calls denied in the worktree's latest turn and `✎N` its notes
 waiting to be sent.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
-opens the review of the worktree whose tab you are in and `:OrcaTerm notes` lists its notes; bind
-keys to `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
-`<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
-client sets no global key.
+opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
+`:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
+`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`, `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`
+and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
+key.
 
 ## Setup
 
