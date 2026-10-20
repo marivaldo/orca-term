@@ -112,8 +112,10 @@ the adapters, and returns a domain value that `output` prints.
   --count`. A worktree whose directory is gone gives only its state and reason. Only reads.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
   `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
-  the branch's fate, remove, delete or keep the branch.
-- `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune` and what it cleaned.
+  the branch's fate, remove, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
+  id learnt before git removes the admin directory), delete or keep the branch.
+- `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
+  snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
   `no_sandbox`), find claude on PATH and check its version, resolve the extra writable paths,
@@ -128,9 +130,15 @@ the adapters, and returns a domain value that `output` prints.
   ask the holder to stop and wait for `agent.lock` to be released (at most 10 s).
 - `ops/agent_holder.rs`: the hidden `agent holder`: the holder process, `adapters/holder/process.rs`.
 - `ops/hook.rs`: the hidden `hook claude --admin <dir> <event>`: read the payload from stdin,
-  take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event to
-  `status.json` and `turns.jsonl`, and exit 0 without printing whatever happens; what went wrong
-  is appended to `hook.log`, emptied first once past 256 KiB. It runs no git, to stay fast.
+  take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event, take
+  the snapshot when the event opened or closed a turn, fill its id into the records, append to
+  `turns.jsonl`, replace `status.json`, and exit 0 without printing whatever happens; what went
+  wrong is appended to `hook.log`, emptied first once past 256 KiB. The snapshot: copy the real
+  index (`git rev-parse --git-path index`) to `snapshot.index` in the admin directory, `git add -A`
+  and `git write-tree` through the copy (`GIT_INDEX_FILE`), `git commit-tree` with the identities
+  and dates in the environment, `git update-ref` as a compare-and-swap, remove the copy. A failed
+  snapshot is logged and the turn recorded without its id. Every other event runs no git, to stay
+  fast.
 - `ops/note_add.rs`: `note add`: check the body and the path, find the target (refusing the
   primary checkout and a worktree whose directory is gone), refuse a path that leaves the worktree
   through a symlink, read the file for a note on lines and check the lines fit, then, under
@@ -153,7 +161,9 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
   drift's `rev-list --left-right --count`), `blob_id` of some content, `diff_files` between two
-  files, ...) or change (`worktree_add`, `delete_branch`, ...).
+  files, `index_path`, `config_value`, `read_ref`, `refs_under`, ...) or change (`worktree_add`,
+  `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
+  `update_ref`, `delete_ref`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, finding an executable in the PATH directories,
@@ -235,7 +245,15 @@ the adapters, and returns a domain value that `output` prints.
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
   sessions), with texts kept to one capped line; each turn's denials (`Denial`: the tool, the
   call as the activity shows it, and its id in `status.json` only; at most 100 a turn) and the
-  latest turn's (`Status::latest_denials`).
+  latest turn's (`Status::latest_denials`); each turn's agent, its `begin` and `end` snapshots and
+  whether its end was observed, and the chain's tip (`Status::snapshot`).
+- `domain/snapshot.rs`: the snapshots that bound a turn (ADR 0006): which turns one snapshot
+  bounds (`bounds`, from the lines an event wrote: none when it neither opened nor closed a turn),
+  its message (subject and `Orca-Term-*` trailers), its author (`Identity`: the agent for an end,
+  the person for a begin alone; `orca-term` commits), how it joins the chain (`chain_step`: the
+  ref's commit is the parent only when it is the tip `status.json` records; any other ref is
+  stale and replaced), filling its id into the records and the status (`fill`), and the chain's
+  ref `refs/orca-term/worktrees/<admin-dir id>`.
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
@@ -302,7 +320,8 @@ validate"):
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
   `claude-settings.json`, the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
   and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
-  contents kept for notes on lines).
+  contents kept for notes on lines), and `snapshot.index`, the throwaway index a snapshot is taken
+  through. `worktree_id` is the name of git's admin directory it sits in, which names the chain.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -331,6 +350,10 @@ validate"):
 - `SetupOutcome`, `SetupReport` and `SetupDone` (`domain/setup.rs`): what running the setup did
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
+- `Bounds`, `Ending`, `Identity` and `ChainStep` (`domain/snapshot.rs`): what one snapshot
+  bounds (the turn it ends, with whether that end was observed, and the turn it begins), a git
+  author or committer, and the parent and the expected old value of the ref for the next
+  snapshot. `Pruned` (`domain/fleet.rs`): what `worktree prune` cleaned, worktrees and chains.
 - `Denial` (`domain/turn.rs`): a tool call the agent's permission settings denied, its tool and
   its text; `Detail`, `SetupDetail`, `SetupProgress` and `Drift` (`domain/detail.rs`): what
   `worktree detail` found, the latest setup and where it is, how far `HEAD` is ahead of and
@@ -430,6 +453,20 @@ validate"):
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
   `idle` after a fresh session; `--json` carries the `activity`.
+- **Turns are bounded by snapshots under a shared ref** (ADR 0006, #38). Only the hook of an
+  event that opens or closes a turn takes one, exactly one, and it is both the end of the turn
+  closed and the begin of the turn opened. It goes through a throwaway copy of the index, so the
+  real index, `HEAD` and the branch are never touched; `commit-tree` never signs. The end of a
+  turn is the agent's, a begin alone is the person's (their edits between turns, belonging to no
+  turn), so `git blame` over the chain says who wrote each line, and a turn's diff is
+  `begin..end`. A turn closed by `Stop` or `StopFailure` has its end observed; an interrupted one
+  ends on the snapshot of whatever closed it, `end_observed: false`. The chain lives in
+  `refs/orca-term/worktrees/<admin-dir id>`, shared by every worktree so a `git gc` from anywhere
+  keeps it; the ref moves by compare-and-swap, before the status is written, and its commit is the
+  next parent only when it is the tip `status.json` records (otherwise it is stale and replaced
+  by a parentless snapshot). A failed snapshot is logged and the turn recorded without its id.
+  Only `worktree rm` (its own worktree's, once removed) and `worktree prune` (orphans whose
+  `.git/worktrees/<id>` is gone) delete a chain; nothing rewrites one.
 - **A denial is never a state** (ADR 0007, #42). claude reports a tool call its permission
   settings denied only in `PostToolBatch`, by the text of the call's `tool_response` (no error
   flag): a denial starts `Permission to use ` and says ` denied`, or says `denied by your
@@ -553,6 +590,22 @@ validate"):
   directory or its `HEAD`.
 - **A failed turn's whole message is kept up to 4000 characters**, and only in `status.json`, so
   only the latest ended turn's.
+- **`git gc` packs the chain's ref into `packed-refs`**, which the sandbox's `denyWrite` on
+  `.git/refs/orca-term` does not cover, so once a gc has run an agent could rewrite the chain
+  through `packed-refs`.
+- **Snapshots store untracked, not-ignored files in the repository's objects**: a file the person
+  never meant to commit, if `.gitignore` does not exclude it, lands in an object reachable from
+  the chain. The default fetch and push refspecs do not carry `refs/orca-term/`, so it stays
+  local unless pushed by hand (`git push --mirror` would).
+- **A snapshot adds git time to the hooks that open or close a turn**: `git add -A` on the copied
+  index costs ~0.13 s on a 40k-file tree, warm (measured in #15); the other hooks run no git.
+- **Edits made during a turn, by anyone, belong to it**: nothing tells the person's saves apart
+  from the agent's while a turn is open, and an interrupted turn's end snapshot may also hold
+  edits made after the interruption.
+- **A status that fails to write after the ref moved restarts the chain**: the ref then does not
+  match the recorded tip, so the next snapshot is parentless and replaces it, and blame over the
+  older snapshots is lost.
+- **A turn recorded before snapshots reads `end_observed: false`** and has no snapshot ids.
 - **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
   once saying no session was found with that id, which is why the core checks the transcript
   first and reports `session_gone` instead.
