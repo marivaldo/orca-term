@@ -14,6 +14,11 @@
 //!
 //! A turn also keeps the tool calls the agent was denied during it (`Denial`, from the
 //! `PostToolBatch` hook, `domain/hook.rs`): counted on the turn, never a state (ADR 0007).
+//!
+//! A turn is bounded by two snapshots of the worktree's tree (ADR 0006, `domain/snapshot.rs`):
+//! the turn records the ids of its `begin` and `end` snapshot commits, whether its end was
+//! observed, and its agent; the status records the tip of the worktree's chain of snapshots.
+//! All of it was added within schema 1, so a file written before reads as none.
 
 use std::path::PathBuf;
 
@@ -93,6 +98,14 @@ pub(crate) struct OpenTurn {
     /// file written before it reads as none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) denials: Vec<Denial>,
+    /// The agent the turn belongs to (`claude`), the one whose hook opened it. Added within schema
+    /// 1: a file written before it reads as empty.
+    #[serde(default)]
+    pub(crate) agent: String,
+    /// The snapshot commit the turn began on, `None` when it could not be taken. Added within
+    /// schema 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) begin: Option<String>,
 }
 
 impl OpenTurn {
@@ -127,6 +140,18 @@ pub(crate) struct ClosedTurn {
     /// Added within schema 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) message: Option<String>,
+    /// The snapshot commit the turn began on, when it was taken. Added within schema 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) begin: Option<String>,
+    /// The snapshot commit the turn ended on, when it was taken. Added within schema 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end: Option<String>,
+    /// Whether the turn's end was seen (`Stop` or `StopFailure`). A turn closed any other way
+    /// (interrupted) ends on the snapshot taken by whatever told the core it was over, so its diff
+    /// may hold edits made after the interruption. Added within schema 1: a turn recorded before
+    /// it reads as not observed, and it has no end snapshot either.
+    #[serde(default)]
+    pub(crate) end_observed: bool,
 }
 
 /// The live status of a worktree's agent, as `status.json` records it.
@@ -150,6 +175,10 @@ pub(crate) struct Status {
     /// The latest turn that ended.
     #[serde(default)]
     pub(crate) latest: Option<ClosedTurn>,
+    /// The tip of the worktree's chain of snapshots: the latest snapshot commit the hooks took
+    /// (`domain/snapshot.rs`). Added within schema 1: a file written before it reads as none.
+    #[serde(default)]
+    pub(crate) snapshot: Option<String>,
     #[serde(default)]
     pub(crate) updated_at: u64,
 }
@@ -238,8 +267,9 @@ pub(crate) enum RecordKind {
     End,
 }
 
-/// One line of `turns.jsonl`. A start carries the prompt; an end carries the outcome, the
-/// detail, the error and the denials (without their ids).
+/// One line of `turns.jsonl`. A start carries the prompt, the agent and the begin snapshot; an end
+/// carries the outcome, the detail, the error, the denials (without their ids), both snapshots and
+/// whether the end was observed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnRecord {
     schema: u64,
@@ -260,6 +290,18 @@ pub(crate) struct TurnRecord {
     /// Added within schema 1: a line written before it reads as none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) denials: Vec<Denial>,
+    /// The turn's agent, on a start. Added within schema 1, as are the fields below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent: Option<String>,
+    /// The snapshot commit the turn began on, when it was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) begin: Option<String>,
+    /// The snapshot commit the turn ended on, on an end, when it was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end: Option<String>,
+    /// Whether the turn's end was observed, on an end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end_observed: Option<bool>,
 }
 
 impl TurnRecord {
@@ -277,6 +319,10 @@ impl TurnRecord {
             detail: None,
             error: None,
             denials: Vec::new(),
+            agent: Some(turn.agent.clone()).filter(|agent| !agent.is_empty()),
+            begin: turn.begin.clone(),
+            end: None,
+            end_observed: None,
         }
     }
 
@@ -301,6 +347,10 @@ impl TurnRecord {
                     ..denial.clone()
                 })
                 .collect(),
+            agent: None,
+            begin: turn.begin.clone(),
+            end: turn.end.clone(),
+            end_observed: Some(turn.end_observed),
         }
     }
 
@@ -329,17 +379,41 @@ pub(crate) fn last_turn_number(tail: &[u8]) -> Result<Option<u64>> {
         let Ok(record) = serde_json::from_slice::<SeenRecord>(line) else {
             continue;
         };
-        if let Some(schema) = record.schema
-            && schema > TURNS_SCHEMA
-        {
-            bail!(
-                "turns.jsonl has schema {schema}, newer than the schema {TURNS_SCHEMA} this \
-                 orca-term supports"
-            );
-        }
+        check_record_schema(record.schema)?;
         return Ok(Some(record.turn));
     }
     Ok(None)
+}
+
+/// Every line of the turn log `log`, whole, in the order written. A line that does not read as a
+/// record (one cut short by a crash, or blank) is skipped. Refuses a record whose schema is newer
+/// than this core supports, since it could mean anything.
+pub(crate) fn read_log(log: &[u8]) -> Result<Vec<TurnRecord>> {
+    let mut records = Vec::new();
+    for line in log.split(|&byte| byte == b'\n') {
+        let Ok(record) = serde_json::from_slice::<TurnRecord>(line) else {
+            if let Ok(seen) = serde_json::from_slice::<SeenRecord>(line) {
+                check_record_schema(seen.schema)?;
+            }
+            continue;
+        };
+        check_record_schema(Some(record.schema))?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+/// Refuses a turn log record of a schema newer than this core supports.
+fn check_record_schema(schema: Option<u64>) -> Result<()> {
+    if let Some(schema) = schema
+        && schema > TURNS_SCHEMA
+    {
+        bail!(
+            "turns.jsonl has schema {schema}, newer than the schema {TURNS_SCHEMA} this \
+             orca-term supports"
+        );
+    }
+    Ok(())
 }
 
 /// The number the next turn gets: one more than the highest the log or the status knows.
@@ -421,6 +495,8 @@ mod tests {
             phase: Phase::Working,
             activity: "fix it".to_owned(),
             denials: Vec::new(),
+            agent: "claude".to_owned(),
+            begin: None,
         }
     }
 
@@ -436,6 +512,9 @@ mod tests {
             ended_at: 20,
             denials: Vec::new(),
             message: None,
+            begin: None,
+            end: None,
+            end_observed: true,
         }
     }
 
@@ -455,6 +534,7 @@ mod tests {
             turn: Some(open(2)),
             queued: Some("and then".to_owned()),
             latest: Some(closed(1)),
+            snapshot: Some("c0ffee".to_owned()),
             updated_at: 30,
         };
         let bytes = status_bytes(&status).unwrap();
@@ -522,12 +602,12 @@ mod tests {
         let start = TurnRecord::start(&open(3)).to_line().unwrap();
         assert_eq!(
             String::from_utf8(start.clone()).unwrap(),
-            "{\"schema\":1,\"kind\":\"start\",\"turn\":3,\"session\":\"s1\",\"prompt_id\":\"p1\",\"at\":10,\"prompt\":\"fix it\"}\n"
+            "{\"schema\":1,\"kind\":\"start\",\"turn\":3,\"session\":\"s1\",\"prompt_id\":\"p1\",\"at\":10,\"prompt\":\"fix it\",\"agent\":\"claude\"}\n"
         );
         let end = TurnRecord::end(&closed(3)).to_line().unwrap();
         assert_eq!(
             String::from_utf8(end.clone()).unwrap(),
-            "{\"schema\":1,\"kind\":\"end\",\"turn\":3,\"session\":\"s1\",\"prompt_id\":\"p1\",\"at\":20,\"outcome\":\"failed\",\"detail\":\"API Error\",\"error\":\"rate_limit\"}\n"
+            "{\"schema\":1,\"kind\":\"end\",\"turn\":3,\"session\":\"s1\",\"prompt_id\":\"p1\",\"at\":20,\"outcome\":\"failed\",\"detail\":\"API Error\",\"error\":\"rate_limit\",\"end_observed\":true}\n"
         );
         let log = [start, end].concat();
         let records = parse_log(&log);
@@ -605,7 +685,7 @@ mod tests {
         let line = String::from_utf8(TurnRecord::end(&ended).to_line().unwrap()).unwrap();
         assert!(
             line.ends_with(
-                r#""error":"rate_limit","denials":[{"tool":"Bash","text":"Bash: FOO=bar ls"}]}
+                r#""error":"rate_limit","denials":[{"tool":"Bash","text":"Bash: FOO=bar ls"}],"end_observed":true}
 "#
             ),
             "{line}"
@@ -638,6 +718,82 @@ mod tests {
         let latest = status.latest.unwrap();
         assert!(latest.denials.is_empty());
         assert_eq!(latest.message, None);
+    }
+
+    #[test]
+    fn a_turns_snapshots_go_on_its_lines_and_in_the_status() {
+        let mut started = open(4);
+        started.begin = Some("b".repeat(40));
+        let line = String::from_utf8(TurnRecord::start(&started).to_line().unwrap()).unwrap();
+        assert!(
+            line.ends_with(&format!(
+                r#""agent":"claude","begin":"{}"}}
+"#,
+                "b".repeat(40)
+            )),
+            "{line}"
+        );
+        let mut ended = closed(4);
+        ended.begin = Some("b".repeat(40));
+        ended.end = Some("e".repeat(40));
+        ended.end_observed = false;
+        let line = String::from_utf8(TurnRecord::end(&ended).to_line().unwrap()).unwrap();
+        assert!(
+            line.ends_with(&format!(
+                r#""begin":"{}","end":"{}","end_observed":false}}
+"#,
+                "b".repeat(40),
+                "e".repeat(40)
+            )),
+            "{line}"
+        );
+        assert!(!line.contains("agent"), "the agent goes on the start line");
+        let status = Status {
+            turn: Some(started),
+            latest: Some(ended),
+            snapshot: Some("b".repeat(40)),
+            ..Status::default()
+        };
+        let bytes = status_bytes(&status).unwrap();
+        assert_eq!(read_status(Some(&bytes)).usable(), Some(status));
+    }
+
+    #[test]
+    fn the_whole_log_reads_every_record_skipping_a_cut_line_and_refusing_a_newer_schema() {
+        let start = TurnRecord::start(&open(1)).to_line().unwrap();
+        let end = TurnRecord::end(&closed(1)).to_line().unwrap();
+        let log = [start, b"{\"schema\":1,\"kind\":\"st\n".to_vec(), end].concat();
+        let records = read_log(&log).unwrap();
+        assert_eq!(
+            records.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            [RecordKind::Start, RecordKind::End]
+        );
+        assert_eq!(read_log(b"").unwrap(), []);
+        let newer = br#"{"schema":2,"kind":"start","turn":2,"at":1}"#;
+        assert!(read_log(newer).is_err());
+    }
+
+    #[test]
+    fn lines_and_statuses_written_before_the_snapshots_still_read() {
+        let old_start = br#"{"schema":1,"kind":"start","turn":3,"session":"s1","prompt_id":"p1","at":10,"prompt":"go"}"#;
+        let record: TurnRecord = serde_json::from_slice(old_start).unwrap();
+        assert_eq!(
+            (record.agent, record.begin, record.end, record.end_observed),
+            (None, None, None, None)
+        );
+        let old_end = br#"{"schema":1,"kind":"end","turn":3,"session":"s1","prompt_id":"p1","at":20,"outcome":"finished"}"#;
+        let record: TurnRecord = serde_json::from_slice(old_end).unwrap();
+        assert_eq!(record.end_observed, None);
+        let old = br#"{"schema":1,"session":"s1","turn":{"number":2,"session":"s1","prompt_id":"p2","prompt":"go","started_at":1,"phase":"working","activity":"go"},"latest":{"number":1,"session":"s1","prompt_id":"p1","prompt":"x","outcome":"finished","detail":"ok","error":null,"ended_at":1},"updated_at":5}"#;
+        let status = read_status(Some(old)).usable().unwrap();
+        assert_eq!(status.snapshot, None);
+        let open = status.turn.unwrap();
+        assert_eq!((open.agent.as_str(), open.begin), ("", None));
+        let latest = status.latest.unwrap();
+        assert_eq!(
+            (latest.begin, latest.end, latest.end_observed),
+            (None, None, false)
+        );
     }
 
     #[test]

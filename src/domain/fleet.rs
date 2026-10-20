@@ -123,6 +123,14 @@ impl Worktree {
     }
 }
 
+/// What `worktree prune` cleaned: the worktrees gone from disk that git forgot, and the chains of
+/// snapshots (`domain/snapshot.rs`) left by worktrees git no longer has, by ref.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Pruned {
+    pub(crate) worktrees: Vec<PathBuf>,
+    pub(crate) chains: Vec<String>,
+}
+
 /// The paths of the worktrees gone in `before` and no longer listed in `after`: what a prune
 /// cleaned.
 pub(crate) fn pruned(before: &Fleet, after: &Fleet) -> Vec<PathBuf> {

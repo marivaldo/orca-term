@@ -179,12 +179,19 @@ pub(crate) struct Applied {
     pub(crate) records: Vec<TurnRecord>,
 }
 
-/// Applies the event in `payload`, received at `now`, to `status`. A turn this event opens gets
-/// the number `next_number`.
-pub(crate) fn apply(status: Status, payload: &Payload, now: u64, next_number: u64) -> Applied {
+/// Applies the event in `payload`, which a hook of `agent` received at `now`, to `status`. A turn
+/// this event opens gets the number `next_number` and belongs to `agent`.
+pub(crate) fn apply(
+    status: Status,
+    payload: &Payload,
+    agent: &str,
+    now: u64,
+    next_number: u64,
+) -> Applied {
     let mut step = Step {
         status,
         records: Vec::new(),
+        agent,
         now,
         next_number,
     };
@@ -203,14 +210,16 @@ pub(crate) fn apply(status: Status, payload: &Payload, now: u64, next_number: u6
 
 /// The status being changed by one event, with the log lines it produces.
 #[derive(Debug)]
-struct Step {
+struct Step<'a> {
     status: Status,
     records: Vec<TurnRecord>,
+    /// The agent whose hook this is: a turn it opens belongs to it.
+    agent: &'a str,
     now: u64,
     next_number: u64,
 }
 
-impl Step {
+impl Step<'_> {
     /// Records the session `payload` names as the current one, and the transcript it names when
     /// it comes from the main agent: a subagent's payload is not trusted to name the session's own
     /// transcript. A session that changes forgets the previous session's transcript, so the
@@ -403,13 +412,16 @@ impl Step {
             started_at: self.now,
             phase: Phase::Working,
             denials: Vec::new(),
+            agent: self.agent.to_owned(),
+            begin: None,
         };
         self.next_number += 1;
         self.records.push(TurnRecord::start(&turn));
         self.status.turn = Some(turn);
     }
 
-    /// Closes the open turn, if any, as `outcome`, and logs its end.
+    /// Closes the open turn, if any, as `outcome`, and logs its end. Its end was observed only
+    /// when the agent said it stopped (finished or failed); an interrupted turn's was not.
     fn close(&mut self, outcome: Outcome, detail: Option<String>, error: Option<String>) {
         let Some(turn) = self.status.turn.take() else {
             return;
@@ -425,6 +437,9 @@ impl Step {
             ended_at: self.now,
             denials: turn.denials,
             message: None,
+            begin: turn.begin,
+            end: None,
+            end_observed: outcome != Outcome::Interrupted,
         };
         self.records.push(TurnRecord::end(&closed));
         self.status.latest = Some(closed);
@@ -547,7 +562,7 @@ mod tests {
         let mut log = Vec::new();
         for (at, payload) in (1u64..).zip(events) {
             let next = turn::next_turn_number(log.last().map(|r: &TurnRecord| r.turn), &status);
-            let applied = apply(status, payload, at, next);
+            let applied = apply(status, payload, "claude", at, next);
             status = applied.status;
             log.extend(applied.records);
         }
@@ -833,6 +848,43 @@ mod tests {
             "/exit carries a new prompt_id and closes nothing"
         );
         assert_eq!(log.len(), 2);
+    }
+
+    #[test]
+    fn only_a_turn_the_agent_said_it_stopped_has_its_end_observed() {
+        let observed = |events: &[Payload]| {
+            let (status, log) = replay(events);
+            let latest = status.latest.unwrap();
+            let end = log
+                .iter()
+                .rfind(|r| r.kind == turn::RecordKind::End)
+                .unwrap();
+            assert_eq!(end.end_observed, Some(latest.end_observed));
+            latest.end_observed
+        };
+        assert!(observed(&[submit("p1", "go"), stop("p1", "ok")]));
+        let failure = Payload {
+            error: Some("unknown".to_owned()),
+            ..event("StopFailure", Some("p1"))
+        };
+        assert!(observed(&[submit("p1", "go"), failure]));
+        assert!(!observed(&[submit("p1", "go"), submit("p2", "again")]));
+        assert!(!observed(&[submit("p1", "go"), event("SessionEnd", None)]));
+        assert!(!observed(&[
+            submit("p1", "go"),
+            session_start("s2", "startup")
+        ]));
+    }
+
+    #[test]
+    fn a_turn_belongs_to_the_agent_whose_hook_opened_it() {
+        let (status, log) = replay(&[submit("p1", "go")]);
+        assert_eq!(status.turn.unwrap().agent, "claude");
+        assert_eq!(log[0].agent.as_deref(), Some("claude"));
+        assert_eq!(
+            (log[0].begin.as_deref(), log[0].end.as_deref()),
+            (None, None)
+        );
     }
 
     #[test]
@@ -1198,7 +1250,7 @@ mod tests {
         let mut last = None;
         for (at, payload) in (1u64..).zip(events) {
             let next = turn::next_turn_number(last, &status);
-            let applied = apply(status, payload, at, next);
+            let applied = apply(status, payload, "claude", at, next);
             status = applied.status;
             last = applied.records.last().map(|r| r.turn).or(last);
             if payload.event == "PostToolBatch" {

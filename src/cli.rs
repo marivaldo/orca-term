@@ -17,8 +17,9 @@ use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     agent_attach, agent_holder, agent_start, agent_stop, hook, note_add, note_edit, note_ls,
-    note_rm, note_send, nvim_register, nvim_unregister, worktree_detail, worktree_ls, worktree_new,
-    worktree_prune, worktree_review, worktree_rm, worktree_seen, worktree_setup,
+    note_rm, note_send, nvim_register, nvim_unregister, turn_blame, turn_diff, turn_ls,
+    worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm,
+    worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -50,6 +51,11 @@ enum Command {
     Note {
         #[command(subcommand)]
         command: NoteCommand,
+    },
+    /// Read a worktree's turns: list them, show what one changed, say which turn wrote each line.
+    Turn {
+        #[command(subcommand)]
+        command: TurnCommand,
     },
     /// What the agent's hooks run: `hook claude --admin <dir> <event>`, the event's payload on
     /// stdin. Its arguments are taken as they come, unchecked, so that clap never refuses them
@@ -232,6 +238,39 @@ enum NoteCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum TurnCommand {
+    /// List every turn of a worktree, oldest first, the open one last. Only reads.
+    Ls {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print what a turn changed: the diff from its begin snapshot to its end snapshot. Only
+    /// reads.
+    Diff {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The turn's number, as `turn ls` shows it.
+        turn: u64,
+        /// Print JSON carrying the contract integer instead of the patch.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Say which turn wrote each line of a file of a worktree as it is on disk now. Only reads.
+    Blame {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The file, relative to the worktree's root or absolute inside it.
+        path: PathBuf,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Start claude in a worktree, inside its sandbox, held by a detached process.
     Start {
@@ -313,6 +352,11 @@ impl Cli {
                 | NoteCommand::Rm { json, .. }
                 | NoteCommand::Send { json, .. } => *json,
             },
+            Command::Turn { command } => match command {
+                TurnCommand::Ls { json, .. }
+                | TurnCommand::Diff { json, .. }
+                | TurnCommand::Blame { json, .. } => *json,
+            },
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -329,6 +373,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),
         Command::Note { command } => run_note(command, cli.format()),
+        Command::Turn { command } => run_turn(command, cli.format()),
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -505,6 +550,19 @@ fn run_note(command: &NoteCommand, format: Format) -> Result<ExitCode> {
         }
         NoteCommand::Send { worktree, ids, .. } => {
             output::notes_sent(&note_send::run(worktree, ids)?, format)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_turn(command: &TurnCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        TurnCommand::Ls { worktree, .. } => output::turns_listed(&turn_ls::run(worktree)?, format)?,
+        TurnCommand::Diff { worktree, turn, .. } => {
+            output::turn_diff(&turn_diff::run(worktree, *turn)?, format)?;
+        }
+        TurnCommand::Blame { worktree, path, .. } => {
+            output::turn_blame(&turn_blame::run(worktree, path)?, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

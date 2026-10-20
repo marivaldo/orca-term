@@ -17,6 +17,7 @@ use crate::domain::fleet::{PrimaryCheckout, WorktreeEntry};
 use crate::domain::note::BlobId;
 use crate::domain::porcelain;
 use crate::domain::review::Commit;
+use crate::domain::snapshot::Identity;
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir};
 use crate::domain::worktree::Removal;
 
@@ -309,6 +310,147 @@ pub(crate) fn diff_files(dir: &Path, old: &Path, new: &Path) -> Result<Vec<u8>> 
     bail!("git {} failed: {}", display_args(&args), stderr.trim())
 }
 
+/// The worktree's real index file, absolute (`git rev-parse --git-path index`). Only read: a
+/// snapshot copies it and never writes it.
+pub(crate) fn index_path(worktree: &Path) -> Result<PathBuf> {
+    let path = text(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?;
+    Ok(PathBuf::from(path))
+}
+
+/// The tree of every file of the worktree at `worktree`, tracked and untracked, `.gitignore`
+/// respected: `git add -A` then `git write-tree`, both through the index file `index`
+/// (`GIT_INDEX_FILE`), a throwaway copy. The real index, `HEAD` and the branch are never touched.
+pub(crate) fn write_tree_through(worktree: &Path, index: &Path) -> Result<String> {
+    let env = [("GIT_INDEX_FILE", index.as_os_str())];
+    run(worktree, &["add", "-A"], &env, None)?;
+    let tree = run(worktree, &["write-tree"], &env, None)?;
+    Ok(String::from_utf8_lossy(&tree).trim_end().to_owned())
+}
+
+/// The value git's config gives `key` in `dir` (`git config --get`), `None` when it is unset.
+pub(crate) fn config_value(dir: &Path, key: &str) -> Result<Option<String>> {
+    let value = probe(dir, &["config", "--get", key])?;
+    Ok(value.map(|bytes| String::from_utf8_lossy(&bytes).trim_end().to_owned()))
+}
+
+/// The commit the ref `name` points to, `None` when there is no such ref.
+pub(crate) fn read_ref(dir: &Path, name: &str) -> Result<Option<Commit>> {
+    match probe(dir, &["rev-parse", "--verify", "--quiet", name])? {
+        Some(bytes) => Commit::parse(String::from_utf8_lossy(&bytes).trim_end()).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// A new commit of `tree`, with `parent` as its parent when given and `message` as its message,
+/// authored by `author` and committed by `committer`, both at `date` (git's internal format):
+/// `git commit-tree`, the identities and dates passed through the environment, so it works
+/// without any `user.name` configured. `commit-tree` never signs, whatever the config says.
+pub(crate) fn commit_tree(
+    dir: &Path,
+    tree: &str,
+    parent: Option<&str>,
+    message: &str,
+    author: &Identity,
+    committer: &Identity,
+    date: &str,
+) -> Result<Commit> {
+    let mut args = vec!["commit-tree", tree];
+    if let Some(parent) = parent {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-F", "-"]);
+    let env = [
+        ("GIT_AUTHOR_NAME", OsStr::new(&author.name)),
+        ("GIT_AUTHOR_EMAIL", OsStr::new(&author.email)),
+        ("GIT_AUTHOR_DATE", OsStr::new(date)),
+        ("GIT_COMMITTER_NAME", OsStr::new(&committer.name)),
+        ("GIT_COMMITTER_EMAIL", OsStr::new(&committer.email)),
+        ("GIT_COMMITTER_DATE", OsStr::new(date)),
+    ];
+    let out = run(dir, &args, &env, Some(message.as_bytes()))?;
+    Commit::parse(String::from_utf8_lossy(&out).trim_end())
+}
+
+/// Points the ref `name` at `new`, only if it still holds `expected` (`None`: only if it does not
+/// exist): `git update-ref <name> <new> <expected>`, a compare-and-swap.
+pub(crate) fn update_ref(
+    dir: &Path,
+    name: &str,
+    new: &Commit,
+    expected: Option<&str>,
+) -> Result<()> {
+    let args = ["update-ref", name, new.as_str(), expected.unwrap_or("")];
+    output(dir, &args)?;
+    Ok(())
+}
+
+/// Deletes the ref `name` (`git update-ref -d`); nothing to do when it does not exist.
+pub(crate) fn delete_ref(dir: &Path, name: &str) -> Result<()> {
+    output(dir, &["update-ref", "-d", name])?;
+    Ok(())
+}
+
+/// The full names of the refs under `prefix` (`git for-each-ref`), sorted.
+pub(crate) fn refs_under(dir: &Path, prefix: &str) -> Result<Vec<String>> {
+    let names = text(dir, &["for-each-ref", "--format=%(refname)", prefix])?;
+    Ok(names.lines().map(str::to_owned).collect())
+}
+
+/// Whether the commit `id` exists in the repository of `dir` (`git rev-parse --verify
+/// <id>^{commit}`).
+pub(crate) fn commit_exists(dir: &Path, id: &str) -> Result<bool> {
+    Ok(read_ref(dir, &format!("{id}^{{commit}}"))?.is_some())
+}
+
+/// Whether the commit `commit` holds the file `file` (relative to the root, `/`-separated):
+/// `git cat-file -e <commit>:<file>`.
+pub(crate) fn has_file(dir: &Path, commit: &str, file: &str) -> Result<bool> {
+    Ok(probe(dir, &["cat-file", "-e", &format!("{commit}:{file}")])?.is_some())
+}
+
+/// The patch from the commit `begin` to the commit `end`, as `git diff <begin> <end>` prints it,
+/// with no colour, external diff or text conversion a config may set. Writes nothing.
+pub(crate) fn patch(dir: &Path, begin: &str, end: &str) -> Result<Vec<u8>> {
+    output(
+        dir,
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            begin,
+            end,
+            "--",
+        ],
+    )
+}
+
+/// Which commit of the history of `tip` each line of the file on disk `contents` (absolute) came
+/// from, the file being `file` (relative to the root) in that history: `git blame --porcelain
+/// --contents <contents> <tip> -- <file>`, with no revisions ignored whatever the config says. A
+/// line in no commit gets the all-zero id. Writes nothing.
+pub(crate) fn blame_porcelain(
+    dir: &Path,
+    tip: &str,
+    contents: &Path,
+    file: &str,
+) -> Result<String> {
+    let args = [
+        OsStr::new("blame"),
+        OsStr::new("--porcelain"),
+        OsStr::new("--ignore-revs-file="),
+        OsStr::new("--contents"),
+        contents.as_os_str(),
+        OsStr::new(tip),
+        OsStr::new("--"),
+        OsStr::new(file),
+    ];
+    Ok(String::from_utf8_lossy(&output(dir, &args)?).into_owned())
+}
+
 fn has_ref(dir: &Path, full_ref: &str) -> Result<bool> {
     Ok(probe(dir, &["show-ref", "--verify", "--quiet", full_ref])?.is_some())
 }
@@ -340,6 +482,36 @@ fn text<S: AsRef<OsStr>>(dir: &Path, args: &[S]) -> Result<String> {
     let text = String::from_utf8(raw)
         .with_context(|| format!("git {} printed non-UTF-8 output", display_args(args)))?;
     Ok(text.trim_end_matches(['\n', '\r']).to_owned())
+}
+
+/// Runs `git -C <dir> <args>` with the variables `env` added to its environment and `stdin`, when
+/// given, written to its standard input; returns its stdout. Fails when git does.
+fn run(dir: &Path, args: &[&str], env: &[(&str, &OsStr)], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("could not run git; is it installed and on PATH?")?;
+    // git reads all of its input before it prints anything, so writing first cannot block.
+    if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        pipe.write_all(bytes)
+            .context("could not hand git its input")?;
+    }
+    let out = child.wait_with_output().context("could not run git")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {} failed: {}", display_args(args), stderr.trim());
+    }
+    Ok(out.stdout)
 }
 
 fn invoke<S: AsRef<OsStr>>(dir: &Path, args: &[S]) -> Result<Output> {

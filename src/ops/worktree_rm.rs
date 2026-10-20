@@ -2,6 +2,9 @@
 //! default branch, or with `--force`. A worktree whose lock is held (its setup or another
 //! orca-term command is running on it) or whose agent is running is refused, even with `--force`.
 //! A worktree with modified or untracked files is refused as `dirty` unless `--force`.
+//!
+//! Once the worktree is removed, its chain of snapshots (`refs/orca-term/worktrees/<id>`,
+//! `domain/snapshot.rs`) is deleted too: that ref does not die with the admin directory.
 
 use anyhow::{Context, Result};
 
@@ -9,6 +12,7 @@ use crate::adapters::{env, git};
 use crate::domain::branch::Branch;
 use crate::domain::error::TypedError;
 use crate::domain::fleet::PrimaryCheckout;
+use crate::domain::snapshot;
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
@@ -26,6 +30,7 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     let lock = lock_worktree(&worktree.name, &worktree.path)?;
     // Found while git's files are still there: the removal takes them away.
     let changed = Changed::of(lock.admin());
+    let chain = lock.admin().worktree_id().map(snapshot::chain_ref);
     if removal == Removal::Safe && git::has_changes(&worktree.path)? {
         return Err(TypedError::Dirty {
             name: worktree.name.clone(),
@@ -52,6 +57,11 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
             worktree.path.display()
         )
     })?;
+    if let Some(chain) = &chain {
+        // The worktree is gone whatever happens here; a chain left behind is an orphan that
+        // `worktree prune` deletes.
+        let _ = git::delete_ref(&primary.path, chain);
+    }
     let branch = delete_branch(primary, planned);
     if let Some(changed) = changed {
         changed.notify();

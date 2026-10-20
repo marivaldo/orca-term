@@ -1,7 +1,7 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
-//! notes and telling the running Neovims that a worktree changed.
+//! notes, reading its turns and telling the running Neovims that a worktree changed.
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
@@ -15,6 +15,9 @@ pub(crate) mod note_rm;
 pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
+pub(crate) mod turn_blame;
+pub(crate) mod turn_diff;
+pub(crate) mod turn_ls;
 pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
@@ -37,6 +40,7 @@ use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::history::{self, History};
 use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
@@ -401,12 +405,10 @@ impl Changed {
     /// they cannot be read: then nobody is told, which is never an error.
     pub(crate) fn of(admin: &AdminDir) -> Option<Self> {
         let commondir = admin.commondir_file()?;
-        let gitdir = admin.gitdir_file()?;
         let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
-        let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
         Some(Self {
             common: state::common_dir_from(&commondir, &commondir_text)?,
-            worktree: state::worktree_path_from(&gitdir, &gitdir_text)?,
+            worktree: worktree_of(admin)?,
         })
     }
 
@@ -442,6 +444,14 @@ impl Changed {
             }
         }
     }
+}
+
+/// The path of the worktree whose admin directory is `admin`, as `worktree ls` prints it, from
+/// git's `gitdir` file beside it, without running git. `None` when it cannot be read.
+pub(crate) fn worktree_of(admin: &AdminDir) -> Option<PathBuf> {
+    let gitdir = admin.gitdir_file()?;
+    let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
+    state::worktree_path_from(&gitdir, &gitdir_text)
 }
 
 /// Tells the running Neovims that the worktree whose admin directory is `admin` changed: what
@@ -554,4 +564,38 @@ fn current_anchor(worktree: &Path, admin: &AdminDir, note: &Note) -> Result<Anch
     let hunks = translate::parse_hunks(&String::from_utf8_lossy(&diff))
         .with_context(|| format!("cannot translate note {} on {}", note.id, note.path))?;
     Ok(translate::translate(note.anchor, &hunks))
+}
+
+/// The worktree `target` names or locates in the repository containing the current directory,
+/// for a turn command, with its admin directory. Refuses the primary checkout, an unknown worktree
+/// and one whose directory is gone.
+pub(crate) fn find_turned(target: &Target) -> Result<(Worktree, AdminDir)> {
+    let cwd = env::current_dir()?;
+    let fleet = read_fleet(&cwd)?;
+    let worktree = find_target(&fleet, &cwd, target)?;
+    if let State::Broken(reason) = &worktree.state
+        && reason.is_gone()
+    {
+        bail!(
+            "worktree {} at {} is broken ({reason}): its directory is gone, and its turns with it",
+            worktree.name,
+            worktree.path.display(),
+        );
+    }
+    let admin = git::admin_dir(&worktree.path)?;
+    Ok((worktree.clone(), admin))
+}
+
+/// The turns of `worktree`, whose admin directory is `admin`, from its turn log and its live
+/// status. Only reads, and takes no lock: the hook only ever appends to the log, and replaces
+/// the status whole.
+pub(crate) fn read_history(worktree: &Worktree, admin: &AdminDir) -> Result<History> {
+    let log = fs::read_optional(&admin.turn_log())?.unwrap_or_default();
+    let records = turn::read_log(&log)?;
+    let status = read_status(admin);
+    Ok(History {
+        name: worktree.name.clone(),
+        path: worktree.path.clone(),
+        turns: history::turns(&records, status.as_ref()),
+    })
 }

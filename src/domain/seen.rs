@@ -178,6 +178,8 @@ mod tests {
             phase: Phase::Working,
             activity: "fix it".to_owned(),
             denials: Vec::new(),
+            agent: "claude".to_owned(),
+            begin: None,
         }
     }
 
@@ -193,6 +195,9 @@ mod tests {
             ended_at: 2,
             denials: Vec::new(),
             message: None,
+            begin: None,
+            end: None,
+            end_observed: false,
         }
     }
 

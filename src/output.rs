@@ -9,20 +9,23 @@
 mod json;
 
 use std::fmt::Write as _;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped};
+use crate::domain::blame::{Blame, LineAuthor, Source};
 use crate::domain::detail::{Detail, Drift, SetupDetail, SetupProgress};
 use crate::domain::error;
-use crate::domain::fleet::{Fleet, Worktree};
+use crate::domain::fleet::{Fleet, Pruned, Worktree};
+use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
+use crate::domain::turn::{Outcome, Phase};
 use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeName};
 
 /// How a command prints its result and its errors.
@@ -305,20 +308,22 @@ fn render_worktree_removed(removed: &Removed) -> String {
     )
 }
 
-/// Prints the worktrees `worktree prune` cleaned, one path per line, or that there was nothing to prune.
-pub(crate) fn worktrees_pruned(pruned: &[PathBuf]) {
+/// Prints what `worktree prune` cleaned, one line each: the worktrees by path, then the chains of
+/// snapshots by ref; or that there was nothing to prune.
+pub(crate) fn worktrees_pruned(pruned: &Pruned) {
     out(&render_worktrees_pruned(pruned));
 }
 
-fn render_worktrees_pruned(pruned: &[PathBuf]) -> String {
-    if pruned.is_empty() {
+fn render_worktrees_pruned(pruned: &Pruned) -> String {
+    if pruned.worktrees.is_empty() && pruned.chains.is_empty() {
         return "nothing to prune".to_owned();
     }
-    pruned
+    let worktrees = pruned
+        .worktrees
         .iter()
-        .map(|path| format!("pruned {}", path.display()))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|path| format!("pruned {}", path.display()));
+    let chains = pruned.chains.iter().map(|name| format!("deleted {name}"));
+    worktrees.chain(chains).collect::<Vec<_>>().join("\n")
 }
 
 /// Prints what `agent start` did and, in text, says on stderr which extra paths the sandbox may
@@ -660,6 +665,129 @@ pub fn error(err: &anyhow::Error, format: Format) -> ExitCode {
         }
     }
     ExitCode::from(error::exit_code(err))
+}
+
+/// The characters of a snapshot's id a table shows.
+const SHORT_ID: usize = 7;
+
+/// The width of the turn column of `turn blame`.
+const BLAME_TURN_WIDTH: usize = 4;
+
+/// What `turn blame` shows for a line written between turns, and for one changed since the latest
+/// snapshot.
+const BETWEEN_TURNS_MARK: &str = "-";
+const SINCE_SNAPSHOT_MARK: &str = "·";
+
+/// Prints the turns of a worktree: a table, oldest first, or one JSON document.
+pub(crate) fn turns_listed(history: &History, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_turns_listed(history)),
+        Format::Json => out(&json::turns(history)?),
+    }
+    Ok(())
+}
+
+fn render_turns_listed(history: &History) -> String {
+    if history.turns.is_empty() {
+        return format!("no turns in worktree {}", history.name);
+    }
+    let header = ["TURN", "OUTCOME", "AGENT", "BEGIN", "END", "PROMPT"]
+        .map(str::to_owned)
+        .to_vec();
+    let rows = history.turns.iter().map(|turn| {
+        vec![
+            turn.number.to_string(),
+            progress_cell(turn),
+            turn.agent.clone().unwrap_or_else(|| "-".to_owned()),
+            short_id(turn.begin.as_deref()),
+            short_id(turn.end.as_deref()),
+            turn.prompt.replace('\n', " "),
+        ]
+    });
+    render_columns(&[header].into_iter().chain(rows).collect::<Vec<_>>())
+}
+
+/// Where a turn is, as `turn ls` shows it: its outcome, `working` or `waiting` while open, `-`
+/// when its end was never logged.
+fn progress_cell(turn: &LoggedTurn) -> String {
+    let label = match turn.progress {
+        Progress::Ended(Outcome::Finished) => "finished",
+        Progress::Ended(Outcome::Failed) => "failed",
+        Progress::Ended(Outcome::Interrupted) => "interrupted",
+        Progress::Open(Phase::Working) => "working",
+        Progress::Open(Phase::Waiting) => "waiting",
+        Progress::Unended => "-",
+    };
+    label.to_owned()
+}
+
+/// A snapshot's id cut to its first characters, `-` when there is none.
+fn short_id(id: Option<&str>) -> String {
+    id.map_or_else(|| "-".to_owned(), |id| id.chars().take(SHORT_ID).collect())
+}
+
+/// Prints what a turn changed: the patch exactly as git printed it on stdout, and on stderr a
+/// warning when its end was not observed, or that it changed nothing; or one JSON document.
+pub(crate) fn turn_diff(diff: &TurnDiff, format: Format) -> anyhow::Result<()> {
+    if format == Format::Json {
+        out(&json::turn_diff(diff)?);
+        return Ok(());
+    }
+    if diff.end_observed == Some(false) {
+        progress(&end_not_observed(diff.turn), format);
+    }
+    if diff.patch.is_empty() {
+        progress(&format!("turn {} changed no file", diff.turn), format);
+        return Ok(());
+    }
+    io::stdout().lock().write_all(&diff.patch)?;
+    Ok(())
+}
+
+/// The warning `turn diff` gives for a turn whose end was not observed.
+fn end_not_observed(turn: u64) -> String {
+    format!(
+        "turn {turn}: its end was not observed (it was interrupted), so this diff may include \
+         edits made after the interruption"
+    )
+}
+
+/// Prints who wrote each line of a file: one line per line of the file, or one JSON document.
+pub(crate) fn turn_blame(blame: &Blame, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_turn_blame(blame)),
+        Format::Json => out(&json::blame(blame)?),
+    }
+    Ok(())
+}
+
+fn render_turn_blame(blame: &Blame) -> String {
+    if blame.lines.is_empty() {
+        return format!("{} is empty", blame.file);
+    }
+    let width = blame.lines.len().to_string().len().max(BLAME_TURN_WIDTH);
+    let mut text = String::new();
+    for author in &blame.lines {
+        let _ = writeln!(
+            text,
+            "{:>BLAME_TURN_WIDTH$}  {:>width$}  {}",
+            blame_mark(author),
+            author.line,
+            author.text
+        );
+    }
+    text.truncate(text.trim_end_matches('\n').len());
+    text
+}
+
+/// Who wrote a line, as `turn blame` shows it: the turn's number, `-` for no turn, `·` for a line
+/// changed since the latest snapshot.
+fn blame_mark(author: &LineAuthor) -> String {
+    match &author.source {
+        Source::Turn { number, .. } => number.to_string(),
+        Source::BetweenTurns => BETWEEN_TURNS_MARK.to_owned(),
+        Source::SinceSnapshot => SINCE_SNAPSHOT_MARK.to_owned(),
+    }
 }
 
 fn out(text: &str) {
@@ -1196,11 +1324,32 @@ mod tests {
     }
 
     #[test]
-    fn worktree_prune_lists_paths_or_says_nothing() {
-        assert_eq!(render_worktrees_pruned(&[]), "nothing to prune");
+    fn worktree_prune_lists_paths_and_chains_or_says_nothing() {
         assert_eq!(
-            render_worktrees_pruned(&[PathBuf::from("/a"), PathBuf::from("/b")]),
+            render_worktrees_pruned(&Pruned::default()),
+            "nothing to prune"
+        );
+        let worktrees = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees: worktrees.clone(),
+                chains: Vec::new(),
+            }),
             "pruned /a\npruned /b"
+        );
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees,
+                chains: vec!["refs/orca-term/worktrees/a".to_owned()],
+            }),
+            "pruned /a\npruned /b\ndeleted refs/orca-term/worktrees/a"
+        );
+        assert_eq!(
+            render_worktrees_pruned(&Pruned {
+                worktrees: Vec::new(),
+                chains: vec!["refs/orca-term/worktrees/a".to_owned()],
+            }),
+            "deleted refs/orca-term/worktrees/a"
         );
     }
 }

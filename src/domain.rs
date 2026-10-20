@@ -2,12 +2,14 @@
 //! process, reads the environment or prints: functions take data and return data or a decision.
 
 pub(crate) mod agent;
+pub(crate) mod blame;
 pub(crate) mod branch;
 pub(crate) mod config;
 pub(crate) mod contract;
 pub(crate) mod detail;
 pub(crate) mod error;
 pub(crate) mod fleet;
+pub(crate) mod history;
 pub(crate) mod hook;
 pub(crate) mod include;
 pub(crate) mod launch;
@@ -19,6 +21,7 @@ pub(crate) mod review;
 pub(crate) mod sandbox;
 pub(crate) mod seen;
 pub(crate) mod setup;
+pub(crate) mod snapshot;
 pub(crate) mod state;
 pub(crate) mod turn;
 pub(crate) mod worktree;

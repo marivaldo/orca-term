@@ -48,6 +48,15 @@ agent can change. Turns are numbered across the whole worktree, never per sessio
 of a worktree share a number. Edits the person makes between turns belong to no turn.
 _Avoid_: run, round, iteration, request
 
+**Snapshot**:
+The worktree's whole tree at a turn's begin or end, kept as a synthetic commit in the worktree's
+chain of snapshots, each the parent of the next. One snapshot can be both the end of one turn and
+the begin of the next. A turn's diff runs from its begin snapshot to its end snapshot. The person's
+edits between turns are their own segment of the chain, the next begin snapshot, belonging to no
+turn. A turn whose end the agent never reported ends on the next snapshot, its end *not
+observed*.
+_Avoid_: checkpoint, savepoint, shadow commit, turn commit
+
 **Unseen**:
 A worktree whose latest turn ended after the person last reviewed it, whatever the outcome. It is a
 mark on the worktree, independent of its state, and opening the worktree's review clears it.

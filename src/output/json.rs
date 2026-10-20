@@ -6,17 +6,20 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::domain::agent::{HolderStatus, StartOutcome, Started, StopOutcome, Stopped};
+use crate::domain::blame::{Blame, Source};
 use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::detail::{Detail, SetupProgress};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
+use crate::domain::turn::{Outcome, Phase};
 use crate::domain::worktree::{BranchOutcome, Created, Removed};
 
 /// Every document carries `contract` and `version` next to its own fields.
@@ -255,6 +258,76 @@ enum AnchorView {
     File,
 }
 
+/// `turn ls --json`: the worktree, and its turns oldest first, the open one last.
+#[derive(Debug, Serialize)]
+struct TurnsView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    turns: Vec<TurnView<'a>>,
+}
+
+/// One turn: `number` in the worktree; `agent` (null for a turn logged before it was recorded);
+/// `session`; `prompt`, its first line; `started_at` and `ended_at` in milliseconds since the Unix
+/// epoch (null when unknown, `ended_at` while open); `outcome`, `finished`, `failed` or
+/// `interrupted` once ended, else null; `phase`, `working` or `waiting` for the open turn, else
+/// null; `end_observed` (null while open and for a turn ended before the snapshots); `begin` and
+/// `end`, its snapshots' full commit ids (null when not taken); `denials`, how many tool calls its
+/// agent was denied during it.
+#[derive(Debug, Serialize)]
+struct TurnView<'a> {
+    number: u64,
+    agent: Option<&'a str>,
+    session: Option<&'a str>,
+    prompt: &'a str,
+    started_at: Option<u64>,
+    ended_at: Option<u64>,
+    outcome: Option<&'static str>,
+    phase: Option<&'static str>,
+    end_observed: Option<bool>,
+    begin: Option<&'a str>,
+    end: Option<&'a str>,
+    denials: usize,
+}
+
+/// `turn diff --json`: the worktree, the `turn`, its `begin` and `end` snapshots, whether its end
+/// was observed (when false the patch may hold edits made after the interruption), and the
+/// `patch` git printed (invalid UTF-8 replaced).
+#[derive(Debug, Serialize)]
+struct TurnDiffView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    turn: u64,
+    begin: &'a str,
+    end: &'a str,
+    end_observed: Option<bool>,
+    patch: String,
+}
+
+/// `turn blame --json`: the worktree, the `file` (relative to its root), and each of its lines on
+/// disk now.
+#[derive(Debug, Serialize)]
+struct BlameView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    file: &'a str,
+    lines: Vec<LineAuthorView<'a>>,
+}
+
+/// One line: its number `line` from 1; `source`, `turn` (a turn wrote it), `between_turns` (no
+/// turn: the person between turns, or the files before the first turn) or `since_snapshot`
+/// (changed since the latest snapshot); `turn` and `agent`, the turn that wrote it and its agent
+/// (null otherwise); `snapshot`, the snapshot git found the line in (null for `since_snapshot`);
+/// `text`.
+#[derive(Debug, Serialize)]
+struct LineAuthorView<'a> {
+    line: usize,
+    source: &'static str,
+    turn: Option<u64>,
+    agent: Option<&'a str>,
+    snapshot: Option<&'a str>,
+    text: &'a str,
+}
+
 /// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
 #[derive(Debug, Serialize)]
 struct DoneView {}
@@ -465,6 +538,95 @@ pub(crate) fn listed(listed: &Listed) -> serde_json::Result<String> {
         name: &listed.name,
         path: &listed.path,
         notes: listed.notes.iter().map(note_view).collect(),
+    })
+}
+
+/// The turns of a worktree, as one JSON document.
+pub(crate) fn turns(history: &History) -> serde_json::Result<String> {
+    document(TurnsView {
+        name: &history.name,
+        path: &history.path,
+        turns: history.turns.iter().map(turn_view).collect(),
+    })
+}
+
+fn turn_view(turn: &LoggedTurn) -> TurnView<'_> {
+    let (outcome, phase) = match turn.progress {
+        Progress::Ended(outcome) => (Some(outcome_name(outcome)), None),
+        Progress::Open(phase) => (None, Some(phase_name(phase))),
+        Progress::Unended => (None, None),
+    };
+    TurnView {
+        number: turn.number,
+        agent: turn.agent.as_deref(),
+        session: turn.session.as_deref(),
+        prompt: &turn.prompt,
+        started_at: turn.started_at,
+        ended_at: turn.ended_at,
+        outcome,
+        phase,
+        end_observed: turn.end_observed,
+        begin: turn.begin.as_deref(),
+        end: turn.end.as_deref(),
+        denials: turn.denials,
+    }
+}
+
+/// How the contract names how a turn ended.
+fn outcome_name(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Finished => "finished",
+        Outcome::Failed => "failed",
+        Outcome::Interrupted => "interrupted",
+    }
+}
+
+/// How the contract names what the open turn's agent is doing.
+fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Working => "working",
+        Phase::Waiting => "waiting",
+    }
+}
+
+/// What a turn changed, as one JSON document.
+pub(crate) fn turn_diff(diff: &TurnDiff) -> serde_json::Result<String> {
+    document(TurnDiffView {
+        name: &diff.name,
+        path: &diff.path,
+        turn: diff.turn,
+        begin: &diff.bounds.begin,
+        end: &diff.bounds.end,
+        end_observed: diff.end_observed,
+        patch: String::from_utf8_lossy(&diff.patch).into_owned(),
+    })
+}
+
+/// Who wrote each line of a file, as one JSON document.
+pub(crate) fn blame(blame: &Blame) -> serde_json::Result<String> {
+    document(BlameView {
+        name: &blame.name,
+        path: &blame.path,
+        file: &blame.file,
+        lines: blame
+            .lines
+            .iter()
+            .map(|author| {
+                let (source, turn, agent) = match &author.source {
+                    Source::Turn { number, agent } => ("turn", Some(*number), agent.as_deref()),
+                    Source::BetweenTurns => ("between_turns", None, None),
+                    Source::SinceSnapshot => ("since_snapshot", None, None),
+                };
+                LineAuthorView {
+                    line: author.line,
+                    source,
+                    turn,
+                    agent,
+                    snapshot: author.snapshot.as_deref(),
+                    text: &author.text,
+                }
+            })
+            .collect(),
     })
 }
 
