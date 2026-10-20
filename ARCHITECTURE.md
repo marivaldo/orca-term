@@ -150,7 +150,8 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
   `no_sandbox`), find claude on PATH and check its version (or fail as `prerequisite`), resolve
-  the extra writable paths,
+  the extra writable paths (those of a committed `orca-term.yaml` approved, else asked for or
+  refused as `untrusted`),
   pre-create the admin directories, pick the session (none with `--fresh` or without a recorded
   one; else the current session `status.json` records, once its id is checked and its transcript
   found on disk, or the typed `session_gone`), build and check the settings and the command line
@@ -346,11 +347,13 @@ the adapters, and returns a domain value that `output` prints.
   script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
   the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
   commands that run it.
-- `domain/trust.rs`: the approval of a committed setup script (#58): `orca-term-trust.json` in
-  the git common dir (`{"schema": 1, "approved": [{"sha256", "source", "approved_at"}]}`, read
-  from any schema, never written over a newer one, a corrupt file refused by name), the sha256 of
-  the script's exact bytes, the answers that approve (`y`, `yes`, any case) and `gate`, what to do
-  with a script given whether it is committed, whether it is approved and the person's `Consent`.
+- `domain/trust.rs`: the approval of what a committed `orca-term.yaml` asks for (#58), its setup
+  script and its `sandbox.writable` list: `orca-term-trust.json` in the git common dir
+  (`{"schema": 1, "approved": [{"kind", "sha256", "source", "approved_at"}]}`, `kind` `setup` or
+  `sandbox`, a missing one read as `setup`; read from any schema, never written over a newer one,
+  a corrupt file refused by name), the sha256 of the script's exact bytes or of the list's paths
+  as written joined by `\n`, the answers that approve (`y`, `yes`, any case) and `gate`, what to
+  do given whether it is committed, whether it is approved and the person's `Consent`.
 - `domain/detail.rs`: what `worktree detail` reports (`Detail`): the whole detail
   (`whole_detail`: the state's own, or a failed turn's whole message), where the setup is
   (`SetupProgress`) and the drift counted from git's output (`Drift`).
@@ -421,11 +424,12 @@ validate"):
 - `SetupRecord` and `Exit` (`domain/setup.rs`): what `worktree.json` records about the setup,
   `Running`, `Succeeded` or `Failed(Exit)`, where `Exit` is a non-zero `Code` or a `Signal`, or
   `NotApproved` (`{"status": "not_approved"}`).
-- `Trust`, `Approval`, `Unapproved`, `Consent` and `Gate` (`domain/trust.rs`): every approval of
-  a repository, one approved script, a committed script not approved yet (the worktree's name,
-  the script, its file), how the person may approve (`Given`, `Ask`, `Unavailable`) and what to do
-  (`Run`, `ApproveAndRun`, `Ask`, `Refuse`). `ops::Approval` is `Consent` with the function that
-  asks.
+- `Trust`, `Approval`, `Kind`, `Subject`, `Unapproved`, `Consent` and `Gate`
+  (`domain/trust.rs`): every approval of a repository, one approval and what it covers (`Setup`,
+  `Sandbox`), the script or the list (`Subject`), what a committed file asks for not approved yet
+  (the worktree's name, the subject, its file), how the person may approve (`Given`, `Ask`,
+  `Unavailable`) and what to do (`Run`, `ApproveAndRun`, `Ask`, `Refuse`). `ops::Approval` is
+  `Consent` with the function that asks.
 - `SetupOutcome`, `SetupReport` and `SetupDone` (`domain/setup.rs`): what running the setup did
   (`NoScript`, `Succeeded`, `Failed`), the report of a command that ran it (the script and its
   source, the log, the state it left), and what `worktree setup` did.
@@ -446,8 +450,9 @@ validate"):
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
-  doctor's lines say) and `Untrusted` (a setup script from a committed `orca-term.yaml` not
-  approved, with its text and file, which the client shows before approving it).
+  doctor's lines say) and `Untrusted` (a setup script or writable list from a committed
+  `orca-term.yaml` not approved, with its `Subject` and file, which the client shows before
+  approving it).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -496,6 +501,10 @@ validate"):
   command fails as `untrusted`; `worktree new` leaves the worktree in place. A script from
   `.git/orca-term.yaml` or the global config file always runs. The approvals' file is replaced
   whole under its lock and never written over a newer schema; `worktree ls` only reads the record.
+  The same holds for a committed `sandbox.writable` list (an approval of its own, `kind:
+  "sandbox"`): `agent start`, the only command that launches claude, asks (`widen the sandbox
+  with these writable paths? [y/N]`), takes `--approve-sandbox`, or fails as `untrusted` before
+  anything is launched or written; an empty list widens nothing and needs no approval.
 - **One agent process per worktree, and its pid and socket are never trusted on their own**
   (ADR 0003, ADR 0009). The holder holds an exclusive `flock` on `agent.lock` for its whole life;
   `agent.json` (its pid and socket) and `agent.sock` are believed only while that lock is held,
@@ -617,8 +626,8 @@ validate"):
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
   the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `untrusted`,
-  `prerequisite`) or `other`. The error of `untrusted` also carries `script` and `source` (the
-  committed file).
+  `prerequisite`) or `other`. The error of `untrusted` also carries `what` (`setup` or
+  `sandbox`), the `script` or the `writable` paths as written, and `source` (the committed file).
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
@@ -626,9 +635,10 @@ validate"):
   cannot resume on a cold start; 5 for `no_sandbox`, a machine where claude's sandbox cannot
   run; 6 for `dirty`, a worktree `worktree rm` refuses without `--force` because it has modified
   or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
-  running; 8 for `untrusted`, a setup script from a committed `orca-term.yaml` not approved, so
-  `worktree new` or `worktree setup` did not run it; 9 for `prerequisite`, a program the command
-  needs (git, claude) that is missing or too old, and for `doctor` when any check is.
+  running; 8 for `untrusted`, a setup script or writable list from a committed `orca-term.yaml`
+  not approved, so `worktree new` or `worktree setup` did not run the script, or `agent start` did
+  not start; 9 for `prerequisite`, a program the command needs (git, claude) that is missing or
+  too old, and for `doctor` when any check is.
 
 ## Known limits of the agent holder
 
@@ -759,8 +769,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
   `tests/snapshots.rs` and `tests/turns.rs` build turns by firing the real hooks as claude does
   (`tests/support/turns.rs`), then ask git, and the turn commands, what the snapshots hold.
-  `tests/setup_approval.rs` drives the approval of a committed setup script, without a terminal
-  and, for the prompt, on a real pseudo-terminal (`Repo::pty_command`, through `pty-process`).
+  `tests/setup_approval.rs` drives the approval of a committed setup script, and
+  `tests/sandbox_approval.rs` that of a committed writable list with the fake claude, without a
+  terminal and, for the prompt, on a real pseudo-terminal (`Repo::pty_command` and
+  `support::run_at_terminal`, through `pty-process`).
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
@@ -834,8 +846,8 @@ what they print.
   `core.lua`), Neovim 0.11 or later, and diffview.nvim through `review.available()` (missing: a
   warning, the review needs it). It only reports.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
-  while Neovim exits. `agent_start(path, size, fresh, cwd, on_done)` (with the terminal's size, and `--fresh` when
-  `fresh`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
+  while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
+  `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
@@ -855,7 +867,7 @@ what they print.
   the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
   main`, nothing without a local default branch), then, a blank line before each and only when it
   has something, the whole detail in the state's colour, `Denied` and one `⊘ <call>` per denial,
-  and `Setup (<status>)` with the end of its log, muted; the detail, the denials and the log wrap
+  and `Setup (<status>)` (in words: `not approved`) with the end of its log, muted; the detail, the denials and the log wrap
   to the width and are never cut. It also counts the fleet for the status strip: `counts(fleet)` gives the
   worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
   `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
@@ -1026,7 +1038,10 @@ what they print.
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
   then its terminal through `terminal.lua`; a `session_gone` refusal asks `Cannot resume the
   session of <name>: <reason>` with `Start a fresh session` (`agent start --fresh`, then the
-  terminal) or `Cancel` (nothing starts); any other refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
+  terminal) or `Cancel` (nothing starts); an `untrusted` refusal for the sandbox asks
+  `sandbox_prompt` (the worktree, the source, the paths) with `Allow` (`agent start
+  --approve-sandbox`, then the terminal) or `Cancel` (`APPROVE_SANDBOX`; nothing starts); any other
+  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
   `toggle_unseen` (`u`: `worktree seen` when the fleet last read
   says unseen, `worktree unseen` otherwise, then the sidebar is read again; a refusal is told),
   `review` (`d`: without diffview.nvim it only says it is needed, naming its URL, and runs

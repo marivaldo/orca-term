@@ -55,6 +55,13 @@ of the script, kept in `.git/orca-term-trust.json`, outside every worktree and o
 reach; any change to the script, in the primary checkout or on a branch, asks again. A script from
 `.git/orca-term.yaml` or from your global config file is yours and always runs.
 
+The same goes for `sandbox.writable`, the extra paths claude's sandbox lets the agent write to: a
+committed list widens the sandbox only once you have approved it. `agent start` prints the paths
+and their file, then asks `widen the sandbox with these writable paths? [y/N]`; without a terminal
+it fails with `untrusted` and starts nothing. `agent start --approve-sandbox` approves the list
+without asking, and in Neovim `<CR>` shows it and asks `Allow` or `Cancel`. A changed list asks
+again; a list from `.git/orca-term.yaml` or the global config file needs no approval.
+
 ## Review
 
 The review shows what a worktree changed since it forked from the default branch: the commit it
