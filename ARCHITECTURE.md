@@ -43,7 +43,7 @@ the adapters, and returns a domain value that `output` prints.
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
   opens a review, `worktree detail`, what the detail float shows,
-  `agent start|attach|stop`, `note add|ls|edit|rm|send`, the hidden `agent holder`, the holder process itself, and the
+  `agent start|attach|stop`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, the hidden `agent holder`, the holder process itself, and the
   hidden `hook claude`, which claude runs for every hook event, and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
@@ -53,7 +53,10 @@ the adapters, and returns a domain value that `output` prints.
   drift), of `agent start` and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
   of the note commands (a note's lines as made and, when they moved, `(now line 5)`; the prompt a
-  send pasted),
+  send pasted), of the turn commands (`turn ls`'s table, `turn diff`'s patch written to stdout
+  byte for byte with, on stderr, the warning of an end not observed, and `turn blame`'s lines:
+  the turn right-aligned in 4 columns, `-` for no turn, `·` for since the latest snapshot, then
+  the line number and the text),
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
@@ -76,7 +79,13 @@ the adapters, and returns a domain value that `output` prints.
   `detail` (why it is in its state, whole, or null), `denials` (`[{"tool", "text"}]`, in order),
   `setup` (`{"status": "running"|"interrupted"|"succeeded"|"failed", "log", "tail"}`, the last 20
   lines of the log, or null when it never ran one) and `drift` (`{"against", "ahead", "behind"}`,
-  or null).
+  or null). `turn ls` prints the worktree's `name` and `path` and `turns`, each `{"number",
+  "agent", "session", "prompt", "started_at", "ended_at", "outcome", "phase", "end_observed",
+  "begin", "end", "denials"}` (`outcome` null while open, `phase` `working`/`waiting` only while
+  open; nulls for what a turn from before the snapshots lacks); `turn diff` the `turn`, its
+  `begin` and `end`, `end_observed` and the `patch`; `turn blame` the `file` (relative to the
+  worktree) and its `lines`, each `{"line", "source": "turn"|"between_turns"|"since_snapshot",
+  "turn", "agent", "snapshot", "text"}`.
 
 ### ops
 
@@ -89,7 +98,10 @@ the adapters, and returns a domain value that `output` prints.
   to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
   `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
   worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
-  and `notify_changed`, which every command calls after it writes a worktree's state.
+  and `notify_changed`, which every command calls after it writes a worktree's state. The turn
+  commands share `find_turned` (refusing a worktree whose directory is gone) and `read_history`
+  (the whole `turns.jsonl` and `status.json`, read with no lock: the hook only appends to the one
+  and replaces the other whole).
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
   lock it, copy the copy list, run the setup.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
@@ -151,6 +163,15 @@ the adapters, and returns a domain value that `output` prints.
   pending notes and, as the typed `no_holder`, with no live holder; translate each anchor, build
   Orca's prompt, type it into the agent through the holder (the paste, 50 ms, then Enter), and only
   then, under `notes.lock`, consume the notes sent whose revision did not change; notify.
+- `ops/turn_ls.rs`: `turn ls`: the worktree's turns from its turn log. Only reads.
+- `ops/turn_diff.rs`: `turn diff`: the turn's begin and end snapshots from the turn log (refusing
+  a turn that does not exist, one not ended, one without snapshots), then `git diff <begin>
+  <end>`. Only reads.
+- `ops/turn_blame.rs`: `turn blame`: resolve the path (relative to the worktree, or absolute
+  inside it; refused outside it, also through a symlink, and when it is not a file on disk), then
+  `git blame --porcelain --contents <file on disk> <tip> -- <path>` against the chain's tip
+  `status.json` records, mapped through the turn log. No tip, a tip git no longer has, or a file
+  the tip does not hold: every line changed since the latest snapshot. Only reads.
 - `ops/nvim_register.rs`: the hidden `nvim register <address>`: write the address's file in the
   registry (idempotent; creating the file is the only write, so no lock).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
@@ -161,7 +182,8 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
   drift's `rev-list --left-right --count`), `blob_id` of some content, `diff_files` between two
-  files, `index_path`, `config_value`, `read_ref`, `refs_under`, ...) or change (`worktree_add`,
+  files, `index_path`, `config_value`, `read_ref`, `refs_under`, `commit_exists`, `has_file`, the
+  turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, ...) or change (`worktree_add`,
   `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
   `update_ref`, `delete_ref`, ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
@@ -254,6 +276,15 @@ the adapters, and returns a domain value that `output` prints.
   ref's commit is the parent only when it is the tip `status.json` records; any other ref is
   stale and replaced), filling its id into the records and the status (`fill`), and the chain's
   ref `refs/orca-term/worktrees/<admin-dir id>`.
+- `domain/history.rs`: a worktree's turns as `turn ls` and `turn diff` show them (`turns`: the
+  turn log's start and end lines merged per number, oldest first, the open turn and its phase
+  from the live status), and the snapshots a turn's diff runs between (`diff_bounds`, refusing
+  with `TurnError`).
+- `domain/blame.rs`: `turn blame`'s mapping: `git blame --porcelain` parsed into lines
+  (`parse_porcelain`), each line's commit mapped through the turn log (`attribute`: a turn's end
+  snapshot is that turn, any other snapshot no turn, git's all-zero id since the latest
+  snapshot), every line of a file no snapshot holds (`unsnapshotted`), and the path given made
+  relative to the worktree (`worktree_file`).
 - `domain/seen.rs`: the unseen mark: `seen.json` (`seen_through`, the latest turn the person
   has seen, and `marked`, the mark set by hand; its schema rules and bytes), the latest ended
   turn (an open turn whose holder is gone counts as ended), and whether a worktree is unseen.
@@ -354,6 +385,10 @@ validate"):
   bounds (the turn it ends, with whether that end was observed, and the turn it begins), a git
   author or committer, and the parent and the expected old value of the ref for the next
   snapshot. `Pruned` (`domain/fleet.rs`): what `worktree prune` cleaned, worktrees and chains.
+- `History`, `LoggedTurn`, `Progress` (`Ended`, `Open` or `Unended`), `DiffBounds` and
+  `TurnDiff` (`domain/history.rs`): what `turn ls` and `turn diff` found; `Blame`, `BlamedLine`,
+  `LineAuthor` and `Source` (`Turn`, `BetweenTurns` or `SinceSnapshot`, `domain/blame.rs`): what
+  `turn blame` found.
 - `Denial` (`domain/turn.rs`): a tool call the agent's permission settings denied, its tool and
   its text; `Detail`, `SetupDetail`, `SetupProgress` and `Drift` (`domain/detail.rs`): what
   `worktree detail` found, the latest setup and where it is, how far `HEAD` is ahead of and
@@ -466,7 +501,9 @@ validate"):
   next parent only when it is the tip `status.json` records (otherwise it is stale and replaced
   by a parentless snapshot). A failed snapshot is logged and the turn recorded without its id.
   Only `worktree rm` (its own worktree's, once removed) and `worktree prune` (orphans whose
-  `.git/worktrees/<id>` is gone) delete a chain; nothing rewrites one.
+  `.git/worktrees/<id>` is gone) delete a chain; nothing rewrites one. `turn ls|diff|blame` only
+  read: no lock, no write, no fetch, and the turn log, not a commit's message, says which turn a
+  snapshot ends.
 - **A denial is never a state** (ADR 0007, #42). claude reports a tool call its permission
   settings denied only in `PostToolBatch`, by the text of the call's `tool_response` (no error
   flag): a denial starts `Permission to use ` and says ` denied`, or says `denied by your
@@ -640,6 +677,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   pipes, where the end of stdin detaches; and stops every holder when a test ends. It needs no
   claude, no sandbox and no network. `tests/notes.rs` drives the note commands with the same
   fixture, its fake claude taking its terminal raw to record the exact bytes a send types.
+  `tests/snapshots.rs` and `tests/turns.rs` build turns by firing the real hooks as claude does
+  (`tests/support/turns.rs`), then ask git, and the turn commands, what the snapshots hold.
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.

@@ -20,7 +20,8 @@ Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the cu
 <worktree>` run claude in one of them, inside claude's own sandbox, held by a detached process that
 any terminal can attach to. `orca-term note
 add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
-agent as one prompt, in Orca's format.
+agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
+turns, show what one turn changed and say which turn wrote each line of a file.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
@@ -81,6 +82,59 @@ Limits:
   the file is edited in the worktree's tab.
 - `gn` works on the files the review lists; a file git does not track is not listed, but a note
   added on it with `orca-term note add` shows in the list and is sent with the others.
+
+## Turns
+
+Every turn of a worktree's agent is bounded by two snapshots of the worktree's files, taken by the
+hooks when the turn starts and when it ends: its tracked and untracked files, `.gitignore`
+respected, as a commit outside every branch. A worktree's snapshots form one chain, each the parent
+of the next, under `refs/orca-term/worktrees/<id>` (`<id>` is the worktree's directory in
+`.git/worktrees/`): see them with `git log refs/orca-term/worktrees/<id>`. They are not pushed
+unless you push that ref yourself. What you edit between two turns is a snapshot of its own, the
+next turn's begin, and belongs to no turn.
+
+`orca-term turn ls <worktree>` lists the turns, oldest first, the open one last:
+
+```
+TURN  OUTCOME      AGENT   BEGIN    END      PROMPT
+1     finished     claude  1a2b3c4  5d6e7f8  add a readme
+2     interrupted  claude  5d6e7f8  0f1e2d3  fix the test
+3     working      claude  0f1e2d3  -        rename the module
+```
+
+`orca-term turn diff <worktree> 1` prints what turn 1 changed: `git diff` from its begin snapshot
+to its end snapshot, as a patch. A turn from before orca-term took snapshots has none, and an open
+turn has no diff yet.
+
+`orca-term turn blame <worktree> src/main.rs` says which turn wrote each line of the file as it is
+on disk now: the turn's number, `-` for a line written between turns (or there before the first
+turn), `·` for a line changed since the latest snapshot (during an open turn, those lines will be
+the turn's once it ends):
+
+```
+   -     1  # demo
+   2     2  fn main() {
+   -     3      // added by hand between turns
+   ·     4  }
+```
+
+Each command takes `--json`. A turn whose end the agent never reported (you pressed Esc and sent
+another prompt, or the session ended) is *interrupted*, its end *not observed*: it ends on the
+snapshot taken by whatever told orca-term it was over, so its diff may include edits made after the
+interruption, and `turn diff` says so.
+
+Limits:
+
+- A snapshot stores every untracked file `.gitignore` does not exclude in the repository's objects,
+  even one you never meant to commit; it stays local unless you push the chain's ref by hand.
+- An edit made during a turn belongs to it, whoever made it: nothing tells your saves apart from
+  the agent's while a turn is open.
+- Each hook that starts or ends a turn runs git to take its snapshot, which adds a little time on
+  a large tree.
+- Once `git gc` has packed the chain's ref into `.git/packed-refs`, the agent's sandbox no longer
+  keeps it from rewriting the chain.
+- If orca-term fails to record a snapshot after taking it, the next snapshot starts the chain again,
+  and blame gives the lines of the older turns to no turn.
 
 ## Status strip
 
