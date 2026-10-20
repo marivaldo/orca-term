@@ -1,14 +1,14 @@
 -- orca-term's sidebar: the fleet in a left split of every tab, toggled by `:OrcaTerm sidebar`.
 --
--- This module, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` are the only ones that
--- touch windows and buffers (`cargo xtask client-boundary` checks it). It gets the fleet from
--- `live.lua`, has `render.lua` turn it into lines and colours, and paints them into one buffer that
--- every tab shows in its own window. Its keys, local to that buffer, move the selection (`j`, `k`),
--- open a worktree (`<CR>`: its tab, and its agent's terminal when it has an agent), create a
+-- This module, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua` are the only
+-- ones that touch windows and buffers (`cargo xtask client-boundary` checks it). It gets the fleet
+-- from `live.lua`, has `render.lua` turn it into lines and colours, and paints them into one buffer
+-- that every tab shows in its own window. Its keys, local to that buffer, move the selection (`j`,
+-- `k`), open a worktree (`<CR>`: its tab, and its agent's terminal when it has an agent), create a
 -- worktree (`a`), open the menu of the worktree under the cursor (`.`), toggle its unseen mark
--- (`u`) and open its review (`d`), all five through `actions.lua`. The selection follows the
--- current tab when it is a worktree's. The sidebar is never shown in a review tab (`review.lua`),
--- where diffview lays out the whole tab.
+-- (`u`) and open its review (`d`), all five through `actions.lua`, and show its detail in a float
+-- (`K`, through `detail.lua`). The selection follows the current tab when it is a worktree's. The
+-- sidebar is never shown in a review tab (`review.lua`), where diffview lays out the whole tab.
 --
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains
@@ -22,6 +22,7 @@
 -- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
 
 local actions = require('orca-term.actions')
+local detail = require('orca-term.detail')
 local highlights = require('orca-term.highlights')
 local live = require('orca-term.live')
 local render = require('orca-term.render')
@@ -311,6 +312,12 @@ local function open_review()
   end
 end
 
+---`K`: shows the detail of the worktree under the cursor in a float next to the sidebar, or closes
+---it (`detail.lua`).
+local function toggle_detail()
+  detail.toggle(vim.api.nvim_get_current_win(), worktree_under_cursor(), primary_path())
+end
+
 ---Moves the selection `step` worktrees down (1) or up (-1), stopping at the first and the last.
 ---@param step integer
 local function move(step)
@@ -376,6 +383,7 @@ local function ensure_buffer()
   map('.', worktree_menu, 'the actions of the worktree under the cursor')
   map('u', toggle_unseen, 'mark the worktree under the cursor unseen, or seen when it is unseen')
   map('d', open_review, 'open the review of the worktree under the cursor in diffview')
+  map('K', toggle_detail, 'show the detail of the worktree under the cursor, or hide it')
 
   state.buf = buf
   return buf
@@ -566,6 +574,7 @@ end
 function M.close()
   state.open = false
   stop_spinning()
+  detail.close()
   -- A read the live fleet still owes is no longer for the sidebar.
   live.unsubscribe(SUBSCRIBER)
   if state.group then

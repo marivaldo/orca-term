@@ -257,19 +257,39 @@ local function replace(text, from, to)
   end
 end
 
+---The ids of a recorded hook that tie it to its session and its turn.
+---@class spec.HookIds
+---@field session_id string
+---@field prompt_id string
+
+---The session and turn ids of the hook `index` (1-based) of the recording `fixture`.
+---@param fixture string a file name in `M.HOOK_FIXTURES`
+---@param index integer
+---@return spec.HookIds
+function M.hook_ids(fixture, index)
+  local hooks = vim.tbl_filter(function(line)
+    return line ~= ''
+  end, vim.fn.readfile(M.HOOK_FIXTURES .. '/' .. fixture))
+  local payload = vim.json.decode(assert(hooks[index]:match('^%S+ (.*)$')))
+  return { session_id = payload.session_id, prompt_id = payload.prompt_id }
+end
+
 ---Acts as claude does, as tests/hooks.rs does: plays the hooks `first` to `last` (1-based, both
 ---included; from the first and to the last when `nil`) of the recording `fixture` against the
----worktree at `worktree`, whose agent was started by the core. For each hook (a line: the event, a space, the payload), it runs every handler the
----worktree's `claude-settings.json` registers for the event whose matcher takes the payload's
----tool, exactly as written: the command with its arguments, the payload on stdin, the worktree as
----the directory. The recording's `{{worktree}}`, `{{transcripts}}` and `{{denied}}` become paths of
----the repository's own. Fails the spec when a handler does not exit 0.
+---worktree at `worktree`, whose agent was started by the core. For each hook (a line: the event, a
+---space, the payload), it runs every handler the worktree's `claude-settings.json` registers for
+---the event whose matcher takes the payload's tool, exactly as written: the command with its
+---arguments, the payload on stdin, the worktree as the directory. The recording's `{{worktree}}`,
+---`{{transcripts}}` and `{{denied}}` become paths of the repository's own. With `as`, every hook
+---takes those ids instead of its own (`M.hook_ids`), so the hooks of one recording land on the turn
+---another recording left open. Fails the spec when a handler does not exit 0.
 ---@param repo spec.Repo
 ---@param worktree string
 ---@param fixture string a file name in `M.HOOK_FIXTURES`
 ---@param first? integer
 ---@param last? integer
-function M.play_hooks(repo, worktree, fixture, first, last)
+---@param as? spec.HookIds
+function M.play_hooks(repo, worktree, fixture, first, last, as)
   local admin = vim.trim(M.run({
     'git',
     '-C',
@@ -285,6 +305,11 @@ function M.play_hooks(repo, worktree, fixture, first, last)
   end, vim.fn.readfile(M.HOOK_FIXTURES .. '/' .. fixture))
   for index = first or 1, last or #hooks do
     local event, payload = hooks[index]:match('^(%S+) (.*)$')
+    if as then
+      local own = vim.json.decode(payload)
+      payload = replace(payload, own.session_id, as.session_id)
+      payload = replace(payload, own.prompt_id, as.prompt_id)
+    end
     payload = replace(payload, '{{worktree}}', worktree)
     payload = replace(payload, '{{transcripts}}', repo.tmp .. '/transcripts')
     payload = replace(payload, '{{denied}}', repo.tmp .. '/denied')
@@ -514,7 +539,8 @@ end
 ---are the fake claude of `agent_repo()`, and their states come from recordings of claude's hooks
 ---played through the handlers their settings register (`play_hooks`). A turn that ends leaves its
 ---worktree unseen; the core's `worktree seen` and `worktree unseen` clear and set the mark of
----others. Two worktrees have pending notes. The repository's directory is named `repo`.
+---others. Two worktrees have pending notes, and one the denials of its latest turn. The
+---repository's directory is named `repo`.
 ---
 ---`install-deps` stays *setting up* until `release()` is called: call it in a `finally`, so its
 ---setup ends even when the spec fails.
@@ -554,6 +580,12 @@ function M.every_state_repo()
   M.run({ M.binary, 'worktree', 'seen', 'reviewed' }, repo.root)
   M.run({ M.binary, 'worktree', 'unseen', 'nudged' }, repo.root)
   M.run({ 'git', 'switch', '--quiet', '-c', 'other-branch' }, M.worktree_path(repo, 'spike'))
+
+  -- Denials: the three Write calls claude's permission settings refused in a recording of its own,
+  -- played into the turn `pick-colour` waits in (the selected worktree, in the card). A batch never
+  -- changes the turn's state nor its activity.
+  local ask = M.hook_ids('tui-ask-2.1.300.log', 2)
+  M.play_hooks(repo, M.worktree_path(repo, 'pick-colour'), 'tui-deny-multi-2.1.303.log', 3, 4, ask)
 
   -- Pending notes: two on `docs`, one on `pick-colour` (the selected worktree, in the card). A note
   -- on a whole file needs no file on disk.

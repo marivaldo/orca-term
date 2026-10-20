@@ -53,6 +53,20 @@ A worktree whose latest turn ended after the person last reviewed it, whatever t
 mark on the worktree, independent of its state, and opening the worktree's review clears it.
 _Avoid_: unread, new, unacknowledged
 
+**Denial**:
+A tool call the agent's permission rules refused, as claude reports it. Denials are counted on the
+turn they happened in and shown as that count, never as a state: a turn with denials still ends
+finished, failed or interrupted. A command the sandbox stopped is a failed command, not a denial,
+and the person's own refusal of a tool call is not one either.
+_Avoid_: rejection, permission error, violation
+
+**Drift**:
+How far a worktree's branch is ahead of and behind the repository's local default branch, in
+commits on each side since they forked. It is computed when asked for, against the local branch
+only: nothing is ever fetched for it, and a worktree with no local default branch to compare with
+has none.
+_Avoid_: divergence, staleness
+
 **Note**:
 A remark the person attaches to a line, a range of lines or a whole file of a worktree's diff. A
 note waits, pending, until the person sends it to the worktree's current session, and sending it

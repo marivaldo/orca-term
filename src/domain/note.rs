@@ -850,6 +850,7 @@ mod tests {
             holder: HolderStatus::Gone,
             unseen: false,
             notes: 0,
+            denials: 0,
         };
         let err = check_can_note(&worktree(State::Broken(BrokenReason::DirectoryMissing)));
         assert!(err.unwrap_err().to_string().contains("takes no notes"));

@@ -397,6 +397,7 @@ mod tests {
             holder: HolderStatus::Gone,
             unseen: false,
             notes: 0,
+            denials: 0,
         };
         check_can_run_agent(&with(State::NoAgent)).unwrap();
         check_can_run_agent(&with(State::Idle)).unwrap();

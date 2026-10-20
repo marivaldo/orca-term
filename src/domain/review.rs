@@ -105,6 +105,7 @@ mod tests {
             holder: HolderStatus::Gone,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 

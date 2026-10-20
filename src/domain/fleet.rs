@@ -59,6 +59,9 @@ pub(crate) struct Worktree {
     pub(crate) unseen: bool,
     /// How many notes are pending on the worktree (`domain/note.rs`).
     pub(crate) notes: usize,
+    /// How many tool calls the agent was denied in its latest turn, open or ended
+    /// (`domain/turn.rs`). Never a state.
+    pub(crate) denials: usize,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -87,6 +90,7 @@ impl Fleet {
                 holder: HolderStatus::Gone,
                 unseen: false,
                 notes: 0,
+                denials: 0,
             })
             .collect();
         Ok(Self {

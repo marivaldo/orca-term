@@ -2,7 +2,7 @@
 
  NEEDS YOU 7
  ╭────────────────────────────────╮
- │ ? pick-colour               ✎1 │
+ │ ? pick-colour            ⊘3 ✎1 │
  │   Which colour?                │
  ╰────────────────────────────────╯
 •● api-call
@@ -38,8 +38,9 @@
 4:1-103 OrcaTermBorder
 5:1-4 OrcaTermBorder
 5:5-6 OrcaTermStateWaiting
-5:33-37 OrcaTermBadge
-5:38-41 OrcaTermBorder
+5:30-34 OrcaTermDenied
+5:35-39 OrcaTermBadge
+5:40-43 OrcaTermBorder
 6:1-4 OrcaTermBorder
 6:7-20 OrcaTermStateWaiting
 6:36-39 OrcaTermBorder

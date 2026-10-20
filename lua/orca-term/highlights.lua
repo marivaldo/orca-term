@@ -1,5 +1,5 @@
--- orca-term's highlight groups: every colour the sidebar, the status strip and the notes in a
--- review use.
+-- orca-term's highlight groups: every colour the sidebar, its detail float, the status strip and
+-- the notes in a review use.
 --
 -- Each group links to a standard group of the colorscheme (`Title`, `Comment`, `Diagnostic*`), so
 -- the sidebar reads well in any theme, except the unseen worktree's name, which is only bold. Every
@@ -43,6 +43,9 @@ local LINKS = {
   OrcaTermUnseen = 'DiagnosticWarn',
   -- The icons at the right of a worktree's name line, such as its pending notes `✎N`.
   OrcaTermBadge = 'DiagnosticHint',
+  -- The tool calls the agent's permission rules refused: their count `⊘N` at the right of a
+  -- worktree's name line, and the `⊘` before each one in the detail float.
+  OrcaTermDenied = 'DiagnosticWarn',
   -- The notes drawn in a review: their signs, their text and their count in the file panel.
   OrcaTermNote = 'DiagnosticInfo',
 }

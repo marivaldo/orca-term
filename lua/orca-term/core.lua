@@ -4,10 +4,10 @@
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
--- start`, the marks `worktree seen` and `unseen`, `worktree review` and the note commands (`note
--- add`, `ls`, `edit`, `rm`, `send`) are not waited for, and hand their result to a callback in
--- Neovim's main loop. `nvim register` tells the core where this
--- Neovim listens, so it says when a worktree changes; `nvim unregister` runs as Neovim exits and is
+-- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail` and the note
+-- commands (`note add`, `ls`, `edit`, `rm`, `send`) are not waited for, and hand their result to a
+-- callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
+-- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly.
 -- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
 -- made current, for the person to use, until it detaches or the agent ends. The client never works
@@ -49,6 +49,9 @@
 ---(`CONTEXT.md`, **Unseen**)
 ---@field unseen boolean
 ---@field notes integer how many notes wait to be sent to its agent
+---How many tool calls its agent's permission rules refused in its latest turn (`CONTEXT.md`,
+---**Denial**)
+---@field denials integer
 
 ---The fleet, as `worktree ls --json` prints it.
 ---@class orca_term.Fleet
@@ -395,6 +398,45 @@ end
 ---@param on_done fun(review: orca_term.Review?, err: orca_term.Error?)
 function M.worktree_review(target, cwd, on_done)
   run_async({ 'worktree', 'review', target }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---A tool call the agent's permission rules refused, as `worktree detail --json` prints it.
+---@class orca_term.Denial
+---@field tool string the tool, such as `Write` or `Bash`
+---@field text string the call as the activity shows it, such as `Bash: FOO=bar ls`
+
+---A worktree's setup, as `worktree detail --json` prints it.
+---@class orca_term.SetupDetail
+---@field status string `running`, `interrupted`, `succeeded` or `failed`
+---@field log string the setup log's path
+---@field tail string[] the log's last lines, terminal control sequences taken out
+
+---How far a worktree's branch is from the local default branch (`CONTEXT.md`, **Drift**).
+---@class orca_term.Drift
+---@field against string the local default branch, such as `main`
+---@field ahead integer the commits on the worktree's side only
+---@field behind integer the commits on the default branch's side only
+
+---What `worktree detail --json` prints: the worktree and everything about it the sidebar has no
+---room for.
+---@class orca_term.Detail
+---@field contract integer
+---@field version string
+---@field worktree orca_term.Worktree
+---@field detail? string why it is in its state, whole (a failed setup, a broken worktree, a failed
+---turn's error); `nil` when there is nothing to say
+---@field denials orca_term.Denial[] the latest turn's denials, in order
+---@field setup? orca_term.SetupDetail `nil` when the worktree has no setup
+---@field drift? orca_term.Drift `nil` when there is no local default branch
+
+---The detail of the worktree `target` (its name or its path), without waiting:
+---`orca-term worktree detail <target> --json`. Drift is computed on request against the local
+---default branch, never fetched. The primary checkout and an unknown worktree are refused.
+---@param target string
+---@param cwd string
+---@param on_done fun(detail: orca_term.Detail?, err: orca_term.Error?)
+function M.worktree_detail(target, cwd, on_done)
+  run_async({ 'worktree', 'detail', target }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a

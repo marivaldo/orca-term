@@ -15,17 +15,23 @@ Early. The route was charted as a [wayfinder](https://aihero.dev/skills-wayfinde
 repo's issues (the issue labelled `wayfinder:map`) and synthesised into a spec. It is now being
 built in small slices, each a GitHub issue under that spec.
 
-Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the current repository,
-and `orca-term agent start|attach|stop <worktree>` run claude in one of them, inside claude's own
-sandbox, held by a detached process that any terminal can attach to. `orca-term note
+Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the current repository
+(`worktree detail <worktree>` tells all about one), and `orca-term agent start|attach|stop
+<worktree>` run claude in one of them, inside claude's own sandbox, held by a detached process that
+any terminal can attach to. `orca-term note
 add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
 agent as one prompt, in Orca's format.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
 its setup again, copies its path or removes it (always asking first), `u` toggles its unseen
-mark `•`, which a worktree gets when its agent's turn ends, and `d` opens its review. A row
-shows `✎N` when the worktree has notes waiting to be sent.
+mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
+its detail in a float beside the sidebar: its state and agent, its branch and how far it is ahead
+of and behind the local default branch (`↑2 ↓1 main`, never fetched), the whole error when it has
+one, the tool calls claude's permission rules denied in its latest turn, and the end of its setup's
+log. The float closes when the cursor moves, on `K` again, or on `q` once you enter it. At the
+right of a row, `⊘N` counts the tool calls denied in the worktree's latest turn and `✎N` its notes
+waiting to be sent.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
 opens the review of the worktree whose tab you are in and `:OrcaTerm notes` lists its notes; bind
 keys to `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,

@@ -67,6 +67,35 @@ pub(crate) fn is_valid_branch_name(dir: &Path, name: &str) -> Result<bool> {
 /// The repository's default branch: `origin/HEAD` when set, else a local `main`, else a local
 /// `master`.
 pub(crate) fn default_branch(primary: &PrimaryCheckout) -> Result<Branch> {
+    match find_default_branch(primary)? {
+        Some(branch) => Ok(branch),
+        None => bail!(
+            "could not find the default branch: origin/HEAD is not set and there is no local \
+             `main` or `master`"
+        ),
+    }
+}
+
+/// The repository's default branch when it exists as a local branch (`refs/heads/<default>`),
+/// never `origin/`; `None` otherwise.
+pub(crate) fn local_default_branch(primary: &PrimaryCheckout) -> Result<Option<Branch>> {
+    let Some(default) = find_default_branch(primary)? else {
+        return Ok(None);
+    };
+    let local = has_ref(&primary.path, &format!("refs/heads/{default}"))?;
+    Ok(local.then_some(default))
+}
+
+/// The commits only on each side between the local branch `branch` and the `HEAD` of the
+/// worktree at `worktree`, as `git rev-list --left-right --count refs/heads/<branch>...HEAD`
+/// prints them: the branch's count, a tab, `HEAD`'s count.
+pub(crate) fn left_right_counts(worktree: &Path, branch: &Branch) -> Result<String> {
+    let range = format!("refs/heads/{branch}...HEAD");
+    text(worktree, &["rev-list", "--left-right", "--count", &range])
+}
+
+/// The default branch as [`default_branch`] finds it, `None` when there is none.
+fn find_default_branch(primary: &PrimaryCheckout) -> Result<Option<Branch>> {
     let origin_head = probe(
         &primary.path,
         &[
@@ -81,18 +110,15 @@ pub(crate) fn default_branch(primary: &PrimaryCheckout) -> Result<Branch> {
         if let Some(branch) = head.trim().strip_prefix("origin/")
             && !branch.is_empty()
         {
-            return Ok(Branch::new(branch));
+            return Ok(Some(Branch::new(branch)));
         }
     }
     for candidate in ["main", "master"] {
         if has_ref(&primary.path, &format!("refs/heads/{candidate}"))? {
-            return Ok(Branch::new(candidate));
+            return Ok(Some(Branch::new(candidate)));
         }
     }
-    bail!(
-        "could not find the default branch: origin/HEAD is not set and there is no local `main` \
-         or `master`"
-    )
+    Ok(None)
 }
 
 /// The commit-ish a worktree branches from: the repository's default branch, preferring the local

@@ -43,6 +43,7 @@ describe('core', function()
         holder = false,
         unseen = false,
         notes = 0,
+        denials = 0,
       },
     }, fleet.worktrees)
   end)

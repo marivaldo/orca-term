@@ -625,6 +625,7 @@ mod tests {
                 started_at: 1,
                 phase,
                 activity: "Bash: npm test".to_owned(),
+                denials: Vec::new(),
             }),
             ..Status::default()
         }
@@ -642,6 +643,8 @@ mod tests {
                 detail: detail.map(str::to_owned),
                 error: None,
                 ended_at: 2,
+                denials: Vec::new(),
+                message: None,
             }),
             ..Status::default()
         }

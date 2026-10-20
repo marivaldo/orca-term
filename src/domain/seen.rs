@@ -177,6 +177,7 @@ mod tests {
             started_at: 1,
             phase: Phase::Working,
             activity: "fix it".to_owned(),
+            denials: Vec::new(),
         }
     }
 
@@ -190,6 +191,8 @@ mod tests {
             detail: None,
             error: None,
             ended_at: 2,
+            denials: Vec::new(),
+            message: None,
         }
     }
 

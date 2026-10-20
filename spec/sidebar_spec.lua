@@ -257,6 +257,7 @@ describe('the sidebar', function()
       OrcaTermStateNotReady = 'DiagnosticWarn',
       OrcaTermHeader = 'Title',
       OrcaTermBorder = 'FloatBorder',
+      OrcaTermDenied = 'DiagnosticWarn',
     }
     for group, link in pairs(links) do
       assert.are.equal(link, vim.api.nvim_get_hl(0, { name = group }).link, group)
@@ -278,6 +279,6 @@ describe('the sidebar', function()
       table.insert(keys, keymap.lhs)
     end
     table.sort(keys)
-    assert.are.same({ '.', '<CR>', 'a', 'd', 'j', 'k', 'u' }, keys)
+    assert.are.same({ '.', '<CR>', 'K', 'a', 'd', 'j', 'k', 'u' }, keys)
   end)
 end)

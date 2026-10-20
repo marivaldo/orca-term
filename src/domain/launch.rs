@@ -614,6 +614,7 @@ mod tests {
         let events: Vec<&str> = hooks.keys().map(String::as_str).collect();
         let mut expected = vec![
             "PermissionRequest",
+            "PostToolBatch",
             "PostToolUse",
             "PostToolUseFailure",
             "PreToolUse",

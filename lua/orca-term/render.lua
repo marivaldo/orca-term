@@ -3,20 +3,21 @@
 -- Pure: it takes the fleet (or an error) and returns lines, highlight spans and which worktree
 -- each line belongs to. It never touches a buffer or a window; `sidebar.lua` paints the result.
 -- It also counts the fleet for the status strip (`M.strip`, `M.counts`), which `strip.lua` and the
--- lualine component draw.
+-- lualine component draw, and lays out a worktree's detail (`M.detail`), which `detail.lua` shows in
+-- a float.
 -- The only Neovim calls measure text in screen cells (`vim.fn.strdisplaywidth`,
 -- `vim.fn.strcharpart`, `vim.fn.strchars`) or are pure helpers (`vim.fs.basename`,
--- `vim.list_extend`, `vim.tbl_map`).
+-- `vim.list_extend`, `vim.tbl_map`, `vim.split`).
 --
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
--- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, and `✎N`
--- counts a worktree's pending notes:
+-- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `⊘N` counts
+-- the tool calls a worktree's latest turn had denied, and `✎N` its pending notes:
 --
 --   ▾ repo  main
 --
 --   NEEDS YOU 7
 --   ╭────────────────────────────────╮
---   │ ? pick-colour               ✎1 │
+--   │ ? pick-colour            ⊘3 ✎1 │
 --   │   Which colour?                │
 --   ╰────────────────────────────────╯
 --  •● api-call
@@ -77,6 +78,10 @@ M.UNSEEN = '•'
 ---The mark of notes: before a worktree's count of pending notes at the right of its name line, and
 ---before each note `notes.lua` draws in a review.
 M.NOTE = '✎'
+
+---The mark of denials: before a worktree's count of denied tool calls at the right of its name
+---line, and before each denied call in its detail.
+M.DENIED = '⊘'
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
 ---shows it. `sidebar.lua` turns them while a worktree is working.
@@ -273,12 +278,15 @@ local function second_line_text(worktree)
   return text
 end
 
----The icons at the right of a worktree's name line, from left to right: `✎N` for its pending
----notes. Empty when it has nothing to show.
+---The icons at the right of a worktree's name line, from left to right: `⊘N` for the tool calls
+---its latest turn had denied, then `✎N` for its pending notes. Empty when it has nothing to show.
 ---@param worktree orca_term.Worktree
 ---@return { text: string, group: string }[]
 local function icons(worktree)
   local found = {}
+  if (worktree.denials or 0) > 0 then
+    table.insert(found, { text = M.DENIED .. worktree.denials, group = 'OrcaTermDenied' })
+  end
   if (worktree.notes or 0) > 0 then
     table.insert(found, { text = M.NOTE .. worktree.notes, group = 'OrcaTermBadge' })
   end
@@ -478,6 +486,152 @@ function M.fleet(fleet, selected, width, frame)
     end
   end
   return finish(built, order, selected)
+end
+
+---The smallest width `M.detail` lays out to: narrower, a wrapped line would hold almost nothing.
+local DETAIL_SMALLEST = 12
+
+---`text` broken at its own line breaks, then each line wrapped to `width` cells; blank lines are
+---left out.
+---@param text string
+---@param width integer
+---@return string[]
+local function wrap_lines(text, width)
+  local lines = {}
+  for _, line in ipairs(vim.split(text, '\n', { plain = true })) do
+    vim.list_extend(lines, wrap(line, width))
+  end
+  return lines
+end
+
+---Where a worktree's branch stands against the local default branch: `↑2 ↓1 main` (commits
+---ahead, commits behind, each only when there are some), or `up to date with main`.
+---@param drift orca_term.Drift
+---@return string
+local function drift_text(drift)
+  if drift.ahead == 0 and drift.behind == 0 then
+    return 'up to date with ' .. drift.against
+  end
+  local parts = {}
+  if drift.ahead > 0 then
+    table.insert(parts, '↑' .. drift.ahead)
+  end
+  if drift.behind > 0 then
+    table.insert(parts, '↓' .. drift.behind)
+  end
+  table.insert(parts, drift.against)
+  return table.concat(parts, ' ')
+end
+
+---A worktree's detail, as the float `detail.lua` opens from the sidebar shows it, laid out to
+---`width` cells: one cell of margin on each side, and parts apart by a blank line, each only when
+---it has something to say. Nothing is ever cut: the error, the denials and the setup's log wrap.
+---
+---   ● failed · claude-code
+---   fix  ↑2 ↓1 main
+---
+---   API Error: 400 the whole message, however long, wrapped to the width
+---
+---   Denied
+---   ⊘ Write: /path/to/a.txt
+---
+---   Setup (failed)
+---   npm ERR! missing script: build
+---@param detail orca_term.Detail
+---@param width integer
+---@return orca_term.Rendered
+function M.detail(detail, width)
+  width = math.max(width, DETAIL_SMALLEST)
+  -- Rows end one cell before `width`, as in the sidebar, after one cell on the left.
+  local text_width = width - 2
+  local worktree = detail.worktree
+  local state_group = highlights.state_group(worktree.state)
+  local built = {}
+
+  ---Adds a line of `text` in `group`, after the left margin and `indent`.
+  ---@param text string
+  ---@param group? string
+  ---@param indent? string
+  local function add_line(text, group, indent)
+    local line = new_line(width - 1)
+    add(line, ' ' .. (indent or ''))
+    add(line, text, group)
+    table.insert(built, line)
+  end
+
+  -- The state and the agent, then the branch and its drift.
+  local state_line = new_line(width - 1)
+  add(state_line, ' ')
+  add(state_line, M.glyph(worktree.state), state_group)
+  add(state_line, ' ')
+  add(state_line, (worktree.state:gsub('_', ' ')), state_group)
+  if worktree.agent then
+    add(state_line, ' · ' .. worktree.agent, 'OrcaTermMuted')
+  end
+  table.insert(built, state_line)
+
+  local branch = worktree.branch or 'detached'
+  local branch_line = new_line(width - 1)
+  add(branch_line, ' ')
+  add(branch_line, branch)
+  if detail.drift then
+    local drift = drift_text(detail.drift)
+    if cells(branch) + 2 + cells(drift) > text_width then
+      -- No room after the branch: the drift goes on a line of its own.
+      table.insert(built, branch_line)
+      branch_line = new_line(width - 1)
+      add(branch_line, ' ')
+    else
+      add(branch_line, '  ')
+    end
+    add(branch_line, drift, 'OrcaTermMuted')
+  end
+  table.insert(built, branch_line)
+
+  -- Why the worktree is in its state, whole, in the state's colour.
+  local why = detail.detail and wrap_lines(detail.detail, text_width) or {}
+  if #why > 0 then
+    table.insert(built, new_line(width - 1))
+    for _, text in ipairs(why) do
+      add_line(text, state_group)
+    end
+  end
+
+  -- The latest turn's denials, one per call, wrapped under their text.
+  local denials = detail.denials or {}
+  if #denials > 0 then
+    table.insert(built, new_line(width - 1))
+    add_line('Denied', 'OrcaTermMuted')
+    local mark = M.DENIED .. ' '
+    for _, denial in ipairs(denials) do
+      for index, text in ipairs(wrap(denial.text, text_width - cells(mark))) do
+        local line = new_line(width - 1)
+        add(line, ' ')
+        if index == 1 then
+          add(line, M.DENIED, 'OrcaTermDenied')
+          add(line, ' ')
+        else
+          add(line, string.rep(' ', cells(mark)))
+        end
+        add(line, text)
+        table.insert(built, line)
+      end
+    end
+  end
+
+  -- The setup: how it went, then the end of its log.
+  local setup = detail.setup
+  if setup then
+    table.insert(built, new_line(width - 1))
+    add_line('Setup (' .. setup.status .. ')', 'OrcaTermMuted')
+    for _, entry in ipairs(setup.tail or {}) do
+      for _, text in ipairs(wrap(entry, text_width)) do
+        add_line(text, 'OrcaTermMuted')
+      end
+    end
+  end
+
+  return finish(built, {}, nil)
 end
 
 ---The states in the order the status strip counts them: the attention order of the sidebar

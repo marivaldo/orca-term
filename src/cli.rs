@@ -17,8 +17,8 @@ use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     agent_attach, agent_holder, agent_start, agent_stop, hook, note_add, note_edit, note_ls,
-    note_rm, note_send, nvim_register, nvim_unregister, worktree_ls, worktree_new, worktree_prune,
-    worktree_review, worktree_rm, worktree_seen, worktree_setup,
+    note_rm, note_send, nvim_register, nvim_unregister, worktree_detail, worktree_ls, worktree_new,
+    worktree_prune, worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -149,6 +149,16 @@ enum WorktreeCommand {
     /// Print the commit a worktree's review compares against (where it forked from the default
     /// branch) and mark the worktree seen.
     Review {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print everything about a worktree: why it is in its state, whole; the tool calls its agent
+    /// was denied in its latest turn; the end of its setup log; how far it is ahead of or behind
+    /// the local default branch. Only reads, and fetches nothing.
+    Detail {
         /// The worktree's name, or its path when several worktrees share the name.
         worktree: Target,
         /// Print JSON carrying the contract integer instead of text.
@@ -288,7 +298,8 @@ impl Cli {
                 | WorktreeCommand::Rm { json, .. }
                 | WorktreeCommand::Seen { json, .. }
                 | WorktreeCommand::Unseen { json, .. }
-                | WorktreeCommand::Review { json, .. } => *json,
+                | WorktreeCommand::Review { json, .. }
+                | WorktreeCommand::Detail { json, .. } => *json,
                 WorktreeCommand::Prune => false,
             },
             Command::Agent { command } => match command {
@@ -403,6 +414,10 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
         }
         WorktreeCommand::Review { worktree, .. } => {
             output::worktree_reviewed(&worktree_review::run(worktree)?, format)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        WorktreeCommand::Detail { worktree, .. } => {
+            output::worktree_detail(&worktree_detail::run(worktree)?, format)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Ls { json: true } => {

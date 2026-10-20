@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped};
+use crate::domain::detail::{Detail, Drift, SetupDetail, SetupProgress};
 use crate::domain::error;
 use crate::domain::fleet::{Fleet, Worktree};
 use crate::domain::include;
@@ -102,13 +103,18 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         })
         .collect();
     let mut lines: Vec<Vec<String>> = [header].into_iter().chain(rows).map(Vec::from).collect();
-    // The agent, notes and detail columns appear only when some worktree has something in them.
+    // The agent, notes, denials and detail columns appear only when some worktree has something in
+    // them.
     for (title, cells) in [
         (
             "AGENT",
             fleet.worktrees.iter().map(agent_cell).collect::<Vec<_>>(),
         ),
         ("NOTES", fleet.worktrees.iter().map(notes_cell).collect()),
+        (
+            "DENIALS",
+            fleet.worktrees.iter().map(denials_cell).collect(),
+        ),
         (
             "DETAIL",
             fleet
@@ -155,6 +161,16 @@ fn notes_cell(worktree: &Worktree) -> String {
         String::new()
     } else {
         worktree.notes.to_string()
+    }
+}
+
+/// How many tool calls the worktree's latest turn had denied, as the table shows it: the count, or
+/// nothing.
+fn denials_cell(worktree: &Worktree) -> String {
+    if worktree.denials == 0 {
+        String::new()
+    } else {
+        worktree.denials.to_string()
     }
 }
 
@@ -401,6 +417,80 @@ fn render_worktree_marked(marked: &Marked) -> String {
     format!("{}: {mark}", marked.name)
 }
 
+/// Prints what `worktree detail` found, as a block of lines: the worktree and its state, then
+/// the whole detail indented, the denials of the latest turn, the setup with the end of its log,
+/// and the drift, each part only when it has something to say:
+///
+/// ```text
+/// fix: failed
+///   API Error: 400 ...
+/// denied 1 tool call in the latest turn:
+///   Bash: FOO=bar ls
+/// setup succeeded (log /r/.git/worktrees/fix/orca-term/setup.log):
+///   done
+/// 2 ahead of main, 1 behind
+/// ```
+pub(crate) fn worktree_detail(detail: &Detail, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_worktree_detail(detail)),
+        Format::Json => out(&json::detail(detail)?),
+    }
+    Ok(())
+}
+
+fn render_worktree_detail(detail: &Detail) -> String {
+    let mut text = format!(
+        "{}: {}\n",
+        detail.worktree.name,
+        state_cell(&detail.worktree)
+    );
+    for line in detail.why.iter().flat_map(|whole| whole.lines()) {
+        let _ = writeln!(text, "  {line}");
+    }
+    if !detail.denials.is_empty() {
+        let count = detail.denials.len();
+        let calls = if count == 1 { "call" } else { "calls" };
+        let _ = writeln!(text, "denied {count} tool {calls} in the latest turn:");
+        for denial in &detail.denials {
+            let _ = writeln!(text, "  {}", denial.text);
+        }
+    }
+    if let Some(setup) = &detail.setup {
+        text.push_str(&render_setup_detail(setup));
+    }
+    text.push_str(&render_drift(detail.drift.as_ref()));
+    text
+}
+
+/// The setup's line, `setup failed (exit 1) (log <path>):`, and the end of its log, indented.
+fn render_setup_detail(setup: &SetupDetail) -> String {
+    let progress = match setup.progress {
+        SetupProgress::Running => "setup running".to_owned(),
+        SetupProgress::Interrupted => "setup interrupted".to_owned(),
+        SetupProgress::Succeeded => "setup succeeded".to_owned(),
+        SetupProgress::Failed(exit) => exit.to_string(),
+    };
+    let mut text = format!("{progress} (log {})", setup.log.display());
+    text.push_str(if setup.tail.is_empty() { "\n" } else { ":\n" });
+    for line in &setup.tail {
+        let _ = writeln!(text, "  {line}");
+    }
+    text
+}
+
+/// The drift's line: `2 ahead of main, 1 behind`, or why there is none.
+fn render_drift(drift: Option<&Drift>) -> String {
+    match drift {
+        Some(drift) => format!(
+            "{} ahead of {}, {} behind",
+            drift.ahead, drift.against, drift.behind
+        ),
+        None => {
+            "no drift to show: no local default branch, or a history unrelated to it".to_owned()
+        }
+    }
+}
+
 /// Prints what `worktree review` found: one line naming the default branch and the base's short
 /// id, `fix: review against main (1a2b3c4)`.
 pub(crate) fn worktree_reviewed(reviewed: &Reviewed, format: Format) -> anyhow::Result<()> {
@@ -591,6 +681,7 @@ mod tests {
     use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason, State};
+    use crate::domain::turn::Denial;
     use crate::domain::worktree::KeptReason;
 
     fn no_setup() -> SetupReport {
@@ -603,6 +694,7 @@ mod tests {
             agent: None,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 
@@ -617,6 +709,7 @@ mod tests {
             holder: HolderStatus::Gone,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 
@@ -637,6 +730,7 @@ mod tests {
             agent: None,
             unseen: false,
             notes: 0,
+            denials: 0,
         }
     }
 
@@ -702,6 +796,20 @@ mod tests {
             "NAME  BRANCH  STATE     PATH  NOTES\n\
              a     a       no agent  /l/a  2\n\
              b     b       no agent  /l/b"
+        );
+    }
+
+    #[test]
+    fn the_denials_column_counts_the_latest_turns_denials_when_a_worktree_has_some() {
+        let mut denied = worktree("a", State::NoAgent);
+        denied.denials = 3;
+        let mut noted = worktree("b", State::NoAgent);
+        noted.notes = 1;
+        assert_eq!(
+            render_fleet_table(&fleet(vec![denied, noted])),
+            "NAME  BRANCH  STATE     PATH  NOTES  DENIALS\n\
+             a     a       no agent  /l/a         3\n\
+             b     b       no agent  /l/b  1"
         );
     }
 
@@ -831,6 +939,55 @@ mod tests {
         assert_eq!(
             render_worktree_reviewed(&reviewed(StartPoint::Remote(Branch::new("trunk")))),
             "demo: review against origin/trunk (1a2b3c4)"
+        );
+    }
+
+    #[test]
+    fn the_detail_is_a_block_of_the_parts_with_something_to_say() {
+        let full = Detail {
+            worktree: Worktree {
+                unseen: true,
+                ..worktree("fix", State::Failed)
+            },
+            why: Some("API Error: 400\n{\"x\":1}".to_owned()),
+            denials: vec![Denial {
+                tool: "Bash".to_owned(),
+                text: "Bash: FOO=bar ls".to_owned(),
+                id: None,
+            }],
+            setup: Some(SetupDetail {
+                progress: SetupProgress::Failed(Exit::Code(2)),
+                log: PathBuf::from("/a/setup.log"),
+                tail: vec!["installing".to_owned(), "error: boom".to_owned()],
+            }),
+            drift: Some(Drift {
+                against: Branch::new("main"),
+                ahead: 2,
+                behind: 1,
+            }),
+        };
+        assert_eq!(
+            render_worktree_detail(&full),
+            "fix: failed (unseen)\n  API Error: 400\n  {\"x\":1}\n\
+             denied 1 tool call in the latest turn:\n  Bash: FOO=bar ls\n\
+             setup failed (exit 2) (log /a/setup.log):\n  installing\n  error: boom\n\
+             2 ahead of main, 1 behind"
+        );
+        let bare = Detail {
+            worktree: worktree("docs", State::NoAgent),
+            why: None,
+            denials: Vec::new(),
+            setup: Some(SetupDetail {
+                progress: SetupProgress::Succeeded,
+                log: PathBuf::from("/a/setup.log"),
+                tail: Vec::new(),
+            }),
+            drift: None,
+        };
+        assert_eq!(
+            render_worktree_detail(&bare),
+            "docs: no agent\nsetup succeeded (log /a/setup.log)\n\
+             no drift to show: no local default branch, or a history unrelated to it"
         );
     }
 
