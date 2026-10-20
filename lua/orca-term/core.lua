@@ -4,9 +4,9 @@
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
--- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail` and the note
--- commands (`note add`, `ls`, `edit`, `rm`, `send`) are not waited for, and hand their result to a
--- callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
+-- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
+-- commands (`note add`, `ls`, `edit`, `rm`, `send`) and `turn ls` are not waited for, and hand their
+-- result to a callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
 -- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
@@ -596,6 +596,42 @@ function M.note_send(target, ids, cwd, on_done)
     table.insert(args, tostring(id))
   end
   run_async(args, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---One turn of a worktree's agent, as `turn ls --json` prints it (`CONTEXT.md`, **Turn**). A turn
+---from before orca-term took snapshots has `nil` for what it lacks.
+---@class orca_term.Turn
+---@field number integer the turn's number in its worktree, from 1
+---@field agent? string the agent that ran it, such as `claude`
+---@field session? string
+---@field prompt string the prompt's first line
+---@field started_at? integer when it started, in milliseconds since the epoch
+---@field ended_at? integer when it ended; `nil` while it is open
+---@field outcome? string `finished`, `failed` or `interrupted` once it ended; `nil` while open
+---@field phase? string `working` or `waiting` while it is open, else `nil`
+---Whether the agent reported its end (`false` for an interrupted turn, whose diff may include
+---edits made after the interruption); `nil` while open and for a turn from before the snapshots
+---@field end_observed? boolean
+---@field begin? string the snapshot it began on, a full commit id
+---@field ["end"]? string the snapshot it ended on, a full commit id; `nil` while it is open
+---@field denials integer how many tool calls its agent was denied during it
+
+---What `turn ls --json` prints: the worktree and its turns, oldest first, the open one last.
+---@class orca_term.TurnList
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field turns orca_term.Turn[]
+
+---The turns of the worktree `target` (its name or its path), without waiting:
+---`orca-term turn ls <target> --json`, from its turn log. It only reads. A worktree whose
+---directory is gone is refused.
+---@param target string
+---@param cwd string
+---@param on_done fun(listed: orca_term.TurnList?, err: orca_term.Error?)
+function M.turn_ls(target, cwd, on_done)
+  run_async({ 'turn', 'ls', target }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---What `nvim register --json` and `nvim unregister --json` print: only the contract and the core's

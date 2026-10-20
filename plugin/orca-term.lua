@@ -25,6 +25,9 @@ local subcommands = {
   notes = function()
     require('orca-term.actions').notes_current()
   end,
+  turns = function()
+    require('orca-term.actions').turns_current()
+  end,
   worktree = function(args)
     local n = tonumber(args[1])
     if not n or n < 1 or n ~= math.floor(n) then
@@ -87,6 +90,15 @@ end, { desc = "orca-term: open the review of the current tab's worktree in diffv
 vim.keymap.set('n', '<Plug>(OrcaTermNotes)', function()
   require('orca-term.actions').notes_current()
 end, { desc = "orca-term: list the current tab's worktree's pending notes, to send them" })
+
+vim.keymap.set(
+  'n',
+  '<Plug>(OrcaTermTurns)',
+  function()
+    require('orca-term.actions').turns_current()
+  end,
+  { desc = "orca-term: pick one of the current tab's worktree's turns and review it in diffview" }
+)
 
 for n = 1, 9 do
   vim.keymap.set('n', ('<Plug>(OrcaTermWorktree%d)'):format(n), function()

@@ -2,7 +2,8 @@
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
 -- again, copy its path, remove it), toggle its unseen mark (`u`), open its review (`d`, `:OrcaTerm
 -- review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its number (`:OrcaTerm
--- worktree N`), and the list of the current tab's notes (`:OrcaTerm notes`, through `notes.lua`).
+-- worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through `notes.lua`), and
+-- the list of its turns, to review one (`:OrcaTerm turns`).
 --
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
 -- moves between tabs through `tabs.lua`, shows agents through `terminal.lua` and reviews through
@@ -475,9 +476,10 @@ function M.review(path, primary)
   end)
 end
 
----The current tab's worktree: the worktree whose tab is current, or the worktree a review tab
----reviews, with the fleet read to find it (waiting for it). `nil` after telling the person why: the
----fleet cannot be read, or `needs` (what is said anywhere else) when the tab is neither.
+---The current tab's worktree: the worktree whose tab is current, or the worktree a review tab or a
+---turn review reviews, with the fleet read to find it (waiting for it). `nil` after telling the
+---person why: the fleet cannot be read, or `needs` (what is said anywhere else) when the tab is
+---neither.
 ---@param needs string
 ---@return string? path
 ---@return orca_term.Fleet? fleet
@@ -487,7 +489,7 @@ local function current_worktree(needs)
     fail(err)
     return nil
   end
-  local path = review.current()
+  local path = review.reviewed()
   for _, worktree in ipairs(fleet.worktrees) do
     if not path and tabs.is_current(worktree.path) then
       path = worktree.path
@@ -518,6 +520,115 @@ function M.notes_current()
   local path = current_worktree("the notes need a worktree's tab or its review; go to one first")
   if path then
     require('orca-term.notes').list(path)
+  end
+end
+
+---How many cells of a turn's prompt the list of turns shows.
+M.PROMPT_CELLS = 60
+
+---`text` on one line, cut to `width` cells with `…`.
+---@param text string
+---@param width integer
+---@return string
+local function cut(text, width)
+  local flat = text:gsub('%c', ' ')
+  if vim.fn.strdisplaywidth(flat) <= width then
+    return flat
+  end
+  return vim.fn.strcharpart(flat, 0, width - 1) .. '…'
+end
+
+---A turn as the list of turns shows it: its number, how it ended (or, while open, what its agent is
+---doing; `-` for a turn whose end was never logged, as `turn ls` shows it), then its prompt, cut.
+---@param turn orca_term.Turn
+---@return string
+function M.turn_item(turn)
+  local outcome = turn.outcome or turn.phase or '-'
+  return ('%d  %s  %s'):format(turn.number, outcome, cut(turn.prompt, M.PROMPT_CELLS))
+end
+
+---Why `turn` cannot be reviewed, or `nil` when it can: a turn review needs both its snapshots,
+---which an open turn and one from before orca-term took snapshots lack.
+---@param turn orca_term.Turn
+---@return string?
+function M.unreviewable(turn)
+  if not turn.outcome then
+    return ('turn %d has not ended yet'):format(turn.number)
+  elseif not (turn.begin and turn['end']) then
+    return ('turn %d has no snapshots'):format(turn.number)
+  end
+  return nil
+end
+
+---Opens the turn review of `turn` of the worktree at `path`, from the worktree's tab (made when
+---missing), and says which turn it shows; for an interrupted turn, that its end was not observed.
+---A turn that cannot be reviewed only says why.
+---@param path string
+---@param name string the worktree's name
+---@param turn orca_term.Turn
+local function review_turn(path, name, turn)
+  local why = M.unreviewable(turn)
+  if why then
+    warn(why)
+    return
+  end
+  tabs.go_to(path)
+  local err = review.open_turn(path, turn)
+  if err then
+    fail(err)
+  elseif turn.end_observed == false then
+    warn(
+      (
+        'turn %d of %s: its end was not observed (it was interrupted), so this diff may include '
+        .. 'edits made after the interruption'
+      ):format(turn.number, name)
+    )
+  else
+    info(('turn %d of %s'):format(turn.number, name))
+  end
+end
+
+---Lists the turns of the worktree at `path` through the core (`turn ls`, without waiting), newest
+---first, and lets the person pick one to review in diffview (`review_turn`). Without diffview.nvim
+---it only says it is needed, and runs nothing. A worktree with no turns says so.
+---@param path string
+function M.turns(path)
+  if not review.available() then
+    fail({
+      kind = 'no_diffview',
+      message = 'orca-term: the review needs diffview.nvim (' .. review.DIFFVIEW_URL .. ')',
+    })
+    return
+  end
+  core.turn_ls(path, path, function(listed, err)
+    if not listed then
+      fail(err)
+      return
+    end
+    if #listed.turns == 0 then
+      info('no turns in worktree ' .. listed.name)
+      return
+    end
+    local newest_first = {}
+    for index = #listed.turns, 1, -1 do
+      table.insert(newest_first, listed.turns[index])
+    end
+    local options = { prompt = 'Turns of ' .. listed.name, format_item = M.turn_item }
+    vim.ui.select(newest_first, options, function(turn)
+      if turn then
+        review_turn(listed.path, listed.name, turn)
+      end
+    end)
+  end)
+end
+
+---`:OrcaTerm turns`: lists the turns of the current tab's worktree, the worktree whose tab is
+---current, or the worktree a review tab or a turn review reviews, to review one. Anywhere else it
+---says what it needs.
+function M.turns_current()
+  local path = current_worktree("the turns need a worktree's tab or its review; go to one first")
+  if path then
+    M.turns(path)
   end
 end
 
