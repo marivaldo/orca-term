@@ -399,6 +399,58 @@ pub(crate) fn refs_under(dir: &Path, prefix: &str) -> Result<Vec<String>> {
     Ok(names.lines().map(str::to_owned).collect())
 }
 
+/// Whether the commit `id` exists in the repository of `dir` (`git rev-parse --verify
+/// <id>^{commit}`).
+pub(crate) fn commit_exists(dir: &Path, id: &str) -> Result<bool> {
+    Ok(read_ref(dir, &format!("{id}^{{commit}}"))?.is_some())
+}
+
+/// Whether the commit `commit` holds the file `file` (relative to the root, `/`-separated):
+/// `git cat-file -e <commit>:<file>`.
+pub(crate) fn has_file(dir: &Path, commit: &str, file: &str) -> Result<bool> {
+    Ok(probe(dir, &["cat-file", "-e", &format!("{commit}:{file}")])?.is_some())
+}
+
+/// The patch from the commit `begin` to the commit `end`, as `git diff <begin> <end>` prints it,
+/// with no colour, external diff or text conversion a config may set. Writes nothing.
+pub(crate) fn patch(dir: &Path, begin: &str, end: &str) -> Result<Vec<u8>> {
+    output(
+        dir,
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            begin,
+            end,
+            "--",
+        ],
+    )
+}
+
+/// Which commit of the history of `tip` each line of the file on disk `contents` (absolute) came
+/// from, the file being `file` (relative to the root) in that history: `git blame --porcelain
+/// --contents <contents> <tip> -- <file>`, with no revisions ignored whatever the config says. A
+/// line in no commit gets the all-zero id. Writes nothing.
+pub(crate) fn blame_porcelain(
+    dir: &Path,
+    tip: &str,
+    contents: &Path,
+    file: &str,
+) -> Result<String> {
+    let args = [
+        OsStr::new("blame"),
+        OsStr::new("--porcelain"),
+        OsStr::new("--ignore-revs-file="),
+        OsStr::new("--contents"),
+        contents.as_os_str(),
+        OsStr::new(tip),
+        OsStr::new("--"),
+        OsStr::new(file),
+    ];
+    Ok(String::from_utf8_lossy(&output(dir, &args)?).into_owned())
+}
+
 fn has_ref(dir: &Path, full_ref: &str) -> Result<bool> {
     Ok(probe(dir, &["show-ref", "--verify", "--quiet", full_ref])?.is_some())
 }

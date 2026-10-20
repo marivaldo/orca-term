@@ -379,17 +379,41 @@ pub(crate) fn last_turn_number(tail: &[u8]) -> Result<Option<u64>> {
         let Ok(record) = serde_json::from_slice::<SeenRecord>(line) else {
             continue;
         };
-        if let Some(schema) = record.schema
-            && schema > TURNS_SCHEMA
-        {
-            bail!(
-                "turns.jsonl has schema {schema}, newer than the schema {TURNS_SCHEMA} this \
-                 orca-term supports"
-            );
-        }
+        check_record_schema(record.schema)?;
         return Ok(Some(record.turn));
     }
     Ok(None)
+}
+
+/// Every line of the turn log `log`, whole, in the order written. A line that does not read as a
+/// record (one cut short by a crash, or blank) is skipped. Refuses a record whose schema is newer
+/// than this core supports, since it could mean anything.
+pub(crate) fn read_log(log: &[u8]) -> Result<Vec<TurnRecord>> {
+    let mut records = Vec::new();
+    for line in log.split(|&byte| byte == b'\n') {
+        let Ok(record) = serde_json::from_slice::<TurnRecord>(line) else {
+            if let Ok(seen) = serde_json::from_slice::<SeenRecord>(line) {
+                check_record_schema(seen.schema)?;
+            }
+            continue;
+        };
+        check_record_schema(Some(record.schema))?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+/// Refuses a turn log record of a schema newer than this core supports.
+fn check_record_schema(schema: Option<u64>) -> Result<()> {
+    if let Some(schema) = schema
+        && schema > TURNS_SCHEMA
+    {
+        bail!(
+            "turns.jsonl has schema {schema}, newer than the schema {TURNS_SCHEMA} this \
+             orca-term supports"
+        );
+    }
+    Ok(())
 }
 
 /// The number the next turn gets: one more than the highest the log or the status knows.
@@ -732,6 +756,21 @@ mod tests {
         };
         let bytes = status_bytes(&status).unwrap();
         assert_eq!(read_status(Some(&bytes)).usable(), Some(status));
+    }
+
+    #[test]
+    fn the_whole_log_reads_every_record_skipping_a_cut_line_and_refusing_a_newer_schema() {
+        let start = TurnRecord::start(&open(1)).to_line().unwrap();
+        let end = TurnRecord::end(&closed(1)).to_line().unwrap();
+        let log = [start, b"{\"schema\":1,\"kind\":\"st\n".to_vec(), end].concat();
+        let records = read_log(&log).unwrap();
+        assert_eq!(
+            records.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            [RecordKind::Start, RecordKind::End]
+        );
+        assert_eq!(read_log(b"").unwrap(), []);
+        let newer = br#"{"schema":2,"kind":"start","turn":2,"at":1}"#;
+        assert!(read_log(newer).is_err());
     }
 
     #[test]
