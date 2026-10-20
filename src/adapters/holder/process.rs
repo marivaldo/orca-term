@@ -36,7 +36,7 @@ use pty_process::blocking::Pty;
 use rustix::process::{Pid, Signal};
 
 use crate::adapters::fs::{self, FileLock};
-use crate::adapters::holder::{HolderArgs, error_line, ready_line};
+use crate::adapters::holder::{HolderArgs, error_line, peer, ready_line};
 use crate::domain::agent::{HolderRecord, Size};
 use crate::domain::protocol::{self, Decoder, Frame, SCROLLBACK_CAP, Scrollback};
 use crate::domain::state::{AGENT_SOCKET_FILE, AdminDir};
@@ -288,16 +288,26 @@ fn start_reader(holder: &Arc<Holder>) {
     });
 }
 
-/// Starts the acceptor: one client thread per connection.
+/// Starts the acceptor: one client thread per connection. A client the holder does not serve
+/// (on Linux, one from another network namespace: see `holder::peer`) is closed at once, before
+/// any replay is written to it and before any of its input is read.
 fn start_acceptor(holder: &Arc<Holder>, listener: UnixListener) {
     let holder = Arc::clone(holder);
     thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(connection) = connection else { continue };
             let holder = Arc::clone(&holder);
-            thread::spawn(move || serve_client(&holder, connection));
+            thread::spawn(move || serve_if_admitted(&holder, connection));
         }
     });
+}
+
+/// Serves the client at `connection` if the holder admits it; otherwise drops the connection,
+/// which closes it, having written nothing to it and read nothing from it.
+fn serve_if_admitted(holder: &Arc<Holder>, connection: UnixStream) {
+    if peer::admitted(&connection) {
+        serve_client(holder, connection);
+    }
 }
 
 /// One client, from its connection to its end: registers it, starts its writer, then reads its

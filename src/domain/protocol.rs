@@ -1,5 +1,5 @@
 //! Domain: what travels between a holder and its clients over `agent.sock`, and the scrollback a
-//! holder keeps for replay (ADR 0009).
+//! holder keeps for replay (ADR 0009), and which clients a holder serves (#61).
 //!
 //! One frame is a tag byte, a 4-byte big-endian payload length and the payload, in both
 //! directions. A client sends input (`i`), its terminal size (`r`) and a stop (`s`); the holder
@@ -135,6 +135,52 @@ pub(crate) fn exit_text(code: Option<i32>, signal: Option<i32>) -> String {
         (Some(code), _) => format!("exit {code}"),
         (None, Some(signal)) => format!("signal {signal}"),
         (None, None) => "ended".to_owned(),
+    }
+}
+
+/// A network namespace, as the kernel names it in `/proc/<pid>/ns/net`: `net:[<number>]`. Two
+/// processes share their network namespace exactly when their numbers are equal. On Linux the
+/// holder compares its own with each client's: commands in an agent's sandbox run in a namespace
+/// of their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux reads its clients' namespaces"
+    )
+)]
+pub(crate) struct NsId(u64);
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux reads its clients' namespaces"
+    )
+)]
+impl NsId {
+    /// The namespace a `/proc/<pid>/ns/net` link names, or `None` when `link` is not of the form
+    /// `net:[<number>]`.
+    pub(crate) fn parse(link: &str) -> Option<Self> {
+        let number = link.strip_prefix("net:[")?.strip_suffix(']')?;
+        number.parse().ok().map(Self)
+    }
+}
+
+/// Whether the holder serves a client: only when both its own network namespace and the client's
+/// could be read, and they are the same one. A client whose namespace cannot be read is refused.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux checks its clients' namespaces"
+    )
+)]
+pub(crate) fn admit(own: Option<NsId>, peer: Option<NsId>) -> bool {
+    match (own, peer) {
+        (Some(own), Some(peer)) => own == peer,
+        _ => false,
     }
 }
 
@@ -278,6 +324,32 @@ mod tests {
         assert_eq!(exit_text(Some(7), None), "exit 7");
         assert_eq!(exit_text(None, Some(9)), "signal 9");
         assert_eq!(exit_text(None, None), "ended");
+    }
+
+    #[test]
+    fn a_namespace_is_read_from_its_proc_link() {
+        assert_eq!(NsId::parse("net:[4026531840]"), Some(NsId(4_026_531_840)));
+        assert_eq!(NsId::parse("net:[]"), None);
+        assert_eq!(NsId::parse("net:[12"), None);
+        assert_eq!(NsId::parse("mnt:[4026531840]"), None);
+        assert_eq!(NsId::parse("net:[x]"), None);
+    }
+
+    #[test]
+    fn a_client_is_served_only_from_the_holders_own_network_namespace() {
+        let own = NsId::parse("net:[4026531840]");
+        let sandbox = NsId::parse("net:[4026532999]");
+        assert!(admit(own, own));
+        assert!(!admit(own, sandbox));
+        assert!(
+            !admit(own, None),
+            "a client whose namespace cannot be read is refused"
+        );
+        assert!(
+            !admit(None, own),
+            "a holder that cannot read its own refuses everyone"
+        );
+        assert!(!admit(None, None));
     }
 
     #[test]
