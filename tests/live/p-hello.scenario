@@ -6,8 +6,10 @@ timeout 120
 expect finished
 
 # Let claude draw its screen, then accept the trust dialog it shows for a folder it has not seen
-# before. On claude's own prompt, Enter with nothing typed does nothing.
+# before: claude 2.1.306 lists `No, exit` first and selects it, so down, then Enter, picks `Yes, I
+# trust this folder`. On claude's own prompt, down and Enter with nothing typed do nothing.
 sleep 5
+press down
 press enter
 wait-for SessionStart
 sleep 2

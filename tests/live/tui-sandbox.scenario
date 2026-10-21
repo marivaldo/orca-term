@@ -9,6 +9,7 @@ expect finished
 check-missing {{denied}}/from-bash.txt
 
 sleep 5
+press down
 press enter
 wait-for SessionStart
 sleep 2
