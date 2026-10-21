@@ -8,3 +8,6 @@
 
 # Lua rocks (busted, nlua) and lualine.nvim, installed by `just lua-rocks`
 /.rocks/
+
+# the core binary the build hook installs
+/bin/

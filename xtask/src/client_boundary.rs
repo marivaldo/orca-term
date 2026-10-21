@@ -1,14 +1,17 @@
 //! Client boundary lint: the Neovim client keeps each kind of work in one place
 //! (`ARCHITECTURE.md`, "Neovim client"):
 //!
-//! - only `lua/orca-term/core.lua` starts processes; every other file reaches the core through it;
+//! - only `lua/orca-term/core.lua` and `lua/orca-term/install.lua` start processes: core.lua runs
+//!   the core, install.lua what the build hook needs (curl, tar, cargo); every other file reaches
+//!   the core through core.lua;
 //! - only `lua/orca-term/sidebar.lua`, `lua/orca-term/detail.lua`, `lua/orca-term/tabs.lua`,
 //!   `lua/orca-term/terminal.lua`, `lua/orca-term/review.lua` and `lua/orca-term/notes.lua` touch
 //!   windows, tabs and buffers;
 //! - `lua/orca-term/fleet.lua` and `lua/orca-term/render.lua` are pure: no `vim.api`, no `vim.cmd`.
 //!
 //! The check is textual, like the layers lint: `--` comments are skipped, and each line of each Lua
-//! file under `lua/` and `plugin/` is searched for the calls in the lists below.
+//! file under `lua/` and `plugin/`, and of the build hook `build.lua`, is searched for the calls in
+//! the lists below.
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +20,14 @@ use anyhow::{Context, Result};
 /// The client's directories, relative to the repository root.
 const CLIENT_DIRS: &[&str] = &["lua", "plugin"];
 
-/// The one file allowed to start processes.
-const CORE_MODULE: &str = "lua/orca-term/core.lua";
+/// The client's files outside those directories: the build hook a plugin manager runs.
+const CLIENT_FILES: &[&str] = &["build.lua"];
+
+/// The files allowed to start processes: the link to the core, and the build hook's installer.
+const PROCESS_MODULES: &[&str] = &["lua/orca-term/core.lua", "lua/orca-term/install.lua"];
+
+/// The same files, as the findings name them.
+const PROCESS_MODULES_TEXT: &str = "lua/orca-term/core.lua and lua/orca-term/install.lua";
 
 /// Calls that start a process. `vim.fn.system` also catches `vim.fn.systemlist`, and `uv.spawn`
 /// catches `vim.uv.spawn` and a local alias named `uv`.
@@ -84,6 +93,12 @@ pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
             collect_lua_files(&dir, &mut files)?;
         }
     }
+    for file in CLIENT_FILES {
+        let file = root.join(file);
+        if file.is_file() {
+            files.push(file);
+        }
+    }
     files.sort();
     let mut problems = Vec::new();
     for file in files {
@@ -115,10 +130,10 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     for (n, line) in text.lines().enumerate() {
         let at = format!("{path}:{}", n + 1);
         let code = line.find("--").map_or(line, |at| &line[..at]);
-        if path != CORE_MODULE {
+        if !PROCESS_MODULES.contains(&path) {
             for call in PROCESS_CALLS.iter().filter(|call| calls(code, call)) {
                 problems.push(format!(
-                    "{at}: `{call}` starts a process; only {CORE_MODULE} may start one"
+                    "{at}: `{call}` starts a process; only {PROCESS_MODULES_TEXT} may start one"
                 ));
             }
         }
@@ -193,12 +208,29 @@ mod tests {
     }
 
     #[test]
+    fn the_installer_may_start_processes() {
+        let text = "local r = vim.system({ 'curl', '-fsSL', url })\n";
+        assert!(check_file("lua/orca-term/install.lua", text).is_empty());
+    }
+
+    #[test]
+    fn the_build_hook_is_a_client_file_that_may_not_start_processes() {
+        assert!(CLIENT_FILES.contains(&"build.lua"));
+        assert_eq!(
+            check_file("build.lua", "os.execute('cargo build --release')\n"),
+            [
+                "build.lua:1: `os.execute` starts a process; only lua/orca-term/core.lua and lua/orca-term/install.lua may start one"
+            ]
+        );
+    }
+
+    #[test]
     fn any_other_client_file_is_refused_with_its_line() {
         let text = "local M = {}\n\nvim.fn.jobstart({ 'git', 'status' })\n";
         assert_eq!(
             check_file("lua/orca-term/sidebar.lua", text),
             [
-                "lua/orca-term/sidebar.lua:3: `vim.fn.jobstart` starts a process; only lua/orca-term/core.lua may start one"
+                "lua/orca-term/sidebar.lua:3: `vim.fn.jobstart` starts a process; only lua/orca-term/core.lua and lua/orca-term/install.lua may start one"
             ]
         );
     }

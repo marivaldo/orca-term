@@ -28,6 +28,9 @@ local subcommands = {
   turns = function()
     require('orca-term.actions').turns_current()
   end,
+  ['install-cli'] = function()
+    require('orca-term.install').install_cli()
+  end,
   worktree = function(args)
     local n = tonumber(args[1])
     if not n or n < 1 or n ~= math.floor(n) then
@@ -99,6 +102,10 @@ vim.keymap.set(
   end,
   { desc = "orca-term: pick one of the current tab's worktree's turns and review it in diffview" }
 )
+
+vim.keymap.set('n', '<Plug>(OrcaTermInstallCli)', function()
+  require('orca-term.install').install_cli()
+end, { desc = 'orca-term: link the core binary into $XDG_BIN_HOME or ~/.local/bin, for the shell' })
 
 for n = 1, 9 do
   vim.keymap.set('n', ('<Plug>(OrcaTermWorktree%d)'):format(n), function()

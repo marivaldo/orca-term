@@ -9,10 +9,38 @@ local core = require('orca-term.core')
 describe('core', function()
   after_each(support.cleanup)
 
-  it('finds the binary cargo build made in this repository', function()
-    local release = support.root .. '/target/release/orca-term'
-    local expected = vim.fn.executable(release) == 1 and release or support.binary
+  it('finds the binary installed or built in this repository', function()
+    local expected = support.binary
+    for _, path in ipairs({ '/bin/orca-term', '/target/release/orca-term' }) do
+      if expected == support.binary and vim.fn.executable(support.root .. path) == 1 then
+        expected = support.root .. path
+      end
+    end
     assert.are.equal(expected, core.find_binary())
+  end)
+
+  it('prefers the binary the build hook installed in bin/ over the ones in target/', function()
+    -- A copy of core.lua in a directory of its own, with a binary in bin/ and in target/.
+    local copy = support.temp_dir()
+    vim.fn.mkdir(copy .. '/lua/orca-term', 'p')
+    assert(
+      vim.uv.fs_copyfile(
+        support.root .. '/lua/orca-term/core.lua',
+        copy .. '/lua/orca-term/core.lua'
+      )
+    )
+    local paths = { copy .. '/bin', copy .. '/target/release', copy .. '/target/debug' }
+    for _, dir in ipairs(paths) do
+      vim.fn.mkdir(dir, 'p')
+      support.write_script(dir .. '/orca-term', { 'exit 0' })
+    end
+    local copied_core = dofile(copy .. '/lua/orca-term/core.lua')
+
+    -- Each binary found is removed in turn, to find the next.
+    for _, dir in ipairs(paths) do
+      assert.are.equal(dir .. '/orca-term', copied_core.find_binary())
+      assert(vim.uv.fs_unlink(dir .. '/orca-term'))
+    end
   end)
 
   it('uses the binary set in setup()', function()
@@ -93,9 +121,9 @@ describe('core', function()
     assert(err)
     assert.are.equal('no_binary', err.kind)
     assert.are.equal(
-      'orca-term: no core binary found; run `cargo build` in '
+      'orca-term: no core binary found; run `nvim -l build.lua` in '
         .. copy
-        .. ' or set `binary` in setup()',
+        .. ' to download or build it, or set `binary` in setup()',
       err.message
     )
   end)

@@ -24,13 +24,13 @@ test:
 lua: lua-fmt-check lua-lint lua-types lua-test
 
 lua-fmt:
-    stylua lua plugin spec
+    stylua lua plugin spec build.lua
 
 lua-fmt-check:
-    stylua --check lua plugin spec
+    stylua --check lua plugin spec build.lua
 
 lua-lint:
-    selene lua plugin spec
+    selene lua plugin spec build.lua
 
 # LuaLS's type check, against the Lua API of the nvim on PATH; any warning fails it.
 lua-types:
@@ -119,8 +119,8 @@ vocab:
 layers:
     cargo xtask layers
 
-# The Neovim client: only core.lua starts processes, only sidebar.lua, tabs.lua, terminal.lua and
-# review.lua touch windows, tabs and buffers, fleet.lua and render.lua are pure.
+# The Neovim client: only core.lua and install.lua start processes, only sidebar.lua, tabs.lua,
+# terminal.lua and review.lua touch windows, tabs and buffers, fleet.lua and render.lua are pure.
 client-boundary:
     cargo xtask client-boundary
 

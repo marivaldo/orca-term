@@ -751,6 +751,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
 - Clippy `print_stdout` and `print_stderr` keep printing in `output`.
 - The compiler keeps writes to a worktree's state under its lock: `ops::write_state` and
   `ops::write_agent` take a `&WorktreeLock`, which only taking the lock can make.
+- The release workflow (`.github/workflows/release.yml`) builds the core for the four targets of
+  ADR 0008, packs each with `.github/scripts/package-release.sh` and checks every asset with
+  `.github/scripts/verify-release.sh` before its `publish` job, the only one that may write,
+  creates the release; pull requests touching the build run it as a dry run.
 
 ## Tests
 
@@ -798,7 +802,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `spec/detail_spec.lua` opens the detail float with `K` on
   worktrees whose denials are replayed from a recording, whose setup failed and whose branch
   drifted, and fires `CursorMoved` itself, since headless Neovim runs no main loop between a spec's
-  calls. See "Neovim client" below.
+  calls. `spec/install_spec.lua` runs the build hook against a fake release packed by the release
+  workflow's own script and served through a `file://` base URL, with a fake `cargo` first on
+  PATH, checks the workflow's verification script on tampered, missing and extra assets, and links
+  `install-cli` into temporary directories only. See "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -809,15 +816,31 @@ Neovim 0.11 or later. The client is thin: it runs the core's commands with `--js
 what they print.
 
 - `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
-  `review`, `notes`, `turns`, `worktree N`), with completion of the subcommands, and the
-  `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
-  `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)` and `<Plug>(OrcaTermWorktree1)` to
-  `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
+  `review`, `notes`, `turns`, `install-cli`, `worktree N`), with completion of the subcommands,
+  and the `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
+  `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`, `<Plug>(OrcaTermInstallCli)` and
+  `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
+- `build.lua`: the build hook, at the root where lazy.nvim finds it and runs it by itself (other
+  managers run `nvim -l build.lua`). It loads `install.lua` by its path, since the plugin is not on
+  the runtimepath yet, runs `install.build`, yielding to lazy.nvim's coroutine while it waits, and
+  fails only when no binary could be had.
+- `lua/orca-term/install.lua`: `build(opts)` finds the plugin's exact tag
+  (`git describe --tags --exact-match`) and this machine's release target from
+  `vim.uv.os_uname()` (`target`), downloads `<base_url>/<tag>/orca-term-<tag>-<target>.tar.gz`
+  and its `.sha256` with curl (`base_url` is `RELEASES_URL`, GitHub's, unless a spec points it at
+  a `file://` directory), checks the sha256 (Neovim's `sha256()` on the bytes, or `sha256sum` or
+  `shasum -a 256` on Neovim 0.11, whose `sha256()` refuses a NUL byte), unpacks only the binary
+  with tar and moves it to `<root>/bin/orca-term`. Without a tag, a target, the download or a
+  matching sha256, it says which, removes an earlier `bin/orca-term` and runs
+  `cargo build --release`; it returns `installed`, `built` or `failed`. `install_cli(dir)`
+  (`:OrcaTerm install-cli`) symlinks the binary `find_binary` returns, symlinks resolved, as
+  `<dir>/orca-term` (`dir` is `$XDG_BIN_HOME`, else `~/.local/bin`, when `nil`), creating `dir`; it
+  replaces a symlink, refuses anything else there, and warns when `dir` is not on PATH.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
-  `target/release/orca-term` or `target/debug/orca-term` in the repository the client is loaded
-  from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
+  `bin/orca-term` (the build hook's), `target/release/orca-term` or `target/debug/orca-term` in the
+  repository the client is loaded from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
   and refuses a document whose `contract` differs from the client's own `CONTRACT`.
   `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` (with
   `--approve-setup` when asked to approve) and `worktree_rm`
@@ -1087,9 +1110,10 @@ what they print.
 
 Its rules:
 
-- **Only `core.lua` talks to the core.** It is the only Lua file that starts a process; every
-  other module calls it. `cargo xtask client-boundary` refuses a process started anywhere else in
-  `lua/` or `plugin/`.
+- **Only `core.lua` talks to the core.** It is the only Lua file that starts a process, but for
+  `install.lua`, which runs the build hook's git, curl, tar, sha256 tool and cargo, never the core;
+  every other module calls `core.lua`. `cargo xtask client-boundary` refuses a process started
+  anywhere else in `lua/`, `plugin/` or `build.lua`.
 - **Only `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua`
   touch windows, tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
   functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
