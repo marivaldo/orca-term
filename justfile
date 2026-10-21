@@ -104,9 +104,9 @@ deny:
 # and the agent guard.
 meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard (commit-lint range) guard-test
 
-# Spelling over the given files, or the whole tree.
+# Spelling over the given files, or the whole tree; files the config excludes stay excluded when named.
 typos *files:
-    typos {{ files }}
+    typos --force-exclude {{ files }}
 
 workflows:
     actionlint
