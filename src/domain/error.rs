@@ -103,6 +103,9 @@ pub(crate) enum GoneReason {
     NoTranscript,
     /// The id is not one an agent makes, so it is never put on the agent's command line.
     InvalidId,
+    /// opencode's own list of its sessions (`opencode session list`) does not hold it: deleted
+    /// in opencode since (#41).
+    NotListed,
 }
 
 /// Why a worktree is busy.
@@ -118,6 +121,9 @@ pub(crate) enum BusyReason {
     AnotherAgent { running: Agent, wanted: Agent },
     /// Its agent is in a turn, working or waiting for the person, so it is not swapped under it.
     InTurn,
+    /// Its agent is in a turn, working or waiting for the person, so its session is not changed
+    /// under it (`session resume`, `session new`, #41).
+    SessionInTurn,
 }
 
 fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
@@ -141,6 +147,11 @@ fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
              you; swap agents once the turn ends, or stop it first with `orca-term agent stop \
              {name}`"
         ),
+        BusyReason::SessionInTurn => format!(
+            "worktree {name} at {path} is busy: its agent is in a turn, working or waiting for \
+             you; change its session once the turn ends, or stop it first with `orca-term agent \
+             stop {name}`"
+        ),
     }
 }
 
@@ -151,6 +162,9 @@ fn session_gone_message(name: &str, session: &str, reason: &GoneReason) -> Strin
         GoneReason::TranscriptGone(path) => format!("its transcript {} is gone", path.display()),
         GoneReason::NoTranscript => "no transcript of it is recorded".to_owned(),
         GoneReason::InvalidId => "its id is not one an agent makes".to_owned(),
+        GoneReason::NotListed => {
+            "opencode no longer lists it in `opencode session list`".to_owned()
+        }
     };
     let session: String = session
         .chars()
@@ -314,6 +328,19 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_in_a_turn_is_busy_for_a_session_change() {
+        let err = anyhow::Error::new(busy(BusyReason::SessionInTurn));
+        assert_eq!(kind(&err), "busy");
+        assert_eq!(exit_code(&err), 3);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix at /w/repo/fix is busy: its agent is in a turn, working or waiting for \
+             you; change its session once the turn ends, or stop it first with `orca-term agent \
+             stop fix`"
+        );
+    }
+
+    #[test]
     fn a_worktree_with_changes_has_its_own_kind_and_exit_code() {
         let err = anyhow::Error::new(TypedError::Dirty {
             name: "wip".to_owned(),
@@ -354,6 +381,11 @@ mod tests {
         );
         let err = gone(GoneReason::NoTranscript).to_string();
         assert!(err.contains(": no transcript of it is recorded; "), "{err}");
+        let err = gone(GoneReason::NotListed).to_string();
+        assert!(
+            err.contains(": opencode no longer lists it in `opencode session list`; "),
+            "{err}"
+        );
     }
 
     #[test]

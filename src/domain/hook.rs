@@ -448,7 +448,9 @@ impl Step<'_> {
             begin: None,
         };
         self.next_number += 1;
-        self.records.push(TurnRecord::start(&turn));
+        // The status's transcript is the current session's, the one the turn belongs to.
+        let start = TurnRecord::start(&turn).with_transcript(self.status.transcript.clone());
+        self.records.push(start);
         self.status.turn = Some(turn);
     }
 
@@ -1043,6 +1045,17 @@ mod tests {
             Some(PathBuf::from("/t/s1.jsonl")),
             "a payload of the same session without a path keeps it"
         );
+    }
+
+    #[test]
+    fn a_turns_start_line_records_its_sessions_transcript() {
+        let (_, log) = replay(&[
+            with_transcript(session_start("s1", "startup"), "s1", "/t/s1.jsonl"),
+            submit("p1", "go"),
+        ]);
+        assert_eq!(log[0].transcript, Some(PathBuf::from("/t/s1.jsonl")));
+        let (_, log) = replay(&[submit("p1", "go")]);
+        assert_eq!(log[0].transcript, None, "no transcript named yet");
     }
 
     #[test]

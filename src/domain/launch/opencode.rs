@@ -110,6 +110,24 @@ pub(crate) fn temp_dirs(env: &DirsEnv) -> Vec<PathBuf> {
     dirs
 }
 
+/// The arguments that ask opencode for its sessions without spending anything (#41): `session list`
+/// reads its own database, as JSON, with no plugin loaded (`--pure`). Measured with opencode
+/// 1.18.0: a JSON array of `{"id", "title", "updated", "created", "projectId", "directory"}`, one per
+/// session of the project the directory it runs in belongs to.
+pub(crate) const SESSION_LIST_ARGS: &[&str] = &["session", "list", "--format", "json", "--pure"];
+
+/// Whether `listed`, what `opencode session list --format json` printed, holds the session `id`.
+/// `None` when it is not such a list: then nobody can tell, and opencode says it itself when it
+/// cannot open the session.
+pub(crate) fn lists_session(listed: &[u8], id: &str) -> Option<bool> {
+    let sessions: Vec<serde_json::Value> = serde_json::from_slice(listed).ok()?;
+    Some(
+        sessions
+            .iter()
+            .any(|session| session.get("id").and_then(serde_json::Value::as_str) == Some(id)),
+    )
+}
+
 /// `value` as a path when it is set to an absolute one.
 fn absolute(value: Option<&str>) -> Option<&Path> {
     value.map(Path::new).filter(|path| path.is_absolute())
@@ -140,6 +158,16 @@ mod tests {
         let session = SessionId::parse("ses_2Ab9").unwrap();
         let argv = opencode_argv(wrapper, program, Some(&session));
         assert_eq!(argv[3..], ["/opt/bin/opencode", "-s", "ses_2Ab9"]);
+    }
+
+    #[test]
+    fn a_session_is_known_only_when_opencodes_own_list_holds_it() {
+        let listed = br#"[{"id":"ses_1","title":"fix","updated":2,"created":1},{"id":"ses_2"}]"#;
+        assert_eq!(lists_session(listed, "ses_2"), Some(true));
+        assert_eq!(lists_session(listed, "ses_9"), Some(false));
+        assert_eq!(lists_session(b"[]", "ses_1"), Some(false));
+        assert_eq!(lists_session(b"fake opencode ready", "ses_1"), None);
+        assert_eq!(lists_session(b"", "ses_1"), None, "nobody can tell");
     }
 
     #[test]

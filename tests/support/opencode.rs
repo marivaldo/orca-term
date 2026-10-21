@@ -15,13 +15,20 @@ use serde_json::Value;
 use crate::fixture::{AgentRepo, Attach};
 use crate::support::Repo;
 
-/// The fake `opencode`: answers `--version`, records its arguments, directory, environment
-/// variable names (never values) and the value of `OPENCODE_CONFIG_DIR` (ours), runs a test's
-/// prelude, says it is ready, then writes the events it is told to send, echoes anything else,
-/// exits on `exit <code>`, and ends on `SIGHUP`. Bash builtins and absolute paths only.
+/// The fake `opencode`: answers `--version`, answers `session list` with `<log>.sessions` as the
+/// test wrote it (nothing when it did not, which is no list) and its arguments in
+/// `<log>.session-list`, records its arguments, directory, environment variable names (never
+/// values) and the value of `OPENCODE_CONFIG_DIR` (ours), runs a test's prelude, says it is ready,
+/// then writes the events it is told to send, echoes anything else, exits on `exit <code>`, and
+/// ends on `SIGHUP`. Bash builtins and absolute paths only.
 const FAKE_OPENCODE: &str = r#"#!/bin/bash
 if [ "$1" = "--version" ]; then echo "VERSION"; exit 0; fi
 log="$ORCA_TERM_FAKE_OPENCODE_LOG"
+if [ "$1" = "session" ]; then
+  printf '%s\0' "$@" > "$log.session-list"
+  if [ -f "$log.sessions" ]; then printf '%s\n' "$(< "$log.sessions")"; fi
+  exit 0
+fi
 printf '%s\0' "$@" > "$log.argv"
 pwd > "$log.cwd"
 compgen -e > "$log.env"
@@ -118,6 +125,19 @@ impl OpenCodeRepo {
     /// The arguments the fake opencode was last started with, after its own name.
     pub(crate) fn argv(&self) -> Vec<String> {
         split_nul(&fs::read(self.log.with_extension("argv")).unwrap())
+    }
+
+    /// Makes the fake opencode's `session list` print `listed`.
+    pub(crate) fn list_sessions(&self, listed: &Value) {
+        fs::write(self.log.with_extension("sessions"), listed.to_string()).unwrap();
+    }
+
+    /// The arguments the fake opencode's `session list` was last run with, `None` when it never
+    /// was.
+    pub(crate) fn session_list_argv(&self) -> Option<Vec<String>> {
+        fs::read(self.log.with_extension("session-list"))
+            .ok()
+            .map(|raw| split_nul(&raw))
     }
 
     /// The arguments the fake sandbox tool was last given.

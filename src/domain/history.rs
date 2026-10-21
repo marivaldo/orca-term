@@ -34,6 +34,9 @@ pub(crate) struct LoggedTurn {
     pub(crate) end: Option<String>,
     /// How many tool calls its agent was denied during it.
     pub(crate) denials: usize,
+    /// The transcript claude kept its session in, from its start line; `None` for opencode's
+    /// turns and a turn logged before it was recorded (#41).
+    pub(crate) transcript: Option<PathBuf>,
 }
 
 /// Where a turn is.
@@ -98,6 +101,7 @@ fn empty(number: u64) -> LoggedTurn {
         begin: None,
         end: None,
         denials: 0,
+        transcript: None,
     }
 }
 
@@ -107,6 +111,7 @@ fn apply_start(turn: &mut LoggedTurn, record: &TurnRecord) {
     turn.session.clone_from(&record.session);
     turn.prompt = record.prompt.clone().unwrap_or_default();
     turn.started_at = Some(record.at);
+    turn.transcript.clone_from(&record.transcript);
     if turn.begin.is_none() {
         turn.begin.clone_from(&record.begin);
     }

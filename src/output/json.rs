@@ -20,6 +20,7 @@ use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, U
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
+use crate::domain::session::{Discarded, Resumed, Session, SessionList};
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::state::State;
 use crate::domain::trust::Subject;
@@ -132,6 +133,48 @@ struct SwappedView<'a> {
     started: StartedView<'a>,
     previous: Option<&'static str>,
     stopped: bool,
+}
+
+/// `session ls --json` (#41): the worktree as `worktree ls` shows it, and its sessions, the most
+/// recently active first.
+#[derive(Debug, Serialize)]
+struct SessionsView<'a> {
+    worktree: WorktreeView<'a>,
+    sessions: Vec<SessionView<'a>>,
+}
+
+/// One session: `id`, the agent's own; `agent`, `claude-code` or `opencode`; `first_prompt`, the
+/// first line of its first turn's prompt (null before its first turn); `turns`, how many it holds;
+/// `last_activity`, in milliseconds since the Unix epoch (its latest turn's start or end, else
+/// when the hooks of the current session last reported; null when unknown); `current`, whether it
+/// is the worktree's current session.
+#[derive(Debug, Serialize)]
+struct SessionView<'a> {
+    id: &'a str,
+    agent: &'a str,
+    first_prompt: Option<&'a str>,
+    turns: usize,
+    last_activity: Option<u64>,
+    current: bool,
+}
+
+/// `session resume --json` (#41): `agent swap`'s document for the session's agent, and `session`,
+/// the id now current.
+#[derive(Debug, Serialize)]
+struct ResumedView<'a> {
+    #[serde(flatten)]
+    swapped: SwappedView<'a>,
+    session: &'a str,
+}
+
+/// `session new --json` (#41): the worktree as `worktree ls` now shows it; `discarded`, the session
+/// that was current (null when there was none); `started`, `agent start`'s document for the agent
+/// restarted on a new session when it was running, else null.
+#[derive(Debug, Serialize)]
+struct DiscardedView<'a> {
+    worktree: WorktreeView<'a>,
+    discarded: Option<&'a str>,
+    started: Option<StartedView<'a>>,
 }
 
 /// `status` is `started` or `already_running`; `pid` is the holder's, when known.
@@ -489,10 +532,54 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
 
 /// What `agent swap` did, as one JSON document.
 pub(crate) fn swapped(swapped: &Swapped) -> serde_json::Result<String> {
-    document(SwappedView {
+    document(swapped_view(swapped))
+}
+
+fn swapped_view(swapped: &Swapped) -> SwappedView<'_> {
+    SwappedView {
         started: started_view(&swapped.started),
         previous: swapped.previous.map(Agent::name),
         stopped: swapped.stopped,
+    }
+}
+
+/// A worktree's sessions, as one JSON document.
+pub(crate) fn sessions(list: &SessionList) -> serde_json::Result<String> {
+    document(SessionsView {
+        worktree: worktree_view(&list.worktree),
+        sessions: list.sessions.iter().map(session_view).collect(),
+    })
+}
+
+fn session_view(session: &Session) -> SessionView<'_> {
+    SessionView {
+        id: &session.id,
+        // An agent this core does not know keeps the name its hooks gave it.
+        agent: match session.agent() {
+            Some(agent) => agent.name(),
+            None => &session.agent,
+        },
+        first_prompt: session.first_prompt.as_deref(),
+        turns: session.turns,
+        last_activity: session.last_activity,
+        current: session.current,
+    }
+}
+
+/// What `session resume` did, as one JSON document.
+pub(crate) fn resumed(resumed: &Resumed) -> serde_json::Result<String> {
+    document(ResumedView {
+        swapped: swapped_view(&resumed.swapped),
+        session: &resumed.session,
+    })
+}
+
+/// What `session new` did, as one JSON document.
+pub(crate) fn discarded(discarded: &Discarded) -> serde_json::Result<String> {
+    document(DiscardedView {
+        worktree: worktree_view(&discarded.worktree),
+        discarded: discarded.session.as_deref(),
+        started: discarded.started.as_ref().map(started_view),
     })
 }
 
@@ -1023,6 +1110,95 @@ mod tests {
                 r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"previous":"claude-code","stopped":true}}"#
             )
         );
+    }
+
+    #[test]
+    fn the_sessions_document_lists_each_session_with_its_agents_name() {
+        let session = |id: &str, agent: &str, current| Session {
+            id: id.to_owned(),
+            agent: agent.to_owned(),
+            first_prompt: None,
+            turns: 0,
+            last_activity: None,
+            current,
+            transcript: Some(PathBuf::from("/t/never-shown.jsonl")),
+        };
+        let mut first = session("s-1", "claude", false);
+        first.first_prompt = Some("fix the login".to_owned());
+        first.turns = 2;
+        first.last_activity = Some(40);
+        let doc = sessions(&SessionList {
+            worktree: idle_worktree(),
+            sessions: vec![
+                first,
+                session("ses_1", "opencode", true),
+                session("a-1", "aider", false),
+            ],
+            now: 99,
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}},"sessions":[{{"id":"s-1","agent":"claude-code","first_prompt":"fix the login","turns":2,"last_activity":40,"current":false}},{{"id":"ses_1","agent":"opencode","first_prompt":null,"turns":0,"last_activity":null,"current":true}},{{"id":"a-1","agent":"aider","first_prompt":null,"turns":0,"last_activity":null,"current":false}}]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn the_resume_document_is_the_swap_document_with_the_session() {
+        let started = Started {
+            worktree: idle_worktree(),
+            agent: Agent::ClaudeCode,
+            outcome: StartOutcome::Started {
+                pid: 4244,
+                resumed: SessionId::parse("s-1"),
+            },
+            writable: None,
+        };
+        let doc: serde_json::Value = serde_json::from_str(
+            &resumed(&Resumed {
+                session: "s-1".to_owned(),
+                swapped: Swapped {
+                    previous: Some(Agent::OpenCode),
+                    stopped: true,
+                    started: started.clone(),
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["session"], "s-1");
+        assert_eq!(doc["resumed"], "s-1");
+        assert_eq!(doc["agent"], "claude-code");
+        assert_eq!(doc["previous"], "opencode");
+        assert_eq!(doc["stopped"], true);
+        assert_eq!(doc["holder"]["status"], "started");
+
+        let doc: serde_json::Value = serde_json::from_str(
+            &discarded(&Discarded {
+                worktree: idle_worktree(),
+                session: Some("s-1".to_owned()),
+                started: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["discarded"], "s-1");
+        assert_eq!(doc["started"], serde_json::Value::Null);
+        assert_eq!(doc["worktree"]["name"], "fix");
+        let doc: serde_json::Value = serde_json::from_str(
+            &discarded(&Discarded {
+                worktree: idle_worktree(),
+                session: None,
+                started: Some(started),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["discarded"], serde_json::Value::Null);
+        assert_eq!(doc["started"]["holder"]["pid"], 4244);
+        assert_eq!(doc["contract"], 1);
     }
 
     #[test]

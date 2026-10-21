@@ -217,6 +217,7 @@ mod tests {
             begin: None,
             end: Some(end.to_owned()),
             denials: 0,
+            transcript: None,
         }
     }
 
