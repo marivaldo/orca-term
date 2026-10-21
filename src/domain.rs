@@ -17,6 +17,7 @@ pub(crate) mod note;
 pub(crate) mod nvim;
 pub(crate) mod operation;
 pub(crate) mod porcelain;
+pub(crate) mod pr;
 pub(crate) mod prerequisite;
 pub(crate) mod protocol;
 pub(crate) mod review;

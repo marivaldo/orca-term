@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use crate::domain::agent::HolderStatus;
 use crate::domain::branch::Branch;
 use crate::domain::operation::Operation;
+use crate::domain::pr::PrFacts;
 use crate::domain::state::State;
 
 /// A worktree as git reports it.
@@ -66,6 +67,9 @@ pub(crate) struct Worktree {
     /// The git operation the worktree is in the middle of (a merge, a rebase...), read from
     /// git's markers in its git dir (`domain/operation.rs`). Never a state.
     pub(crate) operation: Option<Operation>,
+    /// What `pr refresh` last found about its pull request (`domain/pr.rs`), or `None` when it
+    /// never ran for the worktree.
+    pub(crate) pr: Option<PrFacts>,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -96,6 +100,7 @@ impl Fleet {
                 notes: 0,
                 denials: 0,
                 operation: None,
+                pr: None,
             })
             .collect();
         Ok(Self {

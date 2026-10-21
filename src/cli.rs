@@ -22,9 +22,9 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
     hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
-    session_ls, session_new, session_resume, turn_blame, turn_diff, turn_ls, worktree_detail,
-    worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm, worktree_seen,
-    worktree_setup,
+    pr_refresh, session_ls, session_new, session_resume, turn_blame, turn_diff, turn_ls,
+    worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm,
+    worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -67,6 +67,11 @@ enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
+    /// Read each worktree's pull request on GitHub, and its checks, through the GitHub CLI (`gh`).
+    Pr {
+        #[command(subcommand)]
+        command: PrCommand,
+    },
     /// Check every program orca-term needs (git, claude's sandbox, the agents) and say how to fix
     /// what is missing; installs nothing. Works outside a repository.
     Doctor {
@@ -90,6 +95,21 @@ enum Command {
     Nvim {
         #[command(subcommand)]
         command: NvimCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PrCommand {
+    /// Ask gh about the pull request of each worktree's branch and its checks, and keep the
+    /// answer for `worktree ls` and `worktree detail`. gh missing or not logged in is kept as
+    /// unavailable, with gh's reason.
+    Refresh {
+        /// The worktrees' names, or their paths when several worktrees share a name (default:
+        /// every worktree).
+        worktrees: Vec<Target>,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -479,7 +499,10 @@ impl Cli {
                 | SessionCommand::Resume { json, .. }
                 | SessionCommand::New { json, .. } => *json,
             },
-            Command::Doctor { json } => *json,
+            Command::Pr {
+                command: PrCommand::Refresh { json, .. },
+            }
+            | Command::Doctor { json } => *json,
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -499,6 +522,7 @@ impl Cli {
             | Command::Note { .. }
             | Command::Turn { .. }
             | Command::Session { .. }
+            | Command::Pr { .. }
             | Command::Nvim { .. } => true,
         }
     }
@@ -518,6 +542,12 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Note { command } => run_note(command, cli.format()),
         Command::Turn { command } => run_turn(command, cli.format()),
         Command::Session { command } => run_session(command, cli.format()),
+        Command::Pr {
+            command: PrCommand::Refresh { worktrees, .. },
+        } => {
+            output::prs_refreshed(&pr_refresh::run(worktrees)?, cli.format())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -944,6 +974,7 @@ mod tests {
             &["orca-term", "agent", "attach", "fix"],
             &["orca-term", "note", "ls", "fix"],
             &["orca-term", "turn", "ls", "fix"],
+            &["orca-term", "pr", "refresh"],
             &["orca-term", "nvim", "unregister", "/tmp/n.sock"],
         ] {
             assert!(runs_git(args), "{args:?}");

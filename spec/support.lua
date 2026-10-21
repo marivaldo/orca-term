@@ -8,6 +8,10 @@
 -- `agent_repo()` mirrors tests/support/agent.rs: a fake `claude` and fake sandbox tools on a PATH
 -- of their own, so the agent specs need no claude, no sandbox and no network. `cleanup()` stops
 -- every agent a spec left running.
+--
+-- Every fixture puts a fake `gh` first on PATH (`FAKE_GH`), so opening the sidebar, which refreshes
+-- the pull requests through the core (#87), never runs the real GitHub CLI: it answers what
+-- `gh_answer()` wrote for a branch, and that the branch has no pull request otherwise.
 
 local M = {}
 
@@ -77,8 +81,30 @@ function M.write_script(path, lines)
   assert(vim.uv.fs_chmod(path, tonumber('755', 8)))
 end
 
+---The fake `gh`, after `#!/bin/sh`: it records its arguments in `$ORCA_TERM_FAKE_GH/calls`, then
+---prints `$ORCA_TERM_FAKE_GH/<branch>.json` for the branch it is asked about (its third argument)
+---and exits 0, or says gh's words for a branch with no pull request and exits 1. Shell builtins
+---only: the agent specs' PATH holds nothing else.
+local FAKE_GH = {
+  'd="$ORCA_TERM_FAKE_GH"',
+  '[ -n "$d" ] && printf \'%s\\n\' "$*" >> "$d/calls"',
+  'if [ -n "$d" ] && [ -f "$d/$3.json" ]; then',
+  '  while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line"; done < "$d/$3.json"',
+  '  exit 0',
+  'fi',
+  'printf \'no pull requests found for branch "%s"\\n\' "$3" >&2',
+  'exit 1',
+}
+
+---Writes the fake `gh` into the directory `dir`.
+---@param dir string
+local function write_fake_gh(dir)
+  M.write_script(dir .. '/gh', FAKE_GH)
+end
+
 ---@class spec.Fixture
 ---@field tmp string the fixture's own directory
+---@field gh string the fake `gh`'s directory of answers and its record of calls
 ---@field home string the core's HOME
 ---@field xdg string the core's XDG_CONFIG_HOME
 
@@ -96,9 +122,15 @@ function M.isolate()
     '[init]',
     '\tdefaultBranch = main',
   }, gitconfig)
-  local fixture = { tmp = tmp, home = tmp .. '/home', xdg = tmp .. '/xdg' }
+  local fixture = { tmp = tmp, home = tmp .. '/home', xdg = tmp .. '/xdg', gh = tmp .. '/gh' }
   vim.fn.mkdir(fixture.home, 'p')
   vim.fn.mkdir(fixture.xdg, 'p')
+  vim.fn.mkdir(fixture.gh, 'p')
+  local gh_bin = tmp .. '/gh-bin'
+  vim.fn.mkdir(gh_bin, 'p')
+  write_fake_gh(gh_bin)
+  M.set_env('PATH', gh_bin .. ':' .. (vim.env.PATH or ''))
+  M.set_env('ORCA_TERM_FAKE_GH', fixture.gh)
   M.set_env('GIT_CONFIG_GLOBAL', gitconfig)
   M.set_env('GIT_CONFIG_NOSYSTEM', '1')
   M.set_env('HOME', fixture.home)
@@ -182,6 +214,7 @@ function M.agent_repo()
   for _, tool in ipairs(M.SANDBOX_TOOLS) do
     M.write_script(repo.bin .. '/' .. tool, { 'exit 0' })
   end
+  write_fake_gh(repo.bin)
   local claude = repo.bin .. '/claude'
   vim.fn.writefile(FAKE_CLAUDE, claude)
   assert(vim.uv.fs_chmod(claude, tonumber('755', 8)))
@@ -211,6 +244,26 @@ end
 ---@return string[]
 function M.claude_input(repo)
   local path = repo.log .. '.input'
+  if vim.fn.filereadable(path) == 0 then
+    return {}
+  end
+  return vim.fn.readfile(path)
+end
+
+---Makes the fake `gh` of `fixture` answer `view` (a table, printed as JSON) for `branch`, as
+---`gh pr view --json number,title,state,isDraft,url,statusCheckRollup` would.
+---@param fixture spec.Fixture
+---@param branch string
+---@param view table
+function M.gh_answer(fixture, branch, view)
+  vim.fn.writefile({ vim.json.encode(view) }, fixture.gh .. '/' .. branch .. '.json')
+end
+
+---The arguments of every run of the fake `gh` of `fixture` so far, one string each.
+---@param fixture spec.Fixture
+---@return string[]
+function M.gh_calls(fixture)
+  local path = fixture.gh .. '/calls'
   if vim.fn.filereadable(path) == 0 then
     return {}
   end

@@ -107,6 +107,7 @@ mod tests {
             notes: 0,
             denials: 0,
             operation: None,
+            pr: None,
         }
     }
 

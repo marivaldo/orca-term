@@ -72,6 +72,10 @@ const HOOK_LOG_FILE: &str = "hook.log";
 /// it; the hooks never do.
 const SEEN_FILE: &str = "seen.json";
 
+/// What `pr refresh` last found about the worktree's pull request (`domain/pr.rs`). Only
+/// `pr refresh` writes it.
+const PR_FILE: &str = "pr.json";
+
 /// The worktree's pending notes (`domain/note.rs`). Only the note commands write it.
 const NOTES_FILE: &str = "notes.json";
 
@@ -171,6 +175,11 @@ impl AdminDir {
     /// What the person has seen, `seen.json`.
     pub(crate) fn seen_file(&self) -> PathBuf {
         self.0.join(SEEN_FILE)
+    }
+
+    /// What `pr refresh` last found, `pr.json`.
+    pub(crate) fn pr_file(&self) -> PathBuf {
+        self.0.join(PR_FILE)
     }
 
     /// The pending notes, `notes.json`.

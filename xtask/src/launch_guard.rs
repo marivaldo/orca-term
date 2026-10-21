@@ -45,7 +45,7 @@ pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
     Ok(problems)
 }
 
-fn collect_files(dir: &Path, extension: &str, files: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn collect_files(dir: &Path, extension: &str, files: &mut Vec<PathBuf>) -> Result<()> {
     let entries = std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
     for entry in entries {
         let path = entry?.path();
@@ -83,7 +83,7 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
 
 /// `line` up to its comment, which starts at the first `marker` outside a quoted string: a Lua
 /// string holding `--auto` is code, not a comment.
-fn without_comment<'a>(line: &'a str, marker: &str) -> &'a str {
+pub(crate) fn without_comment<'a>(line: &'a str, marker: &str) -> &'a str {
     let mut quote: Option<char> = None;
     for (at, c) in line.char_indices() {
         match quote {

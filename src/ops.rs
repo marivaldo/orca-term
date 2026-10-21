@@ -18,6 +18,7 @@ pub(crate) mod note_rm;
 pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
+pub(crate) mod pr_refresh;
 pub(crate) mod session_ls;
 pub(crate) mod session_new;
 pub(crate) mod session_resume;
@@ -51,6 +52,7 @@ use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
 use crate::domain::operation::{self, Operation, RebaseStep};
+use crate::domain::pr::{self, PrFacts, PrRead};
 use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
 use crate::domain::session::{self, Session};
@@ -79,6 +81,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.notes = derived.notes;
         worktree.denials = derived.denials;
         worktree.operation = derived.operation;
+        worktree.pr = derived.pr;
     }
     Ok(fleet)
 }
@@ -101,6 +104,8 @@ pub(crate) struct Derived {
     pub(crate) denials: usize,
     /// The git operation it is in the middle of (`domain/operation.rs`).
     pub(crate) operation: Option<Operation>,
+    /// What `pr refresh` last found about its pull request (`domain/pr.rs`).
+    pub(crate) pr: Option<PrFacts>,
 }
 
 impl Derived {
@@ -114,6 +119,7 @@ impl Derived {
             notes: 0,
             denials: 0,
             operation: None,
+            pr: None,
         }
     }
 }
@@ -135,14 +141,16 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
 }
 
 /// The state of the worktree whose admin directory is `admin`, whether it is unseen, how many
-/// notes are pending on it, how many tool calls its agent was denied in its latest turn and the
-/// git operation it is in the middle of. Only reads.
+/// notes are pending on it, how many tool calls its agent was denied in its latest turn, the git
+/// operation it is in the middle of and what `pr refresh` last found about its pull request. Only
+/// reads.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     let mut derived = derive_agent_state(admin)?;
     derived.unseen = read_unseen(admin, derived.holder);
     derived.notes = read_note_count(admin);
     derived.denials = read_denial_count(admin);
     derived.operation = read_operation(admin);
+    derived.pr = read_pr(admin).usable();
     Ok(derived)
 }
 
@@ -172,6 +180,15 @@ pub(crate) fn read_rebase_step(admin: &AdminDir) -> Option<RebaseStep> {
     };
     let read = |name: &str| fs::read_text_optional(&dir.join(name)).ok().flatten();
     RebaseStep::from_texts(&read(current)?, &read(total)?)
+}
+
+/// What `pr.json` in `admin` holds (`domain/pr.rs`). Only reads, and never fails: a file that
+/// cannot be read is unreadable, which reads as never fetched.
+pub(crate) fn read_pr(admin: &AdminDir) -> PrRead {
+    match fs::read_optional(&admin.pr_file()) {
+        Ok(bytes) => pr::read(bytes.as_deref()),
+        Err(err) => PrRead::Unreadable(format!("{err:#}")),
+    }
 }
 
 /// How many tool calls the agent of the worktree whose admin directory is `admin` was denied in
@@ -221,6 +238,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 notes: 0,
                 denials: 0,
                 operation: None,
+                pr: None,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -253,6 +271,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         notes: 0,
         denials: 0,
         operation: None,
+        pr: None,
     })
 }
 

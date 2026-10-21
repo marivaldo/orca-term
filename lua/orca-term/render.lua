@@ -12,7 +12,8 @@
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
 -- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `≠` a git
 -- operation in progress (a merge here), `⊘N` counts the tool calls a worktree's latest turn had
--- denied, and `✎N` its pending notes:
+-- denied, and `✎N` its pending notes (`PR`, after them, marks a worktree whose branch has a pull
+-- request, coloured by its state and checks):
 --
 --   ▾ repo  main
 --
@@ -87,6 +88,24 @@ M.DENIED = '⊘'
 ---The mark of a git operation in progress (a merge, a rebase, a cherry-pick or a revert) at the
 ---right of a worktree's name line.
 M.OPERATION = '≠'
+---The icon of a worktree's pull request, after its notes at the right of its name line, in the
+---colour `M.pr_group` gives it.
+M.PR = 'PR'
+
+---The group an open pull request is drawn in, by its checks; with no checks it is
+---`OrcaTermPrOpen`.
+local PR_CHECK_GROUPS = {
+  passing = 'OrcaTermPrPassing',
+  failing = 'OrcaTermPrFailing',
+  pending = 'OrcaTermPrPending',
+}
+
+---The group a pull request that is not open is drawn in, by its state.
+local PR_STATE_GROUPS = {
+  merged = 'OrcaTermPrMerged',
+  closed = 'OrcaTermPrClosed',
+  draft = 'OrcaTermPrDraft',
+}
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
 ---shows it. `sidebar.lua` turns them while a worktree is working.
@@ -286,6 +305,57 @@ end
 ---The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
 ---in progress, `⊘N` for the tool calls its latest turn had denied, then `✎N` for its pending
 ---notes. Empty when it has nothing to show.
+---The group the pull request `pr` is drawn in: an open one in the colour of its checks (passing,
+---failing, pending; `OrcaTermPrOpen` with none), a merged one `OrcaTermPrMerged`, a closed one
+---`OrcaTermPrClosed`, a draft `OrcaTermPrDraft`.
+---@param pr orca_term.Pr
+---@return string
+function M.pr_group(pr)
+  if pr.state == 'open' then
+    return PR_CHECK_GROUPS[pr.checks] or 'OrcaTermPrOpen'
+  end
+  return PR_STATE_GROUPS[pr.state] or 'OrcaTermMuted'
+end
+
+---What `pr refresh` found, in words: `PR #12 open, checks passing` (`no checks` when there are
+---none), `No PR`, or `PR unavailable: <why>`.
+---@param pr orca_term.Pr
+---@return string
+function M.pr_text(pr)
+  if pr.number then
+    local checks = (pr.checks and pr.checks ~= 'none') and ('checks ' .. pr.checks) or 'no checks'
+    return ('PR #%d %s, %s'):format(pr.number, pr.state or '?', checks)
+  end
+  if pr.unavailable then
+    return 'PR unavailable: ' .. pr.unavailable
+  end
+  return 'No PR'
+end
+
+---How long ago `then_ms` was at `now_ms` (both in milliseconds since the Unix epoch), in words:
+---`just now` under a minute, then `2 min ago`, `3 h ago`, `4 d ago`.
+---@param then_ms integer
+---@param now_ms integer
+---@return string
+function M.ago(then_ms, now_ms)
+  local seconds = math.max(0, math.floor((now_ms - then_ms) / 1000))
+  if seconds < 60 then
+    return 'just now'
+  end
+  local minutes = math.floor(seconds / 60)
+  if minutes < 60 then
+    return minutes .. ' min ago'
+  end
+  local hours = math.floor(minutes / 60)
+  if hours < 24 then
+    return hours .. ' h ago'
+  end
+  return math.floor(hours / 24) .. ' d ago'
+end
+
+---The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
+---in progress, `⊘N` for the tool calls its latest turn had denied, `✎N` for its pending notes,
+---then `PR` for its pull request. Empty when it has nothing to show.
 ---@param worktree orca_term.Worktree
 ---@return { text: string, group: string }[]
 local function icons(worktree)
@@ -298,6 +368,9 @@ local function icons(worktree)
   end
   if (worktree.notes or 0) > 0 then
     table.insert(found, { text = M.NOTE .. worktree.notes, group = 'OrcaTermBadge' })
+  end
+  if worktree.pr and worktree.pr.number then
+    table.insert(found, { text = M.PR, group = M.pr_group(worktree.pr) })
   end
   return found
 end
@@ -553,6 +626,9 @@ end
 ---
 ---   rebase in progress (2/5)
 ---
+---   PR #12 open, checks passing (2 min ago)
+---   https://github.com/o/r/pull/12
+---
 ---   API Error: 400 the whole message, however long, wrapped to the width
 ---
 ---   Denied
@@ -560,10 +636,16 @@ end
 ---
 ---   Setup (failed)
 ---   npm ERR! missing script: build
+---
+---The pull request's part shows the pull request `pr refresh` last found and how long ago (`now`,
+---in milliseconds since the Unix epoch, the time it is measured from; the clock's when `nil`); a
+---worktree with no pull request, or none known, has none.
 ---@param detail orca_term.Detail
 ---@param width integer
+---@param now? integer
 ---@return orca_term.Rendered
-function M.detail(detail, width)
+function M.detail(detail, width, now)
+  now = now or os.time() * 1000
   width = math.max(width, DETAIL_SMALLEST)
   -- Rows end one cell before `width`, as in the sidebar, after one cell on the left.
   local text_width = width - 2
@@ -615,6 +697,19 @@ function M.detail(detail, width)
   if worktree.operation then
     table.insert(built, new_line(width - 1))
     add_line(M.operation_text(worktree.operation, detail.operation_step), 'OrcaTermOperation')
+  end
+
+  -- The pull request: where it stands and how long ago that was found, then its address.
+  local pr = worktree.pr
+  if pr and pr.number then
+    table.insert(built, new_line(width - 1))
+    local said = M.pr_text(pr) .. ' (' .. M.ago(pr.fetched_at, now) .. ')'
+    for _, text in ipairs(wrap(said, text_width)) do
+      add_line(text, M.pr_group(pr))
+    end
+    for _, text in ipairs(wrap(pr.url or '', text_width)) do
+      add_line(text, 'OrcaTermMuted')
+    end
   end
 
   -- Why the worktree is in its state, whole, in the state's colour.
