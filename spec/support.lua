@@ -83,7 +83,8 @@ end
 ---@field xdg string the core's XDG_CONFIG_HOME
 
 ---A fixture directory with a gitconfig of its own, a HOME and an XDG_CONFIG_HOME, set in the
----environment until `cleanup()`.
+---environment until `cleanup()`. The other XDG base directories are set inside that HOME too: an
+---opencode the core starts makes its own directories under them (#35), never in the developer's.
 ---@return spec.Fixture
 function M.isolate()
   local tmp = M.temp_dir()
@@ -102,6 +103,9 @@ function M.isolate()
   M.set_env('GIT_CONFIG_NOSYSTEM', '1')
   M.set_env('HOME', fixture.home)
   M.set_env('XDG_CONFIG_HOME', fixture.xdg)
+  M.set_env('XDG_DATA_HOME', fixture.home .. '/.local/share')
+  M.set_env('XDG_CACHE_HOME', fixture.home .. '/.cache')
+  M.set_env('XDG_STATE_HOME', fixture.home .. '/.local/state')
   return fixture
 end
 

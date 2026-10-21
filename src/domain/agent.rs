@@ -1,9 +1,10 @@
-//! Domain: the agent a worktree runs, `claude-code` for now, and the facts about the holder that
-//! keeps it running (ADR 0009). The agent is recorded in `worktree.json`; the holder's pid and
+//! Domain: the agent a worktree runs, `claude-code` or `opencode`, and the facts about the holder
+//! that keeps it running (ADR 0009). The agent is recorded in `worktree.json`; the holder's pid and
 //! socket are volatile, written to `agent.json` and trusted only while `agent.lock` is held.
 
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -17,21 +18,55 @@ use crate::domain::state::LockStatus;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Agent {
     ClaudeCode,
+    OpenCode,
 }
 
 impl Agent {
-    /// The agent's name in `worktree.json` and in every report: `claude-code`.
+    /// Every agent, in the order the reports and the client list them.
+    pub(crate) const ALL: [Self; 2] = [Self::ClaudeCode, Self::OpenCode];
+
+    /// The agent's name in `worktree.json` and in every report: `claude-code` or `opencode`.
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::OpenCode => "opencode",
         }
     }
 
-    /// The program the agent is: `claude`, looked up on PATH.
+    /// The program the agent is, looked up on PATH: `claude` or `opencode`. Its hooks name it the
+    /// same way (`hook claude`, `hook opencode`), and so do the turns it opens.
     pub(crate) const fn program(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
+            Self::OpenCode => "opencode",
         }
+    }
+
+    /// The agent `worktree.json` records as `name`, or `None` for a name this core does not know.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|agent| agent.name() == name)
+    }
+
+    /// The agent whose program is `program`, as its hooks name it, or `None`.
+    pub(crate) fn from_program(program: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|agent| agent.program() == program)
+    }
+}
+
+/// What `--agent` and `agent swap` take: an agent's name, `claude-code` or `opencode`.
+impl FromStr for Agent {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::from_name(text).ok_or_else(|| {
+            let names: Vec<&str> = Self::ALL.iter().map(|agent| agent.name()).collect();
+            format!(
+                "unknown agent `{text}`; the agents are {}",
+                names.join(" and ")
+            )
+        })
     }
 }
 
@@ -121,6 +156,13 @@ pub(crate) enum StartMode {
     Fresh,
 }
 
+impl StartMode {
+    /// The mode the `--fresh` flag asks for: `Fresh` when given, else `Resume`.
+    pub(crate) fn from_fresh_flag(fresh: bool) -> Self {
+        if fresh { Self::Fresh } else { Self::Resume }
+    }
+}
+
 /// What `agent start` did about the holder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
@@ -144,6 +186,17 @@ pub(crate) struct Started {
     /// The extra writable paths the sandbox got, and the config file they came from. `None` when
     /// nothing was launched.
     pub(crate) writable: Option<Setting<Vec<PathBuf>>>,
+}
+
+/// What `agent swap` reports: the agent started, and the one the worktree had before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Swapped {
+    /// The agent the worktree recorded before the swap; `None` when it had none.
+    pub(crate) previous: Option<Agent>,
+    /// Whether a holder was alive, and was stopped before the new agent started.
+    pub(crate) stopped: bool,
+    /// What starting the new agent did.
+    pub(crate) started: Started,
 }
 
 /// What `agent stop` did.
@@ -180,6 +233,32 @@ mod tests {
         assert_eq!(Agent::ClaudeCode.name(), "claude-code");
         assert_eq!(Agent::ClaudeCode.to_string(), "claude-code");
         assert_eq!(Agent::ClaudeCode.program(), "claude");
+    }
+
+    #[test]
+    fn opencode_is_recorded_and_run_as_opencode() {
+        assert_eq!(Agent::OpenCode.name(), "opencode");
+        assert_eq!(Agent::OpenCode.to_string(), "opencode");
+        assert_eq!(Agent::OpenCode.program(), "opencode");
+    }
+
+    #[test]
+    fn an_agent_is_read_by_its_name_or_its_program() {
+        assert_eq!(Agent::from_name("claude-code"), Some(Agent::ClaudeCode));
+        assert_eq!(Agent::from_name("opencode"), Some(Agent::OpenCode));
+        assert_eq!(
+            Agent::from_name("claude"),
+            None,
+            "the program is not the name"
+        );
+        assert_eq!(Agent::from_program("claude"), Some(Agent::ClaudeCode));
+        assert_eq!(Agent::from_program("opencode"), Some(Agent::OpenCode));
+        assert_eq!(Agent::from_program("codex"), None);
+        assert_eq!("opencode".parse::<Agent>(), Ok(Agent::OpenCode));
+        assert_eq!(
+            "codex".parse::<Agent>(),
+            Err("unknown agent `codex`; the agents are claude-code and opencode".to_owned())
+        );
     }
 
     #[test]

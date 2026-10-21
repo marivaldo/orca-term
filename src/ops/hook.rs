@@ -1,5 +1,7 @@
 //! Ops: the hidden `hook claude` command, which claude runs for every event its settings register
-//! (`domain/launch.rs`): it reads the event's payload from stdin and applies it to the worktree's
+//! (`domain/launch.rs`), and `hook opencode`, which the holder runs for every line opencode's
+//! plugin writes to its events pipe (#35): it reads the event's payload from stdin (opencode's
+//! line read as claude's payload by `domain/hook/opencode.rs`) and applies it to the worktree's
 //! live status and turn log (`domain/hook.rs`, `domain/turn.rs`).
 //!
 //! It never fails and never prints: nothing it does may reach claude. What goes wrong is appended
@@ -25,15 +27,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::adapters::{env, fs, git, stdin};
+use crate::domain::agent::Agent;
 use crate::domain::hook::{self, Applied, Payload};
 use crate::domain::review::Commit;
 use crate::domain::snapshot::{self, Bounds, Identity};
 use crate::domain::state::AdminDir;
 use crate::domain::turn::{self, StatusRead};
 use crate::ops::{notify_changed, worktree_of};
-
-/// The only agent whose hooks the core understands so far.
-const AGENT: &str = "claude";
 
 /// How long a hook waits for another hook of the same worktree to finish.
 const LOCK_WAIT: Duration = Duration::from_secs(1);
@@ -48,9 +48,9 @@ const INDEX_COPY_MODE: u32 = 0o600;
 /// one line, whose texts are capped.
 const TURN_LOG_TAIL: u64 = 64 * 1024;
 
-/// Applies the event claude wrote to stdin to the worktree whose admin directory is `admin`, for
-/// the agent `agent`. Both come from the hook's command line and may be missing; then there is
-/// nothing to do, nor anywhere to log it.
+/// Applies the event the agent wrote to stdin to the worktree whose admin directory is `admin`,
+/// for the agent `agent` as its hooks name it (`claude`, `opencode`). Both come from the hook's
+/// command line and may be missing; then there is nothing to do, nor anywhere to log it.
 pub(crate) fn run(agent: Option<&str>, admin: Option<&Path>) {
     let Some(admin) = admin else {
         return;
@@ -60,18 +60,31 @@ pub(crate) fn run(agent: Option<&str>, admin: Option<&Path>) {
         return;
     }
     match record(agent, &admin) {
-        Ok(()) => notify_changed(&admin),
+        Ok(true) => notify_changed(&admin),
+        Ok(false) => {}
         Err(err) => log(&admin, &err),
     }
 }
 
-/// Reads the payload, takes `hook.lock`, and writes what the event changes: the new turn log
-/// lines first, then the status, replaced whole.
-fn record(agent: Option<&str>, admin: &AdminDir) -> Result<()> {
-    if agent != Some(AGENT) {
-        bail!("no hooks are known for the agent {agent:?}");
+/// The payload on stdin, as the agent `agent` wrote it: claude's own, or a line of opencode's
+/// plugin read as claude's (`None` for a line that changes nothing).
+fn read_payload(agent: Agent) -> Result<Option<Payload>> {
+    let bytes = stdin::read_all()?;
+    match agent {
+        Agent::ClaudeCode => Ok(Some(Payload::parse(&bytes)?)),
+        Agent::OpenCode => hook::opencode::payload(&bytes),
     }
-    let payload = Payload::parse(&stdin::read_all()?)?;
+}
+
+/// Reads the payload, takes `hook.lock`, and writes what the event changes: the new turn log
+/// lines first, then the status, replaced whole. Returns whether anything was written.
+fn record(agent: Option<&str>, admin: &AdminDir) -> Result<bool> {
+    let Some(agent) = agent.and_then(Agent::from_program) else {
+        bail!("no hooks are known for the agent {agent:?}");
+    };
+    let Some(payload) = read_payload(agent)? else {
+        return Ok(false);
+    };
     let Some(_lock) = fs::lock_file_waiting(&admin.hook_lock(), LOCK_WAIT)? else {
         bail!(
             "hook.lock was still held after {LOCK_WAIT:?}; {} was not recorded",
@@ -90,9 +103,9 @@ fn record(agent: Option<&str>, admin: &AdminDir) -> Result<()> {
     let tail = fs::read_tail(&admin.turn_log(), TURN_LOG_TAIL)?.unwrap_or_default();
     let next = turn::next_turn_number(turn::last_turn_number(&tail)?, &status);
     let now = env::now_millis();
-    let mut applied = hook::apply(status, &payload, AGENT, now, next);
+    let mut applied = hook::apply(status, &payload, agent.program(), now, next);
     if let Some(bounds) = snapshot::bounds(&applied.records) {
-        match take_snapshot(admin, &applied, &bounds, now) {
+        match take_snapshot(admin, agent, &applied, &bounds, now) {
             Ok(id) => snapshot::fill(&mut applied.records, &mut applied.status, id.as_str()),
             Err(err) => log(
                 admin,
@@ -107,19 +120,26 @@ fn record(agent: Option<&str>, admin: &AdminDir) -> Result<()> {
     if !lines.is_empty() {
         fs::append(&admin.turn_log(), &lines)?;
     }
-    fs::write_atomically(&admin.status_file(), &turn::status_bytes(&applied.status)?)
+    fs::write_atomically(&admin.status_file(), &turn::status_bytes(&applied.status)?)?;
+    Ok(true)
 }
 
 /// Takes the snapshot that bounds what `applied` opened or closed (`bounds`), at `now`, and moves
-/// the worktree's chain ref to it. Returns the snapshot's commit.
-fn take_snapshot(admin: &AdminDir, applied: &Applied, bounds: &Bounds, now: u64) -> Result<Commit> {
+/// the worktree's chain ref to it. The end of a turn is `agent`'s. Returns the snapshot's commit.
+fn take_snapshot(
+    admin: &AdminDir,
+    agent: Agent,
+    applied: &Applied,
+    bounds: &Bounds,
+    now: u64,
+) -> Result<Commit> {
     let id = admin
         .worktree_id()
         .context("the admin directory is not in git's admin directory of a worktree")?;
     let worktree = worktree_of(admin).context("git's gitdir file names no worktree")?;
     let name = worktree.file_name().unwrap_or_default().to_string_lossy();
     let author = if snapshot::authored_by_agent(bounds) {
-        Identity::agent(AGENT)
+        Identity::agent(agent.program())
     } else {
         Identity::person(
             git::config_value(&worktree, "user.name")?,

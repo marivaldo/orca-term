@@ -1,9 +1,9 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
--- again, copy its path, remove it), toggle its unseen mark (`u`), open its review (`d`, `:OrcaTerm
--- review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its number (`:OrcaTerm
--- worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through `notes.lua`), and
--- the list of its turns, to review one (`:OrcaTerm turns`).
+-- again, copy its path, swap its agent, remove it), toggle its unseen mark (`u`), open its review
+-- (`d`, `:OrcaTerm review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
+-- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
+-- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
 --
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
 -- moves between tabs through `tabs.lua`, shows agents through `terminal.lua` and reviews through
@@ -24,7 +24,10 @@ local M = {}
 M.EARLY_REFRESH_MS = 500
 
 ---The entries of the worktree menu, in the order shown.
-M.MENU = { 'Re-run setup', 'Copy path', 'Remove worktree' }
+M.MENU = { 'Re-run setup', 'Copy path', 'Swap agent', 'Remove worktree' }
+
+---Every agent a worktree can run, as the core names them.
+M.ALL_AGENTS = { 'claude-code', 'opencode' }
 
 local levels = vim.log.levels
 
@@ -159,18 +162,16 @@ local function offer_fresh_session(worktree, primary, err)
 end
 
 ---Shows the extra writable paths of `worktree` that the core refused to widen the sandbox with
----(`err`, kind `untrusted`, `what` `sandbox`) and asks whether to allow them. `Allow` approves them
----and starts the agent (`agent start --approve-sandbox`, `fresh` as asked before); `Cancel` starts
----nothing.
+---(`err`, kind `untrusted`, `what` `sandbox`) and asks whether to allow them. `Allow` runs
+---`on_allow`, which asks the core again with `--approve-sandbox`; `Cancel` starts nothing.
 ---@param worktree orca_term.Worktree
----@param primary string
----@param fresh boolean
 ---@param err orca_term.Error
-local function offer_sandbox(worktree, primary, fresh, err)
+---@param on_allow fun()
+local function offer_sandbox(worktree, err, on_allow)
   local prompt = M.sandbox_prompt(worktree.name, err)
   vim.ui.select(M.APPROVE_SANDBOX, { prompt = prompt }, function(choice)
     if choice == M.APPROVE_SANDBOX[1] then
-      start_and_attach(worktree, primary, fresh, true)
+      on_allow()
     else
       local message = 'the writable paths of %s were not approved; its agent was not started'
       warn(message:format(worktree.name))
@@ -198,7 +199,9 @@ function start_and_attach(worktree, primary, fresh, approve)
       if err and err.kind == 'session_gone' and not fresh then
         offer_fresh_session(worktree, primary, err)
       elseif err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
-        offer_sandbox(worktree, primary, fresh, err)
+        offer_sandbox(worktree, err, function()
+          start_and_attach(worktree, primary, fresh, true)
+        end)
       else
         fail(err)
       end
@@ -214,6 +217,66 @@ function start_and_attach(worktree, primary, fresh, approve)
     local attach_err = terminal.open(path, primary)
     if attach_err then
       fail(attach_err)
+    end
+  end)
+end
+
+---Swaps the agent of `worktree` for `agent` through the core (`agent swap`, without blocking),
+---then shows the new agent in the worktree's tab, in a terminal attached to its holder, the
+---terminal of the agent stopped replaced. Refusals show as they do for `<CR>`: extra writable paths
+---not approved yet are shown and asked about (`approve` passes the approval), and any other
+---refusal, such as an agent busy in a turn, is told with the core's reason. The caller has gone to
+---the worktree's tab.
+---@param worktree orca_term.Worktree
+---@param agent string
+---@param primary string the primary checkout's path, where the core runs
+---@param approve boolean
+local function swap_and_attach(worktree, agent, primary, approve)
+  local path = worktree.path
+  core.agent_swap(path, agent, terminal.size(), approve, primary, function(swapped, err)
+    refresh_sidebar()
+    if not swapped then
+      if err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
+        offer_sandbox(worktree, err, function()
+          swap_and_attach(worktree, agent, primary, true)
+        end)
+      else
+        fail(err)
+      end
+      return
+    end
+    -- A person who has moved to another tab meanwhile is left there: the terminal opens on their
+    -- next `<CR>`.
+    if not tabs.is_current(path) then
+      return
+    end
+    tabs.go_to(path)
+    local attach_err = terminal.reattach(path, primary)
+    if attach_err then
+      fail(attach_err)
+    end
+  end)
+end
+
+---The agents `Swap agent` offers for `worktree`: every agent but the one it has.
+---@param worktree orca_term.Worktree
+---@return string[]
+function M.swap_choices(worktree)
+  return vim.tbl_filter(function(agent)
+    return agent ~= worktree.agent
+  end, M.ALL_AGENTS)
+end
+
+---`Swap agent` in the menu: asks which other agent `worktree` should run, then goes to its tab and
+---swaps its agent for that one (`swap_and_attach`). Cancelling swaps nothing.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.swap_agent(worktree, primary)
+  local prompt = ('Swap the agent of %s for'):format(worktree.name)
+  vim.ui.select(M.swap_choices(worktree), { prompt = prompt }, function(choice)
+    if choice then
+      tabs.go_to(worktree.path)
+      swap_and_attach(worktree, choice, primary, false)
     end
   end)
 end
@@ -436,11 +499,13 @@ end
 ---@param primary string the primary checkout's path, where the core runs
 function M.menu(worktree, primary)
   vim.ui.select(M.MENU, { prompt = 'Worktree ' .. worktree.name }, function(choice)
-    if choice == M.MENU[1] then
+    if choice == 'Re-run setup' then
       M.run_setup(worktree, primary)
-    elseif choice == M.MENU[2] then
+    elseif choice == 'Copy path' then
       M.copy_path(worktree)
-    elseif choice == M.MENU[3] then
+    elseif choice == 'Swap agent' then
+      M.swap_agent(worktree, primary)
+    elseif choice == 'Remove worktree' then
       M.remove(worktree, primary)
     end
   end)

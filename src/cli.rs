@@ -2,25 +2,27 @@
 //! and gives the result to `output`.
 
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::adapters::holder::HolderArgs;
 use crate::adapters::stdin;
 use crate::adapters::terminal::{self, DetachKey};
-use crate::domain::agent::{Size, StartMode};
+use crate::domain::agent::{Agent, Size, StartMode};
 use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
+use crate::domain::state::AdminDir;
 use crate::domain::trust::{self, Unapproved};
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    Approval, agent_attach, agent_holder, agent_start, agent_stop, check_git, doctor, hook,
-    note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister, turn_blame,
-    turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
+    Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
+    hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
+    turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
     worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
@@ -67,8 +69,9 @@ enum Command {
         json: bool,
     },
     /// What the agent's hooks run: `hook claude --admin <dir> <event>`, the event's payload on
-    /// stdin. Its arguments are taken as they come, unchecked, so that clap never refuses them
-    /// (clap exits 2 on a usage error, which claude would take as a refusal); `HookArgs` reads
+    /// stdin, or `hook opencode --admin <dir>`, which the holder runs for each line opencode's
+    /// plugin writes. Its arguments are taken as they come, unchecked, so that clap never refuses
+    /// them (clap exits 2 on a usage error, which claude would take as a refusal); `HookArgs` reads
     /// them.
     #[command(hide = true, disable_help_flag = true)]
     Hook {
@@ -289,10 +292,16 @@ enum TurnCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Start claude in a worktree, inside its sandbox, held by a detached process.
+    /// Start a worktree's agent, claude-code or opencode, inside its sandbox, held by a detached
+    /// process.
     Start {
         /// The worktree's name, or its path when several worktrees share the name.
         worktree: Target,
+        /// The agent to start: claude-code or opencode (default: the one the worktree recorded,
+        /// else claude-code). It is recorded as the worktree's agent.
+        // Parsed by clap through `Agent`'s `FromStr`: an unknown agent is refused here.
+        #[arg(long)]
+        agent: Option<Agent>,
         /// The agent's first terminal height, in rows (default: this terminal's, else 24).
         #[arg(long)]
         rows: Option<u16>,
@@ -303,6 +312,27 @@ enum AgentCommand {
         /// when the agent is already running).
         #[arg(long)]
         fresh: bool,
+        /// Approve the sandbox's extra writable paths of a committed orca-term.yaml without being
+        /// asked, then start.
+        #[arg(long)]
+        approve_sandbox: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Swap a worktree's agent for another: stop the one running (refused while it is in a turn)
+    /// and start the other on the same worktree, which records it. Turns, notes and snapshots stay.
+    Swap {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The agent to swap in: claude-code or opencode.
+        agent: Agent,
+        /// The new agent's first terminal height, in rows (default: this terminal's, else 24).
+        #[arg(long)]
+        rows: Option<u16>,
+        /// The new agent's first terminal width, in columns (default: this terminal's, else 80).
+        #[arg(long)]
+        cols: Option<u16>,
         /// Approve the sandbox's extra writable paths of a committed orca-term.yaml without being
         /// asked, then start.
         #[arg(long)]
@@ -341,6 +371,10 @@ enum AgentCommand {
         rows: u16,
         #[arg(long)]
         cols: u16,
+        /// For an agent that reports its events through a pipe (opencode): the agent its hooks
+        /// are named after, whose hook runs for each line.
+        #[arg(long)]
+        events: Option<String>,
         /// The agent's command line, program first.
         #[arg(last = true, required = true)]
         argv: Vec<String>,
@@ -363,7 +397,9 @@ impl Cli {
                 WorktreeCommand::Prune => false,
             },
             Command::Agent { command } => match command {
-                AgentCommand::Start { json, .. } | AgentCommand::Stop { json, .. } => *json,
+                AgentCommand::Start { json, .. }
+                | AgentCommand::Swap { json, .. }
+                | AgentCommand::Stop { json, .. } => *json,
                 AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
             Command::Note { command } => match command {
@@ -566,21 +602,46 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
     match command {
         AgentCommand::Start {
             worktree,
+            agent,
             rows,
             cols,
             fresh,
             approve_sandbox,
             ..
         } => {
-            let mode = if *fresh {
-                StartMode::Fresh
-            } else {
-                StartMode::Resume
+            let mode = StartMode::from_fresh_flag(*fresh);
+            let wanted = agent_start::Wanted {
+                agent: *agent,
+                rows: *rows,
+                cols: *cols,
+                mode,
             };
-            let mut ask = ask_at_terminal;
-            let mut approval = approval(*approve_sandbox, format, &mut ask);
-            let started = agent_start::run(worktree, *rows, *cols, mode, &mut approval)?;
-            output::agent_started(&started, format)?;
+            run_agent_start(worktree, &wanted, *approve_sandbox, format)?;
+        }
+        AgentCommand::Swap {
+            worktree,
+            agent,
+            rows,
+            cols,
+            approve_sandbox,
+            ..
+        } => {
+            let size = (*rows, *cols);
+            run_agent_swap(worktree, *agent, size, *approve_sandbox, format)?;
+        }
+        AgentCommand::Holder {
+            admin,
+            worktree,
+            rows,
+            cols,
+            events,
+            argv,
+        } => {
+            let size = Size {
+                rows: *rows,
+                cols: *cols,
+            };
+            run_holder(admin, worktree, size, events.as_deref(), argv)?;
         }
         AgentCommand::Attach {
             worktree,
@@ -596,21 +657,55 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
         AgentCommand::Stop { worktree, .. } => {
             output::agent_stopped(&agent_stop::run(worktree)?, format)?;
         }
-        AgentCommand::Holder {
-            admin,
-            worktree,
-            rows,
-            cols,
-            argv,
-        } => {
-            let size = Size {
-                rows: *rows,
-                cols: *cols,
-            };
-            agent_holder::run(admin.clone(), worktree.clone(), size, argv.clone())?;
-        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs `agent swap` of `worktree` for `agent`, with its first terminal `size` (rows, columns)
+/// where given, the sandbox's writable paths approved beforehand when `approve_sandbox`, and
+/// prints what it did.
+fn run_agent_swap(
+    worktree: &Target,
+    agent: Agent,
+    size: (Option<u16>, Option<u16>),
+    approve_sandbox: bool,
+    format: Format,
+) -> Result<()> {
+    let mut ask = ask_at_terminal;
+    let mut approval = approval(approve_sandbox, format, &mut ask);
+    let swapped = agent_swap::run(worktree, agent, size.0, size.1, &mut approval)?;
+    output::agent_swapped(&swapped, format)
+}
+
+/// Runs the hidden `agent holder`, the holder process itself, until its agent `argv` exits.
+fn run_holder(
+    admin: &Path,
+    worktree: &Path,
+    size: Size,
+    events: Option<&str>,
+    argv: &[String],
+) -> Result<()> {
+    agent_holder::run(&HolderArgs {
+        admin: AdminDir::new(admin.to_owned()),
+        worktree: worktree.to_owned(),
+        size,
+        argv: argv.to_vec(),
+        events: events.map(str::to_owned),
+    })
+}
+
+/// Runs `agent start` of what `wanted` names in `worktree`, the sandbox's writable paths approved
+/// beforehand when `approve_sandbox`, and prints what it did.
+fn run_agent_start(
+    worktree: &Target,
+    wanted: &agent_start::Wanted,
+    approve_sandbox: bool,
+    format: Format,
+) -> Result<()> {
+    let mut ask = ask_at_terminal;
+    let mut approval = approval(approve_sandbox, format, &mut ask);
+    let started = agent_start::run(worktree, wanted, &mut approval)?;
+    output::agent_started(&started, format)
 }
 
 fn run_note(command: &NoteCommand, format: Format) -> Result<ExitCode> {

@@ -21,7 +21,8 @@ pub(crate) const CLAUDE_FLOOR: &str = "2.1.295";
 /// never refused. Raise it when new recordings land.
 pub(crate) const CLAUDE_TESTED: &str = "2.1.303";
 
-/// The oldest opencode orca-term will run, once it can run opencode at all (#35).
+/// The oldest opencode orca-term runs: the version whose plugin API and events the plugin was
+/// written against (#35).
 pub(crate) const OPENCODE_FLOOR: &str = "1.18.0";
 
 /// The oldest git orca-term supports.
@@ -68,9 +69,10 @@ pub(crate) const CLAUDE: Requirement = Requirement {
     install: "install Claude Code (https://docs.anthropic.com/en/docs/claude-code)",
 };
 
-/// opencode, optional while orca-term cannot run it (#35): that slice makes it required.
+/// opencode, which `doctor` reports as optional, since a person may use only claude: absent is
+/// fine, too old only a warning. Starting it needs it all the same ([`agent_requirement`]).
 pub(crate) const OPENCODE: Requirement = Requirement {
-    program: "opencode",
+    program: Agent::OpenCode.program(),
     floor: OPENCODE_FLOOR,
     tested: None,
     need: Need::Optional,
@@ -79,6 +81,19 @@ pub(crate) const OPENCODE: Requirement = Requirement {
 
 /// The agents `doctor` checks, in the order it shows them.
 pub(crate) const AGENTS: &[Requirement] = &[CLAUDE, OPENCODE];
+
+/// What `agent start` needs to launch `agent`: its program on PATH, at its floor or later, both
+/// required whatever `doctor` says of an agent nobody launches.
+pub(crate) const fn agent_requirement(agent: Agent) -> Requirement {
+    let requirement = match agent {
+        Agent::ClaudeCode => CLAUDE,
+        Agent::OpenCode => OPENCODE,
+    };
+    Requirement {
+        need: Need::Required,
+        ..requirement
+    }
+}
 
 /// What the end of every `prerequisite` message says.
 pub(crate) const DOCTOR_HINT: &str = "run orca-term doctor for the full report";
@@ -426,6 +441,25 @@ mod tests {
             check_program(&OPENCODE, &printed("??")).status,
             Status::Warn
         );
+    }
+
+    #[test]
+    fn starting_opencode_requires_it_from_its_floor() {
+        let need = agent_requirement(Agent::OpenCode);
+        let missing = check_program(&need, &Probe::NotFound);
+        assert_eq!(missing.status, Status::Missing);
+        assert_eq!(
+            missing.message,
+            "opencode: not found on PATH; install opencode (https://opencode.ai)"
+        );
+        let old = check_program(&need, &printed("1.17.9"));
+        assert_eq!(old.status, Status::TooOld);
+        assert_eq!(
+            old.message,
+            "opencode 1.17.9: orca-term needs 1.18.0 or later"
+        );
+        assert_eq!(check_program(&need, &printed("1.18.0")).status, Status::Ok);
+        assert_eq!(agent_requirement(Agent::ClaudeCode), CLAUDE);
     }
 
     #[test]

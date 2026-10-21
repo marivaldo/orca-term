@@ -1,6 +1,9 @@
 //! Domain: what claude's hooks report, and how each report changes a worktree's live status
 //! (`domain/turn.rs`). claude calls `orca-term hook claude` for every event registered in the
 //! settings it is launched with (`domain/launch.rs`), with the event as a JSON payload on stdin.
+//! opencode's plugin reports the same moments in lines of its own, which `hook/opencode.rs` reads
+//! as the payload claude's hook of the same meaning carries (#35), so both agents' turns follow
+//! the rules below.
 //!
 //! A turn opens on a submitted prompt and closes when the agent stops. claude sends nothing when
 //! the person presses Esc, so a turn whose end was never seen is closed as interrupted by
@@ -21,12 +24,21 @@
 //! refuses or presses Esc on one call of a batch, claude sends no `PostToolBatch` for it, and a
 //! rule denial in the same batch is lost.
 
+pub(crate) mod opencode;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::domain::turn::{self, ClosedTurn, Denial, OpenTurn, Outcome, Phase, Status, TurnRecord};
+
+/// The variable naming the file descriptor of the pipe an agent writes its events to when its
+/// hooks cannot run orca-term themselves: opencode's plugin, inside the sandbox that denies writes
+/// to the admin directory (#35). The holder makes the pipe, hands its write end to the agent, and
+/// runs `orca-term hook <agent> --admin <dir>` outside the sandbox for each line, the line on its
+/// stdin; `hook/opencode.rs` reads the line as the payload claude's hook would carry.
+pub(crate) const EVENTS_FD_VAR: &str = "ORCA_TERM_EVENTS_FD";
 
 /// The events a hook is registered for, each with its matcher (`*`: every tool), in the order
 /// the settings list them.
@@ -142,6 +154,24 @@ pub(crate) fn is_denial(response: &str) -> bool {
 }
 
 impl Payload {
+    /// A payload of the event `event` that says nothing else, for the other fields to be filled.
+    pub(crate) fn named(event: &str) -> Self {
+        Self {
+            event: event.to_owned(),
+            session_id: None,
+            transcript_path: None,
+            prompt_id: None,
+            agent_id: None,
+            prompt: None,
+            source: None,
+            tool_name: None,
+            tool_input: Value::Null,
+            last_message: None,
+            error: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
     /// The payload claude wrote to the hook's stdin, `bytes`. Only `hook_event_name` is
     /// required; every other field is taken when it is there and has the expected type.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
@@ -220,16 +250,18 @@ struct Step<'a> {
 }
 
 impl Step<'_> {
-    /// Records the session `payload` names as the current one, and the transcript it names when
-    /// it comes from the main agent: a subagent's payload is not trusted to name the session's own
-    /// transcript. A session that changes forgets the previous session's transcript, so the
-    /// transcript recorded always belongs to the current session.
+    /// Records the session `payload` names as the current one, belonging to the agent whose hook
+    /// this is, and the transcript it names when it comes from the main agent: a subagent's
+    /// payload is not trusted to name the session's own transcript. A session that changes
+    /// forgets the previous session's transcript, so the transcript recorded always belongs to the
+    /// current session.
     fn follow_session(&mut self, payload: &Payload) {
         if let Some(session) = &payload.session_id {
             if self.status.session.as_ref() != Some(session) {
                 self.status.transcript = None;
             }
             self.status.session = Some(session.clone());
+            self.status.agent = Some(self.agent.to_owned());
         }
         if payload.agent_id.is_none()
             && let Some(path) = &payload.transcript_path

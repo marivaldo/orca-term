@@ -29,8 +29,7 @@ pub(crate) fn run(target: &Target) -> Result<Stopped> {
             outcome: StopOutcome::NotRunning,
         });
     }
-    holder::request_stop(&admin)?;
-    wait_until_gone(&admin)?;
+    stop_holder(&admin)?;
     notify_changed(&admin);
     let derived = derive_state(&admin)?;
     Ok(Stopped {
@@ -46,6 +45,13 @@ pub(crate) fn run(target: &Target) -> Result<Stopped> {
         },
         outcome: StopOutcome::Stopped,
     })
+}
+
+/// Asks the holder of `admin` to end its agent and waits until it is gone: what `agent stop` and
+/// `agent swap` share.
+pub(crate) fn stop_holder(admin: &AdminDir) -> Result<()> {
+    holder::request_stop(admin)?;
+    wait_until_gone(admin)
 }
 
 /// Waits for the holder of `admin` to release `agent.lock`. Nothing kills it by pid: a pid can be

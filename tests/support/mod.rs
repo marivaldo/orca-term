@@ -30,7 +30,16 @@ pub(crate) struct Repo {
 impl Repo {
     /// A repository with one commit on `main`, at `<tmp>/repo`.
     pub(crate) fn new() -> Self {
-        let tmp = TempDir::new().unwrap();
+        Self::in_dir(TempDir::new().unwrap())
+    }
+
+    /// The same, its temporary directory made inside `dir`: for a test whose fixture must not
+    /// sit in the system's temporary directory, which opencode's sandbox lets it write (#35).
+    pub(crate) fn new_in(dir: &Path) -> Self {
+        Self::in_dir(TempDir::new_in(dir).unwrap())
+    }
+
+    fn in_dir(tmp: TempDir) -> Self {
         let gitconfig = tmp.child("gitconfig");
         gitconfig
             .write_str("[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n[init]\n\tdefaultBranch = main\n")

@@ -104,9 +104,15 @@
 ---What `agent start --json` prints: the worktree, its agent and its holder.
 ---@class orca_term.Started
 ---@field worktree orca_term.Worktree
----@field agent string the agent started, `claude-code`
+---@field agent string the agent started, `claude-code` or `opencode`
 ---@field holder orca_term.Holder
 ---@field resumed? string the session resumed on a cold start; `nil` for a new session
+
+---What `agent swap --json` prints: what starting the new agent did, the agent the worktree had
+---before and whether its holder was stopped.
+---@class orca_term.Swapped: orca_term.Started
+---@field previous? string the agent swapped out, `nil` when the worktree had none
+---@field stopped boolean
 
 local M = {}
 
@@ -384,6 +390,28 @@ function M.agent_start(path, size, fresh, approve, cwd, on_done)
   if fresh then
     table.insert(args, '--fresh')
   end
+  if approve then
+    table.insert(args, '--approve-sandbox')
+  end
+  run_async(args, cwd, on_done)
+end
+
+---Swaps the agent of the worktree at `path` for `agent` (`claude-code` or `opencode`), without
+---waiting: `orca-term agent swap <path> <agent> --rows R --cols C --json`, `size` being the new
+---agent's first terminal size. The core stops the agent running there and starts the other, which
+---resumes only a session it recorded itself. An agent in a turn (working or waiting) fails as
+---`busy`, as does a worktree in use; extra writable paths from a committed `orca-term.yaml` not
+---approved fail as `untrusted`, unless `approve` passes `--approve-sandbox`; the other refusals
+---are `agent start`'s.
+---@param path string
+---@param agent string
+---@param size { rows: integer, cols: integer }
+---@param approve boolean
+---@param cwd string
+---@param on_done fun(swapped: orca_term.Swapped?, err: orca_term.Error?)
+function M.agent_swap(path, agent, size, approve, cwd, on_done)
+  local rows, cols = tostring(size.rows), tostring(size.cols)
+  local args = { 'agent', 'swap', path, agent, '--rows', rows, '--cols', cols }
   if approve then
     table.insert(args, '--approve-sandbox')
   end

@@ -1,7 +1,9 @@
 //! Adapter: the holder's own process (ADR 0009), run by the hidden `agent holder` command. It
 //! takes `agent.lock`, binds `agent.sock`, opens a PTY, starts the agent on it and then, until
 //! the agent exits, keeps its last 8 MiB of output, replays them to every client that connects,
-//! forwards each client's input and size, and ends the agent when asked.
+//! forwards each client's input and size, and ends the agent when asked. For an agent that
+//! reports its events through a pipe (opencode, #35), it also runs the hook for each line
+//! (`holder/events.rs`).
 //!
 //! Threads, all blocking:
 //!
@@ -9,7 +11,8 @@
 //! - the reader pumps the PTY into the scrollback and to every client's queue;
 //! - the acceptor starts one client thread per connection, which reads that client's frames;
 //! - each client has a writer that sends the replay, then the queued frames, then closes;
-//! - a stop spawns the escalation: hang up, then terminate after 3 s, then kill after 3 s more.
+//! - a stop spawns the escalation: hang up, then terminate after 3 s, then kill after 3 s more;
+//! - for an agent with an events pipe, the events thread runs one hook per line, in order.
 //!
 //! A client that stops reading is dropped rather than stalling the agent: its queue is bounded.
 //! Signals reach the agent only under the mutex that reaps it, so a reused pid is never hit.
@@ -20,7 +23,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, ErrorKind, Read as _, Write as _};
+use std::io::{self, ErrorKind, PipeReader, Read as _, Write as _};
 use std::net::Shutdown;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -36,8 +39,9 @@ use pty_process::blocking::Pty;
 use rustix::process::{Pid, Signal};
 
 use crate::adapters::fs::{self, FileLock};
-use crate::adapters::holder::{HolderArgs, error_line, peer, ready_line};
+use crate::adapters::holder::{HolderArgs, error_line, events, peer, ready_line};
 use crate::domain::agent::{HolderRecord, Size};
+use crate::domain::hook::EVENTS_FD_VAR;
 use crate::domain::protocol::{self, Decoder, Frame, SCROLLBACK_CAP, Scrollback};
 use crate::domain::state::{AGENT_SOCKET_FILE, AdminDir};
 
@@ -67,6 +71,9 @@ const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long the holder waits for its writers once the agent exited, before leaving without them.
 const WRITERS_DEADLINE: Duration = Duration::from_secs(5);
 
+/// How long the holder waits, once the agent exited, for the hooks of the events it reported last.
+const EVENTS_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Runs the holder: reports on stdout, then serves until the agent exits.
 pub(crate) fn serve(args: &HolderArgs) -> Result<()> {
     match prepare(args) {
@@ -95,6 +102,9 @@ struct Holder {
     child: Mutex<Child>,
     /// The size the PTY was last set to.
     size: Mutex<Size>,
+    /// The thread running the hook for each event the agent reports through its pipe, for an
+    /// agent that does (opencode).
+    events: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What the reader and the client threads share, under one mutex: a client takes its replay and
@@ -126,15 +136,7 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
     let (pty, pts) = pty_process::blocking::open().context("could not open a pty")?;
     pty.resize(pty_size(args.size))
         .context("could not size the pty")?;
-    let (program, rest) = args
-        .argv
-        .split_first()
-        .context("the holder was given no command to run")?;
-    let child = pty_process::blocking::Command::new(program)
-        .args(rest)
-        .current_dir(&args.worktree)
-        .spawn(pts)
-        .with_context(|| format!("could not start {program}"))?;
+    let (child, events) = spawn_agent(args, pts)?;
     let holder = Arc::new(Holder {
         admin: args.admin.clone(),
         shared: Mutex::new(Shared {
@@ -149,6 +151,7 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
         input: Mutex::new(()),
         child: Mutex::new(child),
         size: Mutex::new(args.size),
+        events: Mutex::new(None),
     });
     start_reader(&holder);
     if let Some(status) = exited_early(&holder)? {
@@ -158,9 +161,13 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
             .unwrap_or_default();
         fs::remove_if_exists(&args.admin.agent_socket())?;
         bail!(
-            "{program} exited at once ({}): {last}",
+            "{} exited at once ({}): {last}",
+            args.argv.first().map_or("the agent", String::as_str),
             protocol::exit_text(status.code(), status.signal())
         );
+    }
+    if let Some(reader) = events {
+        start_events(&holder, args, reader)?;
     }
     let record = HolderRecord {
         pid: std::process::id(),
@@ -168,6 +175,52 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
     };
     fs::write_atomically(&args.admin.agent_record(), &record.to_bytes()?)?;
     Ok((holder, listener, lock))
+}
+
+/// Starts the agent `args` names on the PTY `pts`, in the worktree. For an agent that reports its
+/// events through a pipe (`args.events`), the agent inherits the pipe's write end, its number in
+/// [`EVENTS_FD_VAR`], and the holder keeps only the read end, which it returns.
+fn spawn_agent(
+    args: &HolderArgs,
+    pts: pty_process::blocking::Pts,
+) -> Result<(Child, Option<PipeReader>)> {
+    let (program, rest) = args
+        .argv
+        .split_first()
+        .context("the holder was given no command to run")?;
+    let mut command = pty_process::blocking::Command::new(program)
+        .args(rest)
+        .current_dir(&args.worktree);
+    let pipe = match args.events {
+        Some(_) => Some(events::Pipe::open()?),
+        None => None,
+    };
+    if let Some(pipe) = &pipe {
+        command = command.env(EVENTS_FD_VAR, pipe.writer_fd());
+    }
+    let child = command
+        .spawn(pts)
+        .with_context(|| format!("could not start {program}"))?;
+    // The agent holds the write end now: the holder closes its own copy, so the pipe ends with
+    // the agent and whatever it started that kept it.
+    let reader = pipe.map(|pipe| pipe.reader);
+    Ok((child, reader))
+}
+
+/// Starts the thread that runs the hook of `args.events` for each line the agent writes to
+/// `reader`, and keeps it so the holder waits for the last events before it leaves.
+fn start_events(holder: &Holder, args: &HolderArgs, reader: PipeReader) -> Result<()> {
+    let Some(agent) = &args.events else {
+        return Ok(());
+    };
+    let hook = events::Hook {
+        exe: std::env::current_exe().context("could not find the orca-term binary")?,
+        agent: agent.clone(),
+        admin: args.admin.path().to_owned(),
+        worktree: args.worktree.clone(),
+    };
+    *lock_or_recover(&holder.events) = Some(events::start(reader, hook));
+    Ok(())
 }
 
 /// Takes `agent.lock`, retrying for a moment; still held means another holder is alive.
@@ -228,6 +281,12 @@ fn run(holder: &Arc<Holder>, listener: UnixListener) -> Result<()> {
     let drained = Instant::now() + Duration::from_secs(1);
     while Instant::now() < drained && !lock_shared(holder).reader_done {
         thread::sleep(Duration::from_millis(20));
+    }
+    // Let the hooks of the agent's last events run (its turn's end, its own end); a grandchild
+    // still holding the pipe would keep it open, so the wait is bounded too.
+    let events = lock_or_recover(&holder.events).take();
+    if let Some(events) = events {
+        join_within(vec![events], EVENTS_DEADLINE);
     }
     let writers = {
         let mut shared = lock_shared(holder);

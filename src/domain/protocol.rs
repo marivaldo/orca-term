@@ -138,10 +138,41 @@ pub(crate) fn exit_text(code: Option<i32>, signal: Option<i32>) -> String {
     }
 }
 
-/// A network namespace, as the kernel names it in `/proc/<pid>/ns/net`: `net:[<number>]`. Two
-/// processes share their network namespace exactly when their numbers are equal. On Linux the
-/// holder compares its own with each client's: commands in an agent's sandbox run in a namespace
-/// of their own.
+/// The kinds of namespace the holder compares: the network one and the user one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux reads its clients' namespaces"
+    )
+)]
+pub(crate) enum NsKind {
+    Net,
+    User,
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux reads its clients' namespaces"
+    )
+)]
+impl NsKind {
+    /// The name of the kind, as in `/proc/<pid>/ns/<name>` and in the link's text: `net`, `user`.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Net => "net",
+            Self::User => "user",
+        }
+    }
+}
+
+/// A namespace, as the kernel names it in `/proc/<pid>/ns/<kind>`: `net:[<number>]`,
+/// `user:[<number>]`. Two processes share a namespace exactly when their numbers are equal. On
+/// Linux the holder compares its own with each client's: commands in an agent's sandbox run in
+/// namespaces of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     not(any(target_os = "linux", test)),
@@ -160,16 +191,36 @@ pub(crate) struct NsId(u64);
     )
 )]
 impl NsId {
-    /// The namespace a `/proc/<pid>/ns/net` link names, or `None` when `link` is not of the form
-    /// `net:[<number>]`.
-    pub(crate) fn parse(link: &str) -> Option<Self> {
-        let number = link.strip_prefix("net:[")?.strip_suffix(']')?;
+    /// The namespace of `kind` a `/proc/<pid>/ns/<kind>` link names, or `None` when `link` is not
+    /// of the form `<kind>:[<number>]`.
+    pub(crate) fn parse(kind: NsKind, link: &str) -> Option<Self> {
+        let number = link
+            .strip_prefix(kind.name())?
+            .strip_prefix(":[")?
+            .strip_suffix(']')?;
         number.parse().ok().map(Self)
     }
 }
 
-/// Whether the holder serves a client: only when both its own network namespace and the client's
-/// could be read, and they are the same one. A client whose namespace cannot be read is refused.
+/// The namespaces of a process that matter to a holder, each `None` when it cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux reads its clients' namespaces"
+    )
+)]
+pub(crate) struct Namespaces {
+    pub(crate) net: Option<NsId>,
+    pub(crate) user: Option<NsId>,
+}
+
+/// Whether the holder serves a client: only when its own network and user namespaces and the
+/// client's could all be read, and the client shares both. claude's sandbox runs commands in a
+/// network namespace of their own; opencode's keeps the network, so a command it runs shares the
+/// holder's network namespace, but it runs in a user namespace of its own (#35). A client whose
+/// namespaces cannot be read is refused.
 #[cfg_attr(
     not(any(target_os = "linux", test)),
     expect(
@@ -177,7 +228,19 @@ impl NsId {
         reason = "only the holder on Linux checks its clients' namespaces"
     )
 )]
-pub(crate) fn admit(own: Option<NsId>, peer: Option<NsId>) -> bool {
+pub(crate) fn admit(own: Namespaces, peer: Namespaces) -> bool {
+    same(own.net, peer.net) && same(own.user, peer.user)
+}
+
+/// Whether two namespaces were both read and are the same one.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "only the holder on Linux checks its clients' namespaces"
+    )
+)]
+fn same(own: Option<NsId>, peer: Option<NsId>) -> bool {
     match (own, peer) {
         (Some(own), Some(peer)) => own == peer,
         _ => false,
@@ -328,28 +391,54 @@ mod tests {
 
     #[test]
     fn a_namespace_is_read_from_its_proc_link() {
-        assert_eq!(NsId::parse("net:[4026531840]"), Some(NsId(4_026_531_840)));
-        assert_eq!(NsId::parse("net:[]"), None);
-        assert_eq!(NsId::parse("net:[12"), None);
-        assert_eq!(NsId::parse("mnt:[4026531840]"), None);
-        assert_eq!(NsId::parse("net:[x]"), None);
+        let net = |link| NsId::parse(NsKind::Net, link);
+        assert_eq!(net("net:[4026531840]"), Some(NsId(4_026_531_840)));
+        assert_eq!(net("net:[]"), None);
+        assert_eq!(net("net:[12"), None);
+        assert_eq!(net("mnt:[4026531840]"), None);
+        assert_eq!(net("user:[4026531837]"), None, "another kind");
+        assert_eq!(net("net:[x]"), None);
+        assert_eq!(
+            NsId::parse(NsKind::User, "user:[4026531837]"),
+            Some(NsId(4_026_531_837))
+        );
+        assert_eq!(NsId::parse(NsKind::User, "net:[4026531840]"), None);
+    }
+
+    fn namespaces(net: &str, user: &str) -> Namespaces {
+        Namespaces {
+            net: NsId::parse(NsKind::Net, net),
+            user: NsId::parse(NsKind::User, user),
+        }
     }
 
     #[test]
     fn a_client_is_served_only_from_the_holders_own_network_namespace() {
-        let own = NsId::parse("net:[4026531840]");
-        let sandbox = NsId::parse("net:[4026532999]");
+        let own = namespaces("net:[4026531840]", "user:[4026531837]");
+        let claudes_sandbox = namespaces("net:[4026532999]", "user:[4026532998]");
         assert!(admit(own, own));
-        assert!(!admit(own, sandbox));
+        assert!(!admit(own, claudes_sandbox));
+        let unknown_net = Namespaces { net: None, ..own };
         assert!(
-            !admit(own, None),
+            !admit(own, unknown_net),
             "a client whose namespace cannot be read is refused"
         );
         assert!(
-            !admit(None, own),
+            !admit(unknown_net, own),
             "a holder that cannot read its own refuses everyone"
         );
-        assert!(!admit(None, None));
+        assert!(!admit(unknown_net, unknown_net));
+    }
+
+    #[test]
+    fn a_client_is_served_only_from_the_holders_own_user_namespace() {
+        let own = namespaces("net:[4026531840]", "user:[4026531837]");
+        // opencode's sandbox keeps the network but has a user namespace of its own.
+        let opencodes_sandbox = namespaces("net:[4026531840]", "user:[4026533001]");
+        assert!(!admit(own, opencodes_sandbox));
+        let unknown_user = Namespaces { user: None, ..own };
+        assert!(!admit(own, unknown_user));
+        assert!(!admit(unknown_user, own));
     }
 
     #[test]

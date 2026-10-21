@@ -19,6 +19,7 @@ const FORBIDDEN: &[&str] = &[
     "--dangerously-skip-permissions",
     "--allow-dangerously-skip-permissions",
     "--auto",
+    "--yolo",
     "bypassPermissions",
 ];
 
@@ -128,6 +129,8 @@ mod tests {
         );
         let lua = "local args = { 'claude', '--auto' }\n";
         assert_eq!(check_file("lua/orca-term/core.lua", lua).len(), 1);
+        let opencode = "let argv = [\"opencode\", \"--yolo\"];\n";
+        assert_eq!(check_file("src/ops/agent_start.rs", opencode).len(), 1);
     }
 
     #[test]

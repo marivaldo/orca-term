@@ -1224,7 +1224,7 @@ fn a_recorded_session_id_that_is_a_flag_is_never_launched() {
         fs::write(played.admin.join("status.json"), status.to_string()).unwrap();
         let message = session_gone(&fx, &["agent", "start", "fix", "--json"]);
         assert!(
-            message.contains(": its id is not one claude makes; "),
+            message.contains(": its id is not one an agent makes; "),
             "{id:?}: {message}"
         );
         assert!(message.contains("agent start fix --fresh"), "{message}");

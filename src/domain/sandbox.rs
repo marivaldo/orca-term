@@ -1,14 +1,19 @@
-//! Domain: whether claude's native sandbox can run on this machine (ADR 0007). claude runs
-//! `sandbox-exec` on macOS and `bwrap` with `socat` on Linux; on any other system it has no
-//! sandbox. The adapters say which tools are on PATH; this module decides what is missing, what
-//! `orca-term doctor` shows for it and which typed error says so, in the same words.
+//! Domain: whether an agent's sandbox can run on this machine (ADR 0007). claude's native sandbox
+//! runs `sandbox-exec` on macOS and `bwrap` with `socat` on Linux; opencode runs inside the
+//! sandbox orca-term wraps it in (`sandbox/policy.rs`, #35), `sandbox-exec` on macOS and `bwrap`
+//! on Linux. On any other system there is no sandbox. The adapters say which tools are on PATH;
+//! this module decides what is missing, what `orca-term doctor` shows for it and which typed error
+//! says so, in the same words.
+
+pub(crate) mod policy;
 
 use anyhow::Result;
 
+use crate::domain::agent::Agent;
 use crate::domain::error::TypedError;
 use crate::domain::prerequisite::{Check, Status};
 
-/// The operating systems claude's sandbox knows.
+/// The operating systems the sandboxes know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Platform {
     MacOs,
@@ -29,26 +34,40 @@ impl Platform {
     }
 }
 
-/// The programs claude's sandbox needs on PATH on `os`.
-pub(crate) fn required_tools(os: Platform) -> &'static [&'static str] {
-    match os {
-        Platform::MacOs => &["sandbox-exec"],
-        Platform::Linux => &["bwrap", "socat"],
-        Platform::Other => &[],
+/// The programs `agent`'s sandbox needs on PATH on `os`. opencode's needs no `socat`: that is
+/// claude's own proxy.
+pub(crate) fn required_tools(os: Platform, agent: Agent) -> &'static [&'static str] {
+    match (os, agent) {
+        (Platform::MacOs, _) => &["sandbox-exec"],
+        (Platform::Linux, Agent::ClaudeCode) => &["bwrap", "socat"],
+        (Platform::Linux, Agent::OpenCode) => &["bwrap"],
+        (Platform::Other, _) => &[],
     }
 }
 
-/// Why the sandbox cannot run on `os`, `found` saying which tools are on PATH: the tools missing
-/// (none when the system has no sandbox at all) and the fix; `None` when it can run.
-fn problem(os: Platform, found: &dyn Fn(&str) -> bool) -> Option<(Vec<String>, &'static str)> {
-    let hint = match os {
-        Platform::MacOs => "sandbox-exec ships with macOS in /usr/bin; is /usr/bin on PATH?",
-        Platform::Linux => "install bubblewrap and socat (`sudo apt-get install bubblewrap socat`)",
-        Platform::Other => {
-            return Some((Vec::new(), "claude's sandbox runs on macOS and Linux only"));
+/// Why `agent`'s sandbox cannot run on `os`, `found` saying which tools are on PATH: the tools
+/// missing (none when the system has no sandbox at all) and the fix; `None` when it can run.
+fn problem(
+    os: Platform,
+    agent: Agent,
+    found: &dyn Fn(&str) -> bool,
+) -> Option<(Vec<String>, String)> {
+    let hint = match (os, agent) {
+        (Platform::MacOs, _) => {
+            "sandbox-exec ships with macOS in /usr/bin; is /usr/bin on PATH?".to_owned()
+        }
+        (Platform::Linux, Agent::ClaudeCode) => {
+            "install bubblewrap and socat (`sudo apt-get install bubblewrap socat`)".to_owned()
+        }
+        (Platform::Linux, Agent::OpenCode) => {
+            "install bubblewrap (`sudo apt-get install bubblewrap`)".to_owned()
+        }
+        (Platform::Other, _) => {
+            let message = format!("{}'s sandbox runs on macOS and Linux only", agent.program());
+            return Some((Vec::new(), message));
         }
     };
-    let missing: Vec<String> = required_tools(os)
+    let missing: Vec<String> = required_tools(os, agent)
         .iter()
         .filter(|tool| !found(tool))
         .map(|tool| (*tool).to_owned())
@@ -69,17 +88,19 @@ pub(crate) fn diagnosis(missing: &[String], hint: &str) -> String {
 }
 
 /// The doctor's check of the sandbox on `os`, `found` saying which tools are on PATH: ok naming
-/// its tools, or missing with the same diagnosis as the `no_sandbox` error.
+/// its tools, or missing with the same diagnosis as the `no_sandbox` error. It checks claude's
+/// tools, which include everything opencode's sandbox needs.
 pub(crate) fn check(os: Platform, found: &dyn Fn(&str) -> bool) -> Check {
-    let (status, found, message) = match problem(os, found) {
+    let agent = Agent::ClaudeCode;
+    let (status, found, message) = match problem(os, agent, found) {
         None => {
-            let tools = required_tools(os).join(" and ");
+            let tools = required_tools(os, agent).join(" and ");
             (Status::Ok, Some(tools.clone()), format!("sandbox {tools}"))
         }
         Some((missing, hint)) => (
             Status::Missing,
             None,
-            format!("sandbox: {}", diagnosis(&missing, hint)),
+            format!("sandbox: {}", diagnosis(&missing, &hint)),
         ),
     };
     Check {
@@ -91,14 +112,20 @@ pub(crate) fn check(os: Platform, found: &dyn Fn(&str) -> bool) -> Check {
     }
 }
 
-/// Refuses to launch when the sandbox cannot run on `os`: no sandbox exists there, or one of its
-/// tools is missing, `found` saying which tools are on PATH. The error is the typed `no_sandbox`.
-pub(crate) fn check_available(os: Platform, found: &dyn Fn(&str) -> bool) -> Result<()> {
-    match problem(os, found) {
+/// Refuses to launch `agent` when its sandbox cannot run on `os`: no sandbox exists there, or one
+/// of its tools is missing, `found` saying which tools are on PATH. The error is the typed
+/// `no_sandbox`.
+pub(crate) fn check_available(
+    os: Platform,
+    agent: Agent,
+    found: &dyn Fn(&str) -> bool,
+) -> Result<()> {
+    match problem(os, agent, found) {
         None => Ok(()),
         Some((missing, hint)) => Err(TypedError::NoSandbox {
+            agent,
             missing,
-            hint: hint.to_owned(),
+            hint,
         }
         .into()),
     }
@@ -111,15 +138,46 @@ mod tests {
 
     #[test]
     fn each_os_needs_its_own_tools() {
-        assert_eq!(required_tools(Platform::MacOs), ["sandbox-exec"]);
-        assert_eq!(required_tools(Platform::Linux), ["bwrap", "socat"]);
-        assert!(required_tools(Platform::Other).is_empty());
+        assert_eq!(
+            required_tools(Platform::MacOs, Agent::ClaudeCode),
+            ["sandbox-exec"]
+        );
+        assert_eq!(
+            required_tools(Platform::Linux, Agent::ClaudeCode),
+            ["bwrap", "socat"]
+        );
+        assert!(required_tools(Platform::Other, Agent::ClaudeCode).is_empty());
+    }
+
+    #[test]
+    fn opencodes_sandbox_needs_sandbox_exec_or_bwrap_alone() {
+        assert_eq!(
+            required_tools(Platform::MacOs, Agent::OpenCode),
+            ["sandbox-exec"]
+        );
+        assert_eq!(required_tools(Platform::Linux, Agent::OpenCode), ["bwrap"]);
+        check_available(Platform::Linux, Agent::OpenCode, &|tool| tool == "bwrap").unwrap();
+        let err = check_available(Platform::Linux, Agent::OpenCode, &|_| false).unwrap_err();
+        assert_eq!(error::kind(&err), "no_sandbox");
+        assert_eq!(error::exit_code(&err), 5);
+        assert_eq!(
+            err.to_string(),
+            "opencode's sandbox is not available: bwrap not found on PATH; install bubblewrap \
+             (`sudo apt-get install bubblewrap`); run orca-term doctor for the full report"
+        );
+        let err = check_available(Platform::Other, Agent::OpenCode, &|_| true).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("opencode's sandbox runs on macOS and Linux only"),
+            "{err}"
+        );
     }
 
     #[test]
     fn a_missing_tool_is_the_typed_no_sandbox_error_naming_the_fix() {
-        check_available(Platform::Linux, &|_| true).unwrap();
-        let err = check_available(Platform::Linux, &|tool| tool == "bwrap").unwrap_err();
+        check_available(Platform::Linux, Agent::ClaudeCode, &|_| true).unwrap();
+        let err = check_available(Platform::Linux, Agent::ClaudeCode, &|tool| tool == "bwrap")
+            .unwrap_err();
         assert_eq!(error::kind(&err), "no_sandbox");
         assert_eq!(error::exit_code(&err), 5);
         assert_eq!(
@@ -128,7 +186,7 @@ mod tests {
              socat (`sudo apt-get install bubblewrap socat`); run orca-term doctor for the full \
              report"
         );
-        let err = check_available(Platform::MacOs, &|_| false).unwrap_err();
+        let err = check_available(Platform::MacOs, Agent::ClaudeCode, &|_| false).unwrap_err();
         assert!(
             err.to_string().contains("sandbox-exec not found on PATH"),
             "{err}"
@@ -137,7 +195,7 @@ mod tests {
 
     #[test]
     fn another_operating_system_has_no_sandbox_at_all() {
-        let err = check_available(Platform::Other, &|_| true).unwrap_err();
+        let err = check_available(Platform::Other, Agent::ClaudeCode, &|_| true).unwrap_err();
         assert_eq!(error::kind(&err), "no_sandbox");
         assert_eq!(
             err.to_string(),
@@ -168,7 +226,9 @@ mod tests {
             assert_eq!(missing.status, Status::Missing);
             assert_eq!(missing.found, None);
             let diagnosis = missing.message.strip_prefix("sandbox: ").unwrap();
-            let err = check_available(os, found).unwrap_err().to_string();
+            let err = check_available(os, Agent::ClaudeCode, found)
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(diagnosis), "{err} / {diagnosis}");
         }
     }
