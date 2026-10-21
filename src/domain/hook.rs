@@ -25,6 +25,7 @@
 //! rule denial in the same batch is lost.
 
 pub(crate) mod opencode;
+pub(crate) mod record;
 
 use std::path::PathBuf;
 

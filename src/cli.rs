@@ -532,7 +532,8 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
 struct HookArgs {
     agent: Option<String>,
     admin: Option<PathBuf>,
-    /// The event as the settings name it; informational, since the payload names it too.
+    /// The event as the settings name it: only the recording tap uses it, since the payload names
+    /// it too.
     event: Option<String>,
 }
 
@@ -561,7 +562,13 @@ impl HookArgs {
 /// its message silenced, since claude reads a hook's output and exit status.
 fn run_hook(args: &HookArgs) {
     panic::set_hook(Box::new(|_| {}));
-    let _ = panic::catch_unwind(|| hook::run(args.agent.as_deref(), args.admin.as_deref()));
+    let _ = panic::catch_unwind(|| {
+        hook::run(
+            args.agent.as_deref(),
+            args.event.as_deref(),
+            args.admin.as_deref(),
+        );
+    });
 }
 
 fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {

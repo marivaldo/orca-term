@@ -20,6 +20,9 @@
 //!
 //! Once the status is written, and `hook.lock` released, it tells the running Neovims that the
 //! worktree changed (`ops::notify_changed`), which never fails and is bounded in time.
+//!
+//! When `ORCA_TERM_RECORD` names a file (the live checks set it, #44), the payload is first
+//! appended to that file as received, before anything reads it (`domain/hook/record.rs`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -28,7 +31,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::adapters::{env, fs, git, stdin};
 use crate::domain::agent::Agent;
-use crate::domain::hook::{self, Applied, Payload};
+use crate::domain::hook::{self, Applied, Payload, record as tap};
 use crate::domain::review::Commit;
 use crate::domain::snapshot::{self, Bounds, Identity};
 use crate::domain::state::AdminDir;
@@ -49,9 +52,11 @@ const INDEX_COPY_MODE: u32 = 0o600;
 const TURN_LOG_TAIL: u64 = 64 * 1024;
 
 /// Applies the event the agent wrote to stdin to the worktree whose admin directory is `admin`,
-/// for the agent `agent` as its hooks name it (`claude`, `opencode`). Both come from the hook's
-/// command line and may be missing; then there is nothing to do, nor anywhere to log it.
-pub(crate) fn run(agent: Option<&str>, admin: Option<&Path>) {
+/// for the agent `agent` as its hooks name it (`claude`, `opencode`). All three come from the
+/// hook's command line and may be missing: without an admin directory there is nothing to do, nor
+/// anywhere to log it; `event` is the event claude's settings name, which only the recording tap
+/// uses (the payload names it too).
+pub(crate) fn run(agent: Option<&str>, event: Option<&str>, admin: Option<&Path>) {
     let Some(admin) = admin else {
         return;
     };
@@ -59,30 +64,46 @@ pub(crate) fn run(agent: Option<&str>, admin: Option<&Path>) {
     if !fs::is_dir(admin.path()) {
         return;
     }
-    match record(agent, &admin) {
+    match record(agent, event, &admin) {
         Ok(true) => notify_changed(&admin),
         Ok(false) => {}
         Err(err) => log(&admin, &err),
     }
 }
 
-/// The payload on stdin, as the agent `agent` wrote it: claude's own, or a line of opencode's
+/// The payload `bytes`, as the agent `agent` wrote it: claude's own, or a line of opencode's
 /// plugin read as claude's (`None` for a line that changes nothing).
-fn read_payload(agent: Agent) -> Result<Option<Payload>> {
-    let bytes = stdin::read_all()?;
+fn read_payload(agent: Agent, bytes: &[u8]) -> Result<Option<Payload>> {
     match agent {
-        Agent::ClaudeCode => Ok(Some(Payload::parse(&bytes)?)),
-        Agent::OpenCode => hook::opencode::payload(&bytes),
+        Agent::ClaudeCode => Ok(Some(Payload::parse(bytes)?)),
+        Agent::OpenCode => hook::opencode::payload(bytes),
     }
 }
 
-/// Reads the payload, takes `hook.lock`, and writes what the event changes: the new turn log
-/// lines first, then the status, replaced whole. Returns whether anything was written.
-fn record(agent: Option<&str>, admin: &AdminDir) -> Result<bool> {
+/// Appends the payload `bytes` to the recording tap's file when `ORCA_TERM_RECORD` names one, as
+/// received (#44). A failure only goes to `hook.log`: the hook carries on.
+fn tap_payload(admin: &AdminDir, agent: Agent, event: Option<&str>, bytes: &[u8]) {
+    let Some(file) = env::record_file() else {
+        return;
+    };
+    if let Err(err) = fs::append(&file, &tap::line(agent, event, bytes)) {
+        log(
+            admin,
+            &err.context("the recording tap could not record the payload"),
+        );
+    }
+}
+
+/// Reads the payload, records it when the tap is on, takes `hook.lock`, and writes what the event
+/// changes: the new turn log lines first, then the status, replaced whole. Returns whether
+/// anything was written.
+fn record(agent: Option<&str>, event: Option<&str>, admin: &AdminDir) -> Result<bool> {
     let Some(agent) = agent.and_then(Agent::from_program) else {
         bail!("no hooks are known for the agent {agent:?}");
     };
-    let Some(payload) = read_payload(agent)? else {
+    let bytes = stdin::read_all()?;
+    tap_payload(admin, agent, event, &bytes);
+    let Some(payload) = read_payload(agent, &bytes)? else {
         return Ok(false);
     };
     let Some(_lock) = fs::lock_file_waiting(&admin.hook_lock(), LOCK_WAIT)? else {
