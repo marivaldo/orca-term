@@ -737,13 +737,13 @@ validate"):
 
 ## Known limits of the agent holder
 
-- **The Linux peer check is network namespace equality, nothing finer.** A client is served
-  when it shares the holder's network namespace, so a client run from another one on purpose
-  (inside a container, under `unshare --net`, from another agent's sandbox) is refused too, with
-  no message: it simply sees the connection close. A sandbox that kept the host's network
-  namespace would not be told apart. The namespace is read from the client's pid as the kernel
-  recorded it when it connected: a client that hands its connection to a child and exits leaves
-  a pid that could be reused before the holder reads it.
+- **The Linux peer check is namespace equality, nothing finer.** A client is served when it
+  shares the holder's network and user namespaces, so a client run from another one on purpose
+  (inside a container, under `unshare --net` or `unshare --user`, from an agent's sandbox) is
+  refused too, with no message: it simply sees the connection close. A sandbox that kept both
+  the host's network and user namespaces would not be told apart. The namespaces are read from
+  the client's pid as the kernel recorded it when it connected: a client that hands its
+  connection to a child and exits leaves a pid that could be reused before the holder reads it.
 - **The person's own `~/.claude/settings.json` can widen the sandbox**: array keys such as
   `sandbox.excludedCommands`, `sandbox.filesystem.allowWrite`, `permissions.additionalDirectories`
   and `Edit(...)` allow rules merge across scopes, and hooks, MCP servers and status lines run
