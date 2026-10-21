@@ -536,4 +536,15 @@ describe("render.detail, a worktree's detail", function()
       assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, index))
     end
   end)
+
+  it('reads a setup not approved in words', function()
+    local rendered = render.detail(
+      document({
+        detail = 'setup not approved; run orca-term worktree setup fix',
+        setup = { status = 'not_approved', log = '/r/setup.log', tail = {} },
+      }, { state = 'not_ready', agent = vim.NIL }),
+      60
+    )
+    assert.are.equal(' Setup (not approved)', rendered.lines[#rendered.lines])
+  end)
 end)

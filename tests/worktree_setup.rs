@@ -134,7 +134,7 @@ fn setup_runs_in_the_new_worktree_with_its_variables_and_is_logged_in_the_admin_
          } > ../setup-env.txt",
     );
 
-    let out = orca_term(&repo, &["worktree", "new", "fix"]);
+    let out = orca_term(&repo, &["worktree", "new", "fix", "--approve-setup"]);
 
     assert!(out.status.success(), "{}", stderr(&out));
     let worktree = worktree_path(&repo, "fix");
@@ -182,7 +182,10 @@ fn a_failing_setup_leaves_the_worktree_not_ready_with_its_log_and_nothing_undone
         "echo installing\necho 'error: no lockfile' >&2\nexit 3\necho never",
     );
 
-    let out = orca_term(&repo, &["worktree", "new", "broken-deps"]);
+    let out = orca_term(
+        &repo,
+        &["worktree", "new", "broken-deps", "--approve-setup"],
+    );
 
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     let worktree = worktree_path(&repo, "broken-deps");
@@ -227,7 +230,10 @@ fn with_json_a_failed_setup_prints_the_normal_document_and_echoes_nothing() {
     let repo = Repo::new();
     commit_setup(&repo, "echo noisy\nfalse");
 
-    let out = orca_term(&repo, &["worktree", "new", "quiet", "--json"]);
+    let out = orca_term(
+        &repo,
+        &["worktree", "new", "quiet", "--json", "--approve-setup"],
+    );
 
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stderr(&out), "", "no echo with --json");
@@ -253,7 +259,9 @@ fn worktree_setup_runs_the_script_again_and_a_success_makes_the_worktree_ready()
         "if [ ! -f ready.txt ]; then echo 'missing ready.txt'; exit 1; fi\necho all good",
     );
     assert_eq!(
-        orca_term(&repo, &["worktree", "new", "fix"]).status.code(),
+        orca_term(&repo, &["worktree", "new", "fix", "--approve-setup"])
+            .status
+            .code(),
         Some(1)
     );
     let worktree = worktree_path(&repo, "fix");
@@ -287,7 +295,7 @@ fn worktree_setup_runs_the_script_again_and_a_success_makes_the_worktree_ready()
 fn worktree_setup_with_no_script_clears_a_failure() {
     let repo = Repo::new();
     commit_setup(&repo, "exit 1");
-    orca_term(&repo, &["worktree", "new", "fix"]);
+    orca_term(&repo, &["worktree", "new", "fix", "--approve-setup"]);
     let worktree = worktree_path(&repo, "fix");
     assert_eq!(listed(&repo)["state"], "not_ready");
 
@@ -311,7 +319,7 @@ fn the_setup_script_comes_from_the_worktree_under_the_local_override() {
     repo.write("orca-term.yaml", &setup_yaml("echo primary > ../which.txt"));
     let which = || std::fs::read_to_string(worktree_path(&repo, "which.txt")).unwrap();
 
-    orca_term(&repo, &["worktree", "new", "fix"]);
+    orca_term(&repo, &["worktree", "new", "fix", "--approve-setup"]);
     assert_eq!(which(), "committed\n");
 
     let worktree = worktree_path(&repo, "fix");
@@ -320,7 +328,7 @@ fn the_setup_script_comes_from_the_worktree_under_the_local_override() {
         setup_yaml("echo worktree > ../which.txt"),
     )
     .unwrap();
-    orca_term(&repo, &["worktree", "setup", "fix"]);
+    orca_term(&repo, &["worktree", "setup", "fix", "--approve-setup"]);
     assert_eq!(which(), "worktree\n");
 
     override_setup(&repo, "echo local > ../which.txt");

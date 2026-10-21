@@ -37,6 +37,12 @@ pub(crate) enum DetachKey {
     None,
 }
 
+/// Whether the person is at a terminal that can be asked a question: both stdin, where the answer
+/// is read, and stderr, where the question is written, are terminals.
+pub(crate) fn is_interactive() -> bool {
+    termios::isatty(io::stdin().as_fd()) && termios::isatty(io::stderr().as_fd())
+}
+
 /// The size of the terminal on stdin, when stdin is one.
 pub(crate) fn stdin_size() -> Option<Size> {
     let stdin = io::stdin();

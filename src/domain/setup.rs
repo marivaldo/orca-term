@@ -4,7 +4,8 @@
 //! The script runs as `bash -e -c <script>` in the worktree, with the variables of
 //! [`environment`] added to the inherited environment. While it runs the worktree is *setting up*;
 //! when it fails the worktree is *not ready* until `orca-term worktree setup` succeeds. Nothing is
-//! undone on failure.
+//! undone on failure. A script from a committed `orca-term.yaml` runs only once the person has
+//! approved its text (`domain/trust.rs`); until then the worktree is *not ready* too.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -49,6 +50,9 @@ pub(crate) enum SetupRecord {
     Succeeded,
     /// The latest setup failed, as `Exit` says; its output is in the setup log.
     Failed(Exit),
+    /// The setup script comes from a committed `orca-term.yaml` the person has not approved, so it
+    /// did not run (`domain/trust.rs`).
+    NotApproved,
 }
 
 /// What running a worktree's setup did.

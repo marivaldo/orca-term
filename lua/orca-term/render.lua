@@ -623,7 +623,8 @@ function M.detail(detail, width)
   local setup = detail.setup
   if setup then
     table.insert(built, new_line(width - 1))
-    add_line('Setup (' .. setup.status .. ')', 'OrcaTermMuted')
+    -- The core names a status in snake case (`not_approved`); a person reads words.
+    add_line('Setup (' .. (setup.status:gsub('_', ' ')) .. ')', 'OrcaTermMuted')
     for _, entry in ipairs(setup.tail or {}) do
       for _, text in ipairs(wrap(entry, text_width)) do
         add_line(text, 'OrcaTermMuted')

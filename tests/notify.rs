@@ -446,7 +446,7 @@ fn worktree_new_setup_and_rm_notify_with_the_worktrees_path() {
     fx.ok(&["nvim", "register", &first.address()]);
     fx.ok(&["nvim", "register", &second.address()]);
 
-    fx.ok(&["worktree", "new", "fix"]);
+    fx.ok(&["worktree", "new", "fix", "--approve-setup"]);
     let path = listed_path(&fx, "fix");
     // Once the worktree exists, once its setup records itself running, once it ends.
     assert_eq!(first.paths(), times(&path, 3));
@@ -459,6 +459,23 @@ fn worktree_new_setup_and_rm_notify_with_the_worktrees_path() {
     fx.ok(&["worktree", "rm", "fix"]);
     assert_eq!(first.paths(), times(&path, 1));
     assert_eq!(second.paths(), times(&path, 1));
+}
+
+#[test]
+fn a_setup_not_approved_notifies_once_it_is_recorded() {
+    let fx = AgentRepo::new();
+    commit_setup(&fx, "echo set up");
+    let nvim = Neovim::new();
+    fx.ok(&["nvim", "register", &nvim.address()]);
+
+    let out = fx.run(&["worktree", "new", "fix", "--json"]);
+    assert_eq!(out.status.code(), Some(8), "untrusted");
+    let path = listed_path(&fx, "fix");
+    assert_eq!(
+        nvim.paths(),
+        times(&path, 2),
+        "created, then recorded not approved"
+    );
 }
 
 #[test]

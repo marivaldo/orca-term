@@ -42,9 +42,13 @@ fn detail(repo: &Repo, name: &str) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// Creates the worktree `name` with `worktree new`, and returns its path.
+/// Creates the worktree `name` with `worktree new`, approving its setup script, and returns its
+/// path.
 fn new_worktree(repo: &Repo, name: &str) -> PathBuf {
-    orca_term(repo, &["worktree", "new", name, "--json"]);
+    orca_term(
+        repo,
+        &["worktree", "new", name, "--json", "--approve-setup"],
+    );
     repo.home.join("orca-term/worktrees/repo").join(name)
 }
 

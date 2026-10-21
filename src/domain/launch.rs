@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::domain::error::{GoneReason, TypedError};
 use crate::domain::hook;
 use crate::domain::state::ADMIN_DIR_NAME;
+use crate::domain::trust::TRUST_FILE;
 use crate::domain::turn::Status;
 
 /// The permission mode every launch runs under: edits inside the worktree go through without
@@ -173,8 +174,9 @@ pub(crate) fn check_transcript(
 
 /// The settings passed to claude as `--settings <file>`: its sandbox on and set to fail rather
 /// than run unsandboxed, the network open, and writes to every worktree's admin directory,
-/// `refs/orca-term`, `orca-term.yaml` and the `orca-term` directory (the registry of running
-/// Neovims, which the core connects to) in the git common dir denied, from sandboxed commands
+/// `refs/orca-term`, `orca-term.yaml`, `orca-term-trust.json` (the approved setup scripts) and the
+/// `orca-term` directory (the registry of running Neovims, which the core connects to) in the git
+/// common dir denied, from sandboxed commands
 /// and from the Edit tool alike. `admin_dirs` are the admin directories that exist at launch:
 /// Linux ignores the `*` entries, so each one is listed concretely too. `writable` are the extra
 /// paths the config allows, absolute. `hooks` reports the turns to the worktree whose admin
@@ -195,6 +197,7 @@ pub(crate) fn claude_settings(
         format!("{common}/worktrees/*/{ADMIN_DIR_NAME}"),
         format!("{common}/refs/{ADMIN_DIR_NAME}"),
         format!("{common}/orca-term.yaml"),
+        format!("{common}/{TRUST_FILE}"),
         format!("{common}/{ADMIN_DIR_NAME}"),
     ]);
     let allow_write: Vec<String> = writable.iter().map(|p| p.display().to_string()).collect();
@@ -223,6 +226,7 @@ pub(crate) fn claude_settings(
                 format!("Edit(/{common}/worktrees/*/{ADMIN_DIR_NAME}/**)"),
                 format!("Edit(/{common}/refs/{ADMIN_DIR_NAME}/**)"),
                 format!("Edit(/{common}/orca-term.yaml)"),
+                format!("Edit(/{common}/{TRUST_FILE})"),
                 format!("Edit(/{common}/{ADMIN_DIR_NAME}/**)"),
             ],
         },
@@ -548,6 +552,7 @@ mod tests {
                 "/r/.git/worktrees/*/orca-term",
                 "/r/.git/refs/orca-term",
                 "/r/.git/orca-term.yaml",
+                "/r/.git/orca-term-trust.json",
                 "/r/.git/orca-term"
             ])
         );
@@ -564,6 +569,7 @@ mod tests {
                 "Edit(//r/.git/worktrees/*/orca-term/**)",
                 "Edit(//r/.git/refs/orca-term/**)",
                 "Edit(//r/.git/orca-term.yaml)",
+                "Edit(//r/.git/orca-term-trust.json)",
                 "Edit(//r/.git/orca-term/**)"
             ])
         );

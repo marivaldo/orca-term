@@ -9,7 +9,9 @@
 //! Which checkout supplies the committed file depends on the key, as in Orca: `base` comes from
 //! the primary checkout, since it decides where a worktree goes before the worktree exists, and
 //! `scripts.setup` and `sandbox.writable` come from the worktree itself, from the revision
-//! checked out there.
+//! checked out there. A setup script or a writable list from a committed file is used only once
+//! the person approved it (`domain/trust.rs`); one from the override or the global file is the
+//! person's own.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -83,15 +85,22 @@ pub(crate) struct Source {
     pub(crate) path: PathBuf,
     label: String,
     anchor: PathBuf,
+    /// Whether it is a committed `orca-term.yaml`, written by whoever committed it rather than
+    /// by the person: its setup script needs the person's approval (`domain/trust.rs`).
+    committed: bool,
 }
 
 /// One config file that exists, parsed.
 #[derive(Debug)]
 pub(crate) struct Layer {
+    /// Where the file is.
+    path: PathBuf,
     /// How the precedence line names it.
     label: String,
     /// What relative paths in it resolve against.
     anchor: PathBuf,
+    /// Whether it is a committed `orca-term.yaml`.
+    committed: bool,
     raw: Raw,
 }
 
@@ -134,11 +143,13 @@ pub(crate) fn sources(
             label: label_within(&local, root),
             path: local,
             anchor: root.clone(),
+            committed: false,
         },
         Source {
             path: checkout.join(FILE_NAME),
             label: FILE_NAME.to_owned(),
             anchor: checkout.to_owned(),
+            committed: true,
         },
     ];
     if let Some(global) = env.global_file() {
@@ -146,6 +157,7 @@ pub(crate) fn sources(
             label: global.display().to_string(),
             anchor: global.parent().map(Path::to_owned).unwrap_or_default(),
             path: global,
+            committed: false,
         });
     }
     sources
@@ -158,8 +170,10 @@ impl Layer {
         let raw = parse(text)
             .with_context(|| format!("invalid config file {}", source.path.display()))?;
         Ok(Self {
+            path: source.path,
             label: source.label,
             anchor: source.anchor,
+            committed: source.committed,
             raw,
         })
     }
@@ -193,10 +207,7 @@ pub(crate) fn resolve_base(layers: &[Layer], env: &Env) -> Result<Setting<PathBu
 /// when no layer sets it, or when the winning layer sets it empty, which turns off a script a
 /// lower layer sets.
 pub(crate) fn resolve_setup(layers: &[Layer]) -> Option<Setting<String>> {
-    let mut setters = layers.iter().filter_map(|l| {
-        let script = l.raw.scripts.as_ref()?.setup.as_deref()?;
-        Some((l, script))
-    });
+    let mut setters = setup_setters(layers);
     let (winner, script) = setters.next()?;
     if script.trim().is_empty() {
         return None;
@@ -205,6 +216,35 @@ pub(crate) fn resolve_setup(layers: &[Layer]) -> Option<Setting<String>> {
         value: script.to_owned(),
         source: Some(winner.label.clone()),
         overridden: setters.map(|(l, _)| l.label.clone()).collect(),
+    })
+}
+
+/// The committed `orca-term.yaml` the setup script comes from, when it comes from one: the file
+/// whose layer wins [`resolve_setup`]. `None` when there is no script, or when it comes from the
+/// uncommitted override or the global config file, which the person wrote and which need no
+/// approval.
+pub(crate) fn committed_setup_file(layers: &[Layer]) -> Option<&Path> {
+    let (winner, script) = setup_setters(layers).next()?;
+    (winner.committed && !script.trim().is_empty()).then_some(winner.path.as_path())
+}
+
+/// The committed `orca-term.yaml` the sandbox's extra writable paths come from, with the paths as
+/// it writes them, when they come from one: the file whose layer wins [`resolve_writable`]. `None`
+/// when no layer sets the list, when the winning list is empty (it widens nothing), or when it
+/// comes from the uncommitted override or the global config file, which need no approval.
+pub(crate) fn committed_writable(layers: &[Layer]) -> Option<(&Path, &[String])> {
+    let winner = layers
+        .iter()
+        .find(|l| l.raw.sandbox.as_ref().is_some_and(|s| s.writable.is_some()))?;
+    let paths = winner.raw.sandbox.as_ref()?.writable.as_deref()?;
+    (winner.committed && !paths.is_empty()).then_some((winner.path.as_path(), paths))
+}
+
+/// The layers that set `scripts.setup`, highest precedence first, each with its script.
+fn setup_setters(layers: &[Layer]) -> impl Iterator<Item = (&Layer, &str)> {
+    layers.iter().filter_map(|l| {
+        let script = l.raw.scripts.as_ref()?.setup.as_deref()?;
+        Some((l, script))
     })
 }
 
@@ -300,8 +340,10 @@ mod tests {
 
     fn layer(label: &str, anchor: &str, base: Option<&str>) -> Layer {
         Layer {
+            path: PathBuf::from(anchor).join(FILE_NAME),
             label: label.to_owned(),
             anchor: PathBuf::from(anchor),
+            committed: label == FILE_NAME,
             raw: Raw {
                 base: base.map(str::to_owned),
                 scripts: None,
@@ -312,8 +354,10 @@ mod tests {
 
     fn setup_layer(label: &str, setup: Option<&str>) -> Layer {
         Layer {
+            path: PathBuf::from("/repo").join(label),
             label: label.to_owned(),
             anchor: PathBuf::from("/repo"),
+            committed: label == FILE_NAME,
             raw: Raw {
                 base: None,
                 scripts: Some(Scripts {
@@ -326,8 +370,10 @@ mod tests {
 
     fn writable_layer(label: &str, anchor: &str, writable: &[&str]) -> Layer {
         Layer {
+            path: PathBuf::from(anchor).join(FILE_NAME),
             label: label.to_owned(),
             anchor: PathBuf::from(anchor),
+            committed: label == FILE_NAME,
             raw: Raw {
                 base: None,
                 scripts: None,
@@ -541,6 +587,72 @@ mod tests {
             .map(|s| s.value),
             Some("make".to_owned())
         );
+    }
+
+    #[test]
+    fn only_a_script_from_a_committed_file_needs_approval() {
+        let committed = [setup_layer("orca-term.yaml", Some("make"))];
+        assert_eq!(
+            committed_setup_file(&committed),
+            Some(Path::new("/repo/orca-term.yaml"))
+        );
+        let overridden = [
+            setup_layer(".git/orca-term.yaml", Some("make local")),
+            setup_layer("orca-term.yaml", Some("make")),
+        ];
+        assert_eq!(committed_setup_file(&overridden), None, "the override wins");
+        let global = [
+            setup_layer("orca-term.yaml", None),
+            setup_layer("/g/config.yaml", Some("make")),
+        ];
+        assert_eq!(committed_setup_file(&global), None, "the global file wins");
+        let turned_off = [
+            setup_layer(".git/orca-term.yaml", Some("")),
+            setup_layer("orca-term.yaml", Some("make")),
+        ];
+        assert_eq!(committed_setup_file(&turned_off), None, "no script at all");
+        assert_eq!(
+            committed_setup_file(&[setup_layer("orca-term.yaml", Some(" \n"))]),
+            None
+        );
+        assert_eq!(committed_setup_file(&[]), None);
+    }
+
+    #[test]
+    fn only_a_writable_list_from_a_committed_file_needs_approval() {
+        let committed = [writable_layer("orca-term.yaml", "/w/fix", &["~", "../x"])];
+        let (file, paths) = committed_writable(&committed).unwrap();
+        assert_eq!(file, Path::new("/w/fix/orca-term.yaml"));
+        assert_eq!(paths, ["~", "../x"], "as written, not expanded");
+        let overridden = [
+            writable_layer(".git/orca-term.yaml", "/repo", &["/opt/x"]),
+            writable_layer("orca-term.yaml", "/w/fix", &["~"]),
+        ];
+        assert_eq!(committed_writable(&overridden), None, "the override wins");
+        let global = [writable_layer("/g/config.yaml", "/g", &["~"])];
+        assert_eq!(committed_writable(&global), None, "the global file");
+        let empty = [writable_layer("orca-term.yaml", "/w/fix", &[])];
+        assert_eq!(
+            committed_writable(&empty),
+            None,
+            "an empty list widens nothing"
+        );
+        assert_eq!(
+            committed_writable(&[layer("orca-term.yaml", "/r", None)]),
+            None
+        );
+    }
+
+    #[test]
+    fn the_sources_say_which_one_is_committed() {
+        let sources = sources(
+            &primary(),
+            Path::new("/w/repo/fix"),
+            Path::new("/repo/.git"),
+            &env(),
+        );
+        let committed: Vec<bool> = sources.iter().map(|s| s.committed).collect();
+        assert_eq!(committed, [false, true, false]);
     }
 
     #[test]

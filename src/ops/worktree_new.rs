@@ -8,16 +8,22 @@ use anyhow::{Context, Result, bail};
 
 use crate::adapters::{env, fs, git};
 use crate::domain::config;
+use crate::domain::error::{self, TypedError};
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::include;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{self, Created, WorktreeName};
-use crate::ops::{config_layers, lock_worktree, notify_changed, set_up};
+use crate::ops::{Approval, config_layers, lock_worktree, notify_changed, set_up};
 
 /// Creates the worktree `name` in the repository containing the current directory, echoing its
 /// setup's output to `echo`. A failed setup is not an error: the report says the worktree is not
-/// ready.
-pub(crate) fn run(name: &WorktreeName, echo: &mut dyn Write) -> Result<Created> {
+/// ready. A committed setup script not approved through `approval` does not run: the worktree
+/// stays, not ready, and the typed error `untrusted` is returned.
+pub(crate) fn run(
+    name: &WorktreeName,
+    approval: &mut Approval<'_>,
+    echo: &mut dyn Write,
+) -> Result<Created> {
     let cwd = env::current_dir()?;
     let env = env::config_env();
     let listed = git::primary_checkout(&cwd)?;
@@ -50,13 +56,20 @@ pub(crate) fn run(name: &WorktreeName, echo: &mut dyn Write) -> Result<Created> 
     fs::create_dir_all(path.parent().unwrap_or(&path))?;
     git::worktree_add(&primary, &branch, &path, &start)?;
 
-    // From here on the worktree exists, and nothing is undone: a failure leaves it in place.
-    let (copied, setup) = finish(name, &primary, &path, echo).with_context(|| {
-        format!(
-            "the worktree was created at {} and left in place, but finishing it failed",
-            path.display()
-        )
-    })?;
+    // From here on the worktree exists, and nothing is undone: a failure leaves it in place. A
+    // script not approved says so itself, naming the worktree.
+    let (copied, setup) = match finish(name, &primary, &path, approval, echo) {
+        Ok(finished) => finished,
+        Err(err) if matches!(error::typed(&err), Some(TypedError::Untrusted { .. })) => {
+            return Err(err);
+        }
+        Err(err) => {
+            return Err(err.context(format!(
+                "the worktree was created at {} and left in place, but finishing it failed",
+                path.display()
+            )));
+        }
+    };
     Ok(Created {
         name: name.clone(),
         path,
@@ -76,12 +89,13 @@ fn finish(
     name: &WorktreeName,
     primary: &PrimaryCheckout,
     worktree: &Path,
+    approval: &mut Approval<'_>,
     echo: &mut dyn Write,
 ) -> Result<(usize, SetupReport)> {
     let lock = lock_worktree(name.as_str(), worktree)?;
     notify_changed(lock.admin());
     let copied = copy_include_list(primary, worktree, &include_list(primary)?)?;
-    let setup = set_up(&lock, primary, worktree, echo)?;
+    let setup = set_up(&lock, primary, worktree, name.as_str(), approval, echo)?;
     Ok((copied, setup))
 }
 

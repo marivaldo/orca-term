@@ -49,6 +49,8 @@ pub(crate) enum SetupProgress {
     Succeeded,
     /// It failed, as `Exit` says.
     Failed(Exit),
+    /// Its script was not approved, so it did not run.
+    NotApproved,
 }
 
 impl SetupProgress {
@@ -60,6 +62,7 @@ impl SetupProgress {
             SetupRecord::Running => Self::Interrupted,
             SetupRecord::Succeeded => Self::Succeeded,
             SetupRecord::Failed(exit) => Self::Failed(exit),
+            SetupRecord::NotApproved => Self::NotApproved,
         }
     }
 }
@@ -202,6 +205,10 @@ mod tests {
         assert_eq!(
             SetupProgress::of(SetupRecord::Failed(Exit::Signal(9)), &State::NoAgent),
             SetupProgress::Failed(Exit::Signal(9))
+        );
+        assert_eq!(
+            SetupProgress::of(SetupRecord::NotApproved, &State::NoAgent),
+            SetupProgress::NotApproved
         );
     }
 
