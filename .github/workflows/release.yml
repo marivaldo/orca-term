@@ -1,0 +1,132 @@
+name: release
+
+# A pushed tag `v*` builds the core for every target, packs each binary with its sha256, verifies
+# every checksum, and only then creates the GitHub release with them. A pull request touching the
+# build, and a manual run, do the same build and verification as a dry run that publishes nothing:
+# the harness's guard that the release binaries build and match their checksums.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/**
+      - xtask/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - LICENSE
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A tag's release is never cancelled halfway; a dry run gives way to a newer one.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The tag names the assets; a dry run names them `dry-run`.
+  VERSION: ${{ github.event_name == 'push' && github.ref_name || 'dry-run' }}
+  # Every target the matrix below builds, for the verification. Keep the two in step.
+  TARGETS: >-
+    aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+jobs:
+  # The full matrix runs on dry runs too: the four builds run in parallel, so a dry run takes about
+  # as long as one build, and a target that stopped building is caught before a tag, not after.
+  # No cache: a release is built from scratch, so no cache written elsewhere can reach it.
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS builds both architectures on one runner. Linux builds with musl, so one binary
+          # runs on any distribution, each architecture natively.
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `cargo --version` installs the toolchain rust-toolchain.toml pins, then the target is added
+      # to it.
+      - name: Install the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo --version
+          rustup target add "$TARGET"
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Pack
+        env:
+          TARGET: ${{ matrix.target }}
+        run: .github/scripts/package-release.sh "target/$TARGET/release/orca-term" "$VERSION" "$TARGET" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: orca-term-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Every event: every asset is there and matches its checksum.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: orca-term-*
+          path: dist
+          merge-multiple: true
+      - name: Verify every checksum
+        run: |
+          read -ra targets <<< "$TARGETS"
+          .github/scripts/verify-release.sh dist "$VERSION" "${targets[@]}"
+
+  # A tag only, and the only job that may write: it verifies the checksums again on the files it
+  # publishes, and creates the release only if every one matches.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: orca-term-*
+          path: dist
+          merge-multiple: true
+      - name: Verify every checksum
+        run: |
+          read -ra targets <<< "$TARGETS"
+          .github/scripts/verify-release.sh dist "$VERSION" "${targets[@]}"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$VERSION" dist/*
+          --repo "$GITHUB_REPOSITORY" --verify-tag --title "$VERSION" --generate-notes
