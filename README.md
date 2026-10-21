@@ -98,6 +98,64 @@ it fails with `untrusted` and starts nothing. `agent start --approve-sandbox` ap
 without asking, and in Neovim `<CR>` shows it and asks `Allow` or `Cancel`. A changed list asks
 again; a list from `.git/orca-term.yaml` or the global config file needs no approval.
 
+## opencode
+
+A worktree can run [opencode](https://opencode.ai) instead of claude:
+`orca-term agent start <worktree> --agent opencode`. The worktree records its agent, so the next
+`agent start` (and `<CR>` in Neovim) starts opencode again, resuming its session with
+`opencode -s <id>`; a worktree that records no agent gets claude-code. `orca-term worktree ls`
+shows `opencode (running)`. Asking for another agent while one runs is refused as `busy` (exit
+code 3), naming the agent that runs.
+
+`orca-term agent swap <worktree> <agent>` swaps a worktree's agent: it stops the one running and
+starts the other on the same worktree, which records it. It is refused as `busy` while the agent is
+in a turn, working or waiting for you; stop it with `agent stop` first if you mean to. The turns,
+the notes and the snapshots stay with the worktree. A session belongs to its agent: the new agent
+resumes the session it recorded itself, if any, and starts a new one otherwise. In Neovim, `.` then
+`Swap agent` asks which agent, swaps, and shows the new agent's terminal in the worktree's tab.
+
+opencode runs inside a sandbox orca-term generates for each launch, `sandbox-exec` on macOS and
+bubblewrap (`bwrap`) on Linux, with everything allowed inside it, as claude is. It reads anything
+and reaches the network, and writes only to the worktree, the git common dir, its own directories
+(`~/.local/share/opencode`, `~/.cache/opencode`, `~/.config/opencode` and `~/.local/state/opencode`,
+or the same under your `XDG_*` directories, and `~/.opencode`), the temporary directories and the
+approved `sandbox.writable` paths. orca-term creates opencode's own directories before the first
+launch, since the sandbox would keep opencode from creating the directories above them. orca-term's
+state stays out of its reach (every worktree's `orca-term` directory, `.git/orca-term.yaml`,
+`.git/orca-term-trust.json`, `refs/orca-term`), and so do the other agents: on macOS it may connect
+to no unix socket but the system's name resolver, and on Linux it runs in a user namespace of its
+own, whose clients the holders refuse. Without the sandbox tool, `agent start` refuses with
+`no_sandbox` (exit code 5); opencode must be 1.18.0 or later (exit code 9 otherwise).
+
+The status comes from a plugin orca-term ships: one small JavaScript file, written before each
+launch into the worktree's own opencode config directory (`orca-term/opencode` in its admin
+directory, which `OPENCODE_CONFIG_DIR` names); nothing goes into opencode's global config. It
+reports the message you send (a turn starts), the tool opencode runs, a permission or a question
+(waiting), your answer, the session going idle (the turn finishes, with opencode's last words) and
+an error (the turn fails; Esc reads as interrupted), with the session's id. It writes them to a pipe
+the holder hands opencode, and the holder, outside the sandbox, records them as claude's hooks are
+recorded: the states, the turn log and the snapshots are the same for both agents.
+
+Limits:
+
+- The plugin follows opencode 1.18.0's plugin API; a newer opencode may report its events
+  differently.
+- opencode's config directory is writable, since opencode writes there, so an agent could add a
+  plugin that runs unsandboxed the next time you run opencode outside orca-term, as it could add a
+  git hook in `.git/hooks`.
+- A command opencode runs may inherit the events pipe and write to it: it can then change what
+  orca-term shows for that worktree's turns, and nothing else.
+- A subagent session that opencode continues, rather than creates, reports its first message as
+  yours, which interrupts the turn; a message opencode adds on its own (a background subagent's
+  result) starts no turn.
+- A recorded session opencode no longer has makes it exit at once with its own message; start a
+  new one with `orca-term agent start <worktree> --fresh`.
+- On macOS, pushing over SSH and signing commits through an agent (ssh-agent, gpg-agent) fail inside
+  the sandbox, which allows no unix socket but the resolver's. On Linux, the sandbox covers the admin
+  directories that exist at launch, and a missing `.git/orca-term.yaml` is covered by an empty file,
+  which stays.
+- Your own `OPENCODE_CONFIG_DIR` is replaced by orca-term's for opencode in a worktree.
+
 ## Review
 
 The review shows what a worktree changed since it forked from the default branch: the commit it
@@ -264,12 +322,13 @@ info     contract 1, orca-term 0.1.0
 
 It needs git 2.38 or later, claude's sandbox tools (`sandbox-exec` on macOS, `bwrap` and `socat`
 on Linux) and claude 2.1.295 or later. A claude newer than the one orca-term was tested with is
-only a warning. opencode is optional for now. With `--json` it prints the same checks as one
+only a warning. opencode is optional, since you may use only claude; starting it needs 1.18.0 or
+later. With `--json` it prints the same checks as one
 document. It exits 0 unless something is missing or too old; then it prints the whole report and
 exits 9.
 
 Every command that needs a missing or outdated program refuses with the same line, exit 9: git for
-every command, claude for `agent start`, such as
+every command, claude or opencode for `agent start`, such as
 `orca-term: git 2.30.1: orca-term needs 2.38 or later; run orca-term doctor for the full report`.
 
 In Neovim, `:checkhealth orca-term` shows the core binary the client uses, the doctor's checks,
