@@ -34,6 +34,9 @@ one, the tool calls claude's permission rules denied in its latest turn, and the
 log. The float closes when the cursor moves, on `K` again, or on `q` once you enter it. At the
 right of a row, `⊘N` counts the tool calls denied in the worktree's latest turn and `✎N` its notes
 waiting to be sent.
+A row shows `≠` while its worktree is in the middle of a git merge, rebase, cherry-pick or revert,
+and the float names it (`rebase in progress (2/5)`); `worktree ls` adds it to the state
+(`idle, rebasing`). It is read from git's own files and is never a state.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
 opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
 `:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
