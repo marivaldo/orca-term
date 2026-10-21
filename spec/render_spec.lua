@@ -464,6 +464,11 @@ describe("render.detail, a worktree's detail", function()
     end
   )
 
+  it('names opencode as the agent the same way (#35)', function()
+    local rendered = render.detail(document({}, { agent = 'opencode' }), 50)
+    assert.are.equal(' ● finished · opencode', rendered.lines[1])
+  end)
+
   it('wraps the whole error to the width in the state colour, never cutting it', function()
     local error = 'API Error: 400 '
       .. string.rep('a long message that goes on and on ', 8)

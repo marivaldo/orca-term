@@ -66,7 +66,11 @@ pub(crate) struct AgentRepo {
 
 impl AgentRepo {
     pub(crate) fn new() -> Self {
-        let repo = Repo::new();
+        Self::with_repo(Repo::new())
+    }
+
+    /// The fixture around `repo`: the isolated PATH and the fake claude's log files beside it.
+    pub(crate) fn with_repo(repo: Repo) -> Self {
         let bin = repo.tmp.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
         for tool in ["git", "bash"] {
@@ -110,12 +114,17 @@ impl AgentRepo {
         fs::remove_file(self.bin.join(name)).unwrap();
     }
 
-    /// The binary as a `Command`, run from the primary checkout with the isolated PATH.
+    /// The binary as a `Command`, run from the primary checkout with the isolated PATH. The XDG
+    /// base directories opencode's are found under fall back to the fixture's `HOME`, so starting
+    /// opencode makes its directories there and never in the developer's own (#35).
     pub(crate) fn command(&self, args: &[&str]) -> Command {
         let mut cmd = self.repo.command(&self.repo.root);
         cmd.args(args)
             .env("PATH", &self.bin)
             .env("ORCA_TERM_FAKE_CLAUDE_LOG", &self.log)
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_STATE_HOME")
             .stdin(Stdio::null());
         cmd
     }

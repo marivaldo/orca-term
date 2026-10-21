@@ -2,12 +2,13 @@
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
 //! notes, reading its turns, telling the running Neovims that a worktree changed and checking the
-//! programs a command needs (git, claude).
+//! programs a command needs (git, the agents).
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
+pub(crate) mod agent_swap;
 pub(crate) mod doctor;
 pub(crate) mod hook;
 pub(crate) mod note_add;
@@ -35,7 +36,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::adapters::fs::{self, WorktreeLock};
+use crate::adapters::fs::{self, FileLock, WorktreeLock};
 use crate::adapters::nvim::Sent;
 use crate::adapters::{self, env, git, program, script};
 use crate::domain::agent::{Agent, HolderStatus};
@@ -486,15 +487,36 @@ pub(crate) fn is_approved(
 /// approvals' lock from the read to the write (waiting for another command at most
 /// [`TRUST_LOCK_WAIT`]), replaces the file whole, and never writes over a newer schema.
 fn record_approval(common: &Path, kind: Kind, hash: &str, source: &str) -> Result<()> {
-    let lock = trust::trust_lock(common);
-    fs::create_dir_all(lock.parent().unwrap_or(common))?;
-    let _lock = fs::lock_file_waiting(&lock, TRUST_LOCK_WAIT)?.ok_or_else(|| {
-        anyhow!("another orca-term command is recording an approval; try again once it finishes")
-    })?;
+    let _lock = lock_trust(common)?;
     let file = trust::trust_file(common);
     let mut approvals = trust::read(fs::read_optional(&file)?.as_deref())?;
     approvals.approve(kind, hash, source, env::now_millis());
     fs::write_atomically(&file, &approvals.to_bytes()?)
+}
+
+/// Writes an approvals' file approving nothing in the git common dir `common` when there is none,
+/// under the approvals' lock. opencode's sandbox on Linux keeps the agent from writing a file only
+/// when the file exists (#35): one the agent made itself would be read as approvals.
+pub(crate) fn ensure_trust_file(common: &Path) -> Result<()> {
+    let file = trust::trust_file(common);
+    if fs::exists(&file) {
+        return Ok(());
+    }
+    let _lock = lock_trust(common)?;
+    if !fs::exists(&file) {
+        fs::write_atomically(&file, &trust::Trust::default().to_bytes()?)?;
+    }
+    Ok(())
+}
+
+/// Takes the approvals' lock of the git common dir `common`, waiting for another command at most
+/// [`TRUST_LOCK_WAIT`].
+fn lock_trust(common: &Path) -> Result<FileLock> {
+    let lock = trust::trust_lock(common);
+    fs::create_dir_all(lock.parent().unwrap_or(common))?;
+    fs::lock_file_waiting(&lock, TRUST_LOCK_WAIT)?.ok_or_else(|| {
+        anyhow!("another orca-term command is recording an approval; try again once it finishes")
+    })
 }
 
 /// The registry of running Neovims of the repository containing the current directory, in its
@@ -739,10 +761,10 @@ pub(crate) fn check_git() -> Result<()> {
     prerequisite::require(&check)
 }
 
-/// claude's path on `path_dirs`, refusing as the typed `prerequisite` when it is not there or
-/// older than orca-term needs. A claude newer than the tested version is not refused.
-pub(crate) fn find_claude(path_dirs: &[PathBuf]) -> Result<PathBuf> {
-    let (path, check) = check_program(path_dirs, &prerequisite::CLAUDE);
+/// The path of `agent`'s program on `path_dirs`, refusing as the typed `prerequisite` when it is
+/// not there or older than orca-term needs. One newer than the tested version is not refused.
+pub(crate) fn find_agent(path_dirs: &[PathBuf], agent: Agent) -> Result<PathBuf> {
+    let (path, check) = check_program(path_dirs, &prerequisite::agent_requirement(agent));
     prerequisite::require(&check)?;
-    path.context("claude is not on PATH")
+    path.with_context(|| format!("{} is not on PATH", agent.program()))
 }

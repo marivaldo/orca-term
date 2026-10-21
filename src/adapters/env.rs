@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 use crate::domain::config::Env;
+use crate::domain::launch::opencode::DirsEnv;
 
 /// The directory the core was started in.
 pub(crate) fn current_dir() -> Result<PathBuf> {
@@ -36,6 +37,21 @@ pub(crate) fn path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default()
+}
+
+/// The variables opencode finds its own directories by (`HOME`, `XDG_DATA_HOME`,
+/// `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `TMPDIR`), each `None` when unset, empty
+/// or not text.
+pub(crate) fn opencode_dirs_env() -> DirsEnv {
+    let var = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+    DirsEnv {
+        home: var("HOME"),
+        xdg_data_home: var("XDG_DATA_HOME"),
+        xdg_cache_home: var("XDG_CACHE_HOME"),
+        xdg_config_home: var("XDG_CONFIG_HOME"),
+        xdg_state_home: var("XDG_STATE_HOME"),
+        tmpdir: var("TMPDIR"),
+    }
 }
 
 /// `HOME` and `XDG_CONFIG_HOME`, each `None` when unset or empty.

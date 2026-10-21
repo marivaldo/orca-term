@@ -13,7 +13,7 @@ use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped};
+use crate::domain::agent::{AttachEnd, StartOutcome, Started, StopOutcome, Stopped, Swapped};
 use crate::domain::blame::{Blame, LineAuthor, Source};
 use crate::domain::detail::{Detail, Drift, SetupDetail, SetupProgress};
 use crate::domain::error;
@@ -429,6 +429,32 @@ fn render_agent_started(started: &Started) -> String {
         worktree.path.display(),
         worktree.name,
     )
+}
+
+/// Prints what `agent swap` did: in text, which agent was stopped (when one was), then what
+/// starting the new one did, as `agent start` prints it.
+pub(crate) fn agent_swapped(swapped: &Swapped, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => {
+            if let Some(writable) = &swapped.started.writable {
+                progress(&render_writable(writable), format);
+            }
+            out(&render_agent_swapped(swapped));
+        }
+        Format::Json => out(&json::swapped(swapped)?),
+    }
+    Ok(())
+}
+
+fn render_agent_swapped(swapped: &Swapped) -> String {
+    let started = render_agent_started(&swapped.started);
+    match (swapped.stopped, swapped.previous) {
+        (true, Some(previous)) => format!(
+            "stopped agent {previous} in worktree {}\n{started}",
+            swapped.started.worktree.name
+        ),
+        _ => started,
+    }
 }
 
 /// Prints what `agent stop` did.
@@ -1335,6 +1361,44 @@ mod tests {
                 .starts_with("agent claude-code is already running in worktree fix\n")
         );
         assert!(render_agent_started(&again).contains("holder: pid unknown\n"));
+    }
+
+    #[test]
+    fn agent_swap_says_which_agent_it_stopped_then_what_it_started() {
+        let mut fix = worktree("fix", State::Idle);
+        fix.agent = Some("opencode".to_owned());
+        fix.holder = HolderStatus::Alive;
+        let started = Started {
+            worktree: fix,
+            agent: Agent::OpenCode,
+            outcome: StartOutcome::Started {
+                pid: 4243,
+                resumed: None,
+            },
+            writable: None,
+        };
+        let swapped = Swapped {
+            previous: Some(Agent::ClaudeCode),
+            stopped: true,
+            started: started.clone(),
+        };
+        assert_eq!(
+            render_agent_swapped(&swapped),
+            "stopped agent claude-code in worktree fix\n\
+             started agent opencode in worktree fix\n\
+             path:   /l/fix\n\
+             holder: pid 4243\n\
+             attach: orca-term agent attach fix"
+        );
+        let nothing_running = Swapped {
+            previous: Some(Agent::ClaudeCode),
+            stopped: false,
+            started,
+        };
+        assert!(
+            render_agent_swapped(&nothing_running)
+                .starts_with("started agent opencode in worktree fix\n")
+        );
     }
 
     #[test]

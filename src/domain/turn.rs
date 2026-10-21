@@ -25,6 +25,8 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::agent::Agent;
+
 /// The newest schema of `status.json` this core reads and writes.
 pub(crate) const STATUS_SCHEMA: u64 = 1;
 
@@ -165,6 +167,11 @@ pub(crate) struct Status {
     /// named one. Added within schema 1: a file written before it reads as `None`.
     #[serde(default)]
     pub(crate) transcript: Option<PathBuf>,
+    /// The agent whose hooks named the current session (`claude`, `opencode`), so a session is
+    /// only ever resumed by the agent it belongs to (#35). Added within schema 1: a file written
+    /// before it reads as `None`, which is claude's, the only agent then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent: Option<String>,
     /// The turn in progress, if any.
     #[serde(default)]
     pub(crate) turn: Option<OpenTurn>,
@@ -184,6 +191,12 @@ pub(crate) struct Status {
 }
 
 impl Status {
+    /// The agent the current session belongs to, as its hooks name it: the one recorded, else
+    /// claude, whose hooks were the only ones before the agent was recorded.
+    pub(crate) fn session_agent(&self) -> &str {
+        self.agent.as_deref().unwrap_or(Agent::ClaudeCode.program())
+    }
+
     /// The denials of the worktree's latest turn: the open one, else the latest that ended,
     /// whatever its outcome or session. None before any turn.
     pub(crate) fn latest_denials(&self) -> &[Denial] {
@@ -531,6 +544,7 @@ mod tests {
         let status = Status {
             session: Some("s1".to_owned()),
             transcript: Some(PathBuf::from("/home/me/.claude/projects/-w-fix/s1.jsonl")),
+            agent: Some("claude".to_owned()),
             turn: Some(open(2)),
             queued: Some("and then".to_owned()),
             latest: Some(closed(1)),
@@ -541,7 +555,7 @@ mod tests {
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(
             text.starts_with(
-                r#"{"schema":1,"session":"s1","transcript":"/home/me/.claude/projects/-w-fix/s1.jsonl","turn":{"number":2,"#
+                r#"{"schema":1,"session":"s1","transcript":"/home/me/.claude/projects/-w-fix/s1.jsonl","agent":"claude","turn":{"number":2,"#
             ),
             "{text}"
         );
@@ -550,6 +564,28 @@ mod tests {
         assert_eq!(
             read_status(Some(&bytes)),
             StatusRead::Usable(Box::new(status))
+        );
+    }
+
+    #[test]
+    fn the_sessions_agent_is_the_one_recorded_else_claude() {
+        let before = read_status(Some(br#"{"schema":1,"session":"s1"}"#))
+            .usable()
+            .unwrap();
+        assert_eq!(
+            before.agent, None,
+            "a status written before the agent was named"
+        );
+        assert_eq!(before.session_agent(), "claude");
+        let opencodes = Status {
+            agent: Some("opencode".to_owned()),
+            ..before
+        };
+        assert_eq!(opencodes.session_agent(), "opencode");
+        let text = String::from_utf8(status_bytes(&Status::default()).unwrap()).unwrap();
+        assert!(
+            !text.contains("agent"),
+            "no agent written when none: {text}"
         );
     }
 

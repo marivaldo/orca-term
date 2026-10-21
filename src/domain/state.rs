@@ -16,9 +16,9 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::agent::HolderStatus;
+use crate::domain::agent::{Agent, HolderStatus};
 use crate::domain::setup::{self, Exit, SetupRecord};
-use crate::domain::turn::{Outcome, Phase, Status};
+use crate::domain::turn::{OpenTurn, Outcome, Phase, Status};
 
 /// The newest schema this core reads and writes.
 pub(crate) const SUPPORTED_SCHEMA: u64 = 1;
@@ -46,6 +46,13 @@ pub(crate) const AGENT_SOCKET_FILE: &str = "agent.sock";
 
 /// The settings claude is launched with, rebuilt on every start.
 const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
+
+/// opencode's extra config directory, holding the plugin that reports its turns, rebuilt on every
+/// start (#35).
+const OPENCODE_CONFIG_DIR: &str = "opencode";
+
+/// The macOS sandbox profile opencode is launched with, rebuilt on every start (#35).
+const OPENCODE_PROFILE_FILE: &str = "opencode-sandbox.sb";
 
 /// The live status the agent's hooks keep (`domain/turn.rs`).
 const STATUS_FILE: &str = "status.json";
@@ -128,6 +135,16 @@ impl AdminDir {
     /// claude's settings file, `claude-settings.json`.
     pub(crate) fn claude_settings(&self) -> PathBuf {
         self.0.join(CLAUDE_SETTINGS_FILE)
+    }
+
+    /// opencode's extra config directory, `opencode/`, which `OPENCODE_CONFIG_DIR` names.
+    pub(crate) fn opencode_config(&self) -> PathBuf {
+        self.0.join(OPENCODE_CONFIG_DIR)
+    }
+
+    /// opencode's macOS sandbox profile, `opencode-sandbox.sb`.
+    pub(crate) fn opencode_profile(&self) -> PathBuf {
+        self.0.join(OPENCODE_PROFILE_FILE)
     }
 
     /// The hooks' live status, `status.json`.
@@ -364,35 +381,51 @@ pub(crate) fn setup_running(lock: LockStatus) -> State {
 /// hook reported, or when `status.json` cannot be used) and whether its holder is alive:
 ///
 /// - a turn is open: `working` or `waiting` while the holder lives, showing what the agent does;
-///   `interrupted` once it is gone (the agent died mid-turn), showing the turn's prompt;
-/// - no turn is open: the latest turn's outcome when it belongs to the current session, showing
-///   what the agent said last (an interrupted turn shows its prompt); otherwise `idle`, as a
-///   fresh session reads.
+///   `interrupted` once it is gone (the agent died mid-turn), showing the turn's prompt. A turn
+///   another agent opened (the worktree's agent was swapped since) has nobody left to end it, so
+///   it is `interrupted` too;
+/// - no turn is open: the latest turn's outcome when it belongs to the current session and that
+///   session to the worktree's agent, showing what the agent said last (an interrupted turn shows
+///   its prompt); otherwise `idle`, as a fresh session reads.
 pub(crate) fn ready(
     agent: Option<&str>,
     status: Option<&Status>,
     holder: HolderStatus,
 ) -> (State, Option<String>) {
-    if agent.is_none() {
+    let Some(agent) = agent else {
         return (State::NoAgent, None);
-    }
+    };
     let Some(status) = status else {
         return (State::Idle, None);
     };
+    let program = Agent::from_name(agent).map(Agent::program);
     if let Some(turn) = &status.turn {
-        return match (holder, turn.phase) {
-            (HolderStatus::Gone, _) => (State::Interrupted, shown(&turn.prompt)),
-            (HolderStatus::Alive, Phase::Waiting) => (State::Waiting, shown(&turn.activity)),
-            (HolderStatus::Alive, Phase::Working) => (State::Working, shown(&turn.activity)),
+        let alive = holder.is_alive() && opened_by(turn, program);
+        return match (alive, turn.phase) {
+            (false, _) => (State::Interrupted, shown(&turn.prompt)),
+            (true, Phase::Waiting) => (State::Waiting, shown(&turn.activity)),
+            (true, Phase::Working) => (State::Working, shown(&turn.activity)),
         };
     }
+    let own_session = program == Some(status.session_agent());
     match &status.latest {
-        Some(closed) if closed.session == status.session => {
+        Some(closed) if closed.session == status.session && own_session => {
             let activity = closed.detail.as_deref().unwrap_or(&closed.prompt);
             (outcome_state(closed.outcome), shown(activity))
         }
         _ => (State::Idle, None),
     }
+}
+
+/// Whether the open `turn` was opened by the agent whose program is `program`. A turn recorded
+/// before the turns named their agent was claude's.
+fn opened_by(turn: &OpenTurn, program: Option<&str>) -> bool {
+    let opener = if turn.agent.is_empty() {
+        Agent::ClaudeCode.program()
+    } else {
+        turn.agent.as_str()
+    };
+    program == Some(opener)
 }
 
 /// The state a closed turn's outcome shows as.
@@ -771,6 +804,55 @@ mod tests {
         assert_eq!(
             ready(Some("claude-code"), Some(&status), HolderStatus::Alive),
             (State::Idle, None)
+        );
+    }
+
+    #[test]
+    fn after_a_swap_the_other_agents_session_reads_idle_and_its_open_turn_interrupted() {
+        // claude's session, recorded before the agent was named: opencode, swapped in, is idle.
+        let claudes = closed_turn(Outcome::Finished, "s1", Some("All done."));
+        assert_eq!(
+            ready(Some("opencode"), Some(&claudes), HolderStatus::Alive),
+            (State::Idle, None)
+        );
+        assert_eq!(
+            ready(Some("claude-code"), Some(&claudes), HolderStatus::Alive).0,
+            State::Finished
+        );
+        let opencodes = Status {
+            agent: Some("opencode".to_owned()),
+            ..closed_turn(Outcome::Finished, "s1", Some("All done."))
+        };
+        assert_eq!(
+            ready(Some("opencode"), Some(&opencodes), HolderStatus::Alive).0,
+            State::Finished
+        );
+        assert_eq!(
+            ready(Some("claude-code"), Some(&opencodes), HolderStatus::Alive),
+            (State::Idle, None)
+        );
+        // claude's turn left open, opencode now running: nobody will end it.
+        assert_eq!(
+            ready(
+                Some("opencode"),
+                Some(&open_turn(Phase::Working)),
+                HolderStatus::Alive
+            ),
+            (State::Interrupted, Some("fix the login".to_owned()))
+        );
+        let mut before_agents = open_turn(Phase::Working);
+        if let Some(turn) = before_agents.turn.as_mut() {
+            turn.agent = String::new();
+        }
+        assert_eq!(
+            ready(
+                Some("claude-code"),
+                Some(&before_agents),
+                HolderStatus::Alive
+            )
+            .0,
+            State::Working,
+            "a turn recorded before turns named their agent is claude's"
         );
     }
 

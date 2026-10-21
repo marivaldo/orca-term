@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::agent::Agent;
 use crate::domain::prerequisite::DOCTOR_HINT;
 use crate::domain::sandbox;
 use crate::domain::trust::Subject;
@@ -27,10 +28,14 @@ pub(crate) enum TypedError {
         path: PathBuf,
         reason: BusyReason,
     },
-    /// claude's sandbox cannot run on this machine: `missing` names the tools absent from PATH
-    /// (empty when the system has no sandbox at all), and `hint` the fix.
-    #[error("{}", no_sandbox_message(missing, hint))]
-    NoSandbox { missing: Vec<String>, hint: String },
+    /// The sandbox `agent` runs in cannot run on this machine: `missing` names the tools absent
+    /// from PATH (empty when the system has no sandbox at all), and `hint` the fix.
+    #[error("{}", no_sandbox_message(*agent, missing, hint))]
+    NoSandbox {
+        agent: Agent,
+        missing: Vec<String>,
+        hint: String,
+    },
     /// The worktree has modified or untracked files, so `worktree rm` keeps it unless forced.
     #[error(
         "worktree {name} at {} has modified or untracked files; pass --force to remove it \
@@ -96,7 +101,7 @@ pub(crate) enum GoneReason {
     TranscriptGone(PathBuf),
     /// No transcript was recorded for the session (or not as an absolute path).
     NoTranscript,
-    /// The id is not one claude makes, so it is never put on claude's command line.
+    /// The id is not one an agent makes, so it is never put on the agent's command line.
     InvalidId,
 }
 
@@ -109,6 +114,10 @@ pub(crate) enum BusyReason {
     /// Its agent is running: a holder is alive, and git must not touch the admin directory under
     /// it.
     AgentRunning,
+    /// Another agent, `running`, runs in it, so `wanted` cannot start there (#35).
+    AnotherAgent { running: Agent, wanted: Agent },
+    /// Its agent is in a turn, working or waiting for the person, so it is not swapped under it.
+    InTurn,
 }
 
 fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
@@ -122,6 +131,16 @@ fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
             "worktree {name} at {path} is busy: its agent is running; stop it first with \
              `orca-term agent stop {name}`"
         ),
+        BusyReason::AnotherAgent { running, wanted } => format!(
+            "worktree {name} at {path} is busy: its agent {running} is running; swap it for \
+             {wanted} with `orca-term agent swap {name} {wanted}`, or stop it first with \
+             `orca-term agent stop {name}`"
+        ),
+        BusyReason::InTurn => format!(
+            "worktree {name} at {path} is busy: its agent is in a turn, working or waiting for \
+             you; swap agents once the turn ends, or stop it first with `orca-term agent stop \
+             {name}`"
+        ),
     }
 }
 
@@ -131,7 +150,7 @@ fn session_gone_message(name: &str, session: &str, reason: &GoneReason) -> Strin
     let reason = match reason {
         GoneReason::TranscriptGone(path) => format!("its transcript {} is gone", path.display()),
         GoneReason::NoTranscript => "no transcript of it is recorded".to_owned(),
-        GoneReason::InvalidId => "its id is not one claude makes".to_owned(),
+        GoneReason::InvalidId => "its id is not one an agent makes".to_owned(),
     };
     let session: String = session
         .chars()
@@ -147,11 +166,12 @@ fn session_gone_message(name: &str, session: &str, reason: &GoneReason) -> Strin
 /// The most characters of a session id an error message shows.
 const SHOWN_ID_CHARS: usize = 128;
 
-/// The message of [`TypedError::NoSandbox`]: the diagnosis `orca-term doctor` shows for the
-/// sandbox, word for word.
-fn no_sandbox_message(missing: &[String], hint: &str) -> String {
+/// The message of [`TypedError::NoSandbox`]: whose sandbox, then the diagnosis `orca-term doctor`
+/// shows for the sandbox, in the same words.
+fn no_sandbox_message(agent: Agent, missing: &[String], hint: &str) -> String {
     format!(
-        "claude's sandbox is not available: {}; {DOCTOR_HINT}",
+        "{}'s sandbox is not available: {}; {DOCTOR_HINT}",
+        agent.program(),
         sandbox::diagnosis(missing, hint)
     )
 }
@@ -241,6 +261,7 @@ mod tests {
     #[test]
     fn a_missing_sandbox_has_its_own_kind_and_exit_code() {
         let err = anyhow::Error::new(TypedError::NoSandbox {
+            agent: Agent::ClaudeCode,
             missing: vec!["bwrap".to_owned(), "socat".to_owned()],
             hint: "install them".to_owned(),
         });
@@ -250,6 +271,45 @@ mod tests {
             err.to_string(),
             "claude's sandbox is not available: bwrap and socat not found on PATH; install them; \
              run orca-term doctor for the full report"
+        );
+        let err = anyhow::Error::new(TypedError::NoSandbox {
+            agent: Agent::OpenCode,
+            missing: vec!["bwrap".to_owned()],
+            hint: "install it".to_owned(),
+        });
+        assert_eq!(kind(&err), "no_sandbox");
+        assert!(
+            err.to_string()
+                .starts_with("opencode's sandbox is not available: bwrap not found on PATH"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_worktree_running_another_agent_is_busy_naming_it_and_the_swap() {
+        let err = anyhow::Error::new(busy(BusyReason::AnotherAgent {
+            running: Agent::OpenCode,
+            wanted: Agent::ClaudeCode,
+        }));
+        assert_eq!(kind(&err), "busy");
+        assert_eq!(exit_code(&err), 3);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix at /w/repo/fix is busy: its agent opencode is running; swap it for \
+             claude-code with `orca-term agent swap fix claude-code`, or stop it first with \
+             `orca-term agent stop fix`"
+        );
+    }
+
+    #[test]
+    fn an_agent_in_a_turn_is_busy_for_a_swap() {
+        let err = anyhow::Error::new(busy(BusyReason::InTurn));
+        assert_eq!(kind(&err), "busy");
+        assert_eq!(exit_code(&err), 3);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix at /w/repo/fix is busy: its agent is in a turn, working or waiting for \
+             you; swap agents once the turn ends, or stop it first with `orca-term agent stop fix`"
         );
     }
 
@@ -288,7 +348,10 @@ mod tests {
              fix --fresh`"
         );
         let err = gone(GoneReason::InvalidId).to_string();
-        assert!(err.contains(": its id is not one claude makes; "), "{err}");
+        assert!(
+            err.contains(": its id is not one an agent makes; "),
+            "{err}"
+        );
         let err = gone(GoneReason::NoTranscript).to_string();
         assert!(err.contains(": no transcript of it is recorded; "), "{err}");
     }

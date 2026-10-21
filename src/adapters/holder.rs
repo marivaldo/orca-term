@@ -11,6 +11,7 @@
     reason = "this adapter is the one place that starts the holder process"
 )]
 
+pub(crate) mod events;
 pub(crate) mod peer;
 pub(crate) mod process;
 
@@ -33,7 +34,8 @@ use crate::domain::state::{AGENT_SOCKET_FILE, AdminDir};
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a holder is told when started: the worktree's admin directory and path, both absolute,
-/// the agent's first terminal size and the command that is the agent.
+/// the agent's first terminal size, the command that is the agent and, for an agent that reports
+/// its events through a pipe (opencode, #35), the agent its hooks are named after.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HolderArgs {
     pub(crate) admin: AdminDir,
@@ -41,13 +43,21 @@ pub(crate) struct HolderArgs {
     pub(crate) size: Size,
     /// The agent's command line, program first.
     pub(crate) argv: Vec<String>,
+    /// The agent whose hook the holder runs for each line the agent writes to its events pipe
+    /// (`opencode`), or `None` for an agent that runs its hooks itself (claude).
+    pub(crate) events: Option<String>,
 }
 
 /// Starts a holder for `args` as a detached child of this process, with the variables in
-/// `strip_vars` removed from its environment, and waits for its first word: the holder's pid once
-/// the agent runs, or why it could not. The holder gets no handle on this process's output, so
-/// `agent start` can return while the holder lives on; it is reparented when `agent start` exits.
-pub(crate) fn spawn(args: &HolderArgs, strip_vars: &[&str]) -> Result<u32> {
+/// `strip_vars` removed from its environment and those in `set_vars` set (the agent inherits the
+/// holder's environment), and waits for its first word: the holder's pid once the agent runs, or
+/// why it could not. The holder gets no handle on this process's output, so `agent start` can
+/// return while the holder lives on; it is reparented when `agent start` exits.
+pub(crate) fn spawn(
+    args: &HolderArgs,
+    strip_vars: &[&str],
+    set_vars: &[(&str, String)],
+) -> Result<u32> {
     let exe = std::env::current_exe().context("could not find the orca-term binary")?;
     let mut command = Command::new(exe);
     command
@@ -60,7 +70,11 @@ pub(crate) fn spawn(args: &HolderArgs, strip_vars: &[&str]) -> Result<u32> {
         .arg("--rows")
         .arg(args.size.rows.to_string())
         .arg("--cols")
-        .arg(args.size.cols.to_string())
+        .arg(args.size.cols.to_string());
+    if let Some(agent) = &args.events {
+        command.arg("--events").arg(agent);
+    }
+    command
         .arg("--")
         .args(&args.argv)
         .stdin(Stdio::null())
@@ -68,6 +82,9 @@ pub(crate) fn spawn(args: &HolderArgs, strip_vars: &[&str]) -> Result<u32> {
         .stderr(Stdio::null());
     for var in strip_vars {
         command.env_remove(var);
+    }
+    for (var, value) in set_vars {
+        command.env(var, value);
     }
     let mut child = command.spawn().context("could not start the holder")?;
     let Some(stdout) = child.stdout.take() else {

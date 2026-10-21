@@ -1,11 +1,15 @@
-//! Domain: how claude is launched in a worktree (ADR 0007, ADR 0009): its arguments, the settings
-//! file that turns its native sandbox on, keeps our state out of its reach and registers the hooks
-//! that report its turns (ADR 0008: per launch, never in claude's own config), the variables kept
-//! from its environment, the session a cold start resumes, and the guard that no launch ever
-//! bypasses permissions. The version it needs is `domain/prerequisite.rs`'s.
+//! Domain: how an agent is launched in a worktree (ADR 0007, ADR 0009). For claude: its
+//! arguments, the settings file that turns its native sandbox on, keeps our state out of its reach
+//! and registers the hooks that report its turns (ADR 0008: per launch, never in claude's own
+//! config), and the variables kept from its environment. For opencode (#35), `launch/opencode.rs`:
+//! its command line inside the sandbox orca-term wraps it in, and the plugin that reports its
+//! turns. For both: the session a cold start resumes, and the guard that no launch ever bypasses
+//! permissions. The versions they need are `domain/prerequisite.rs`'s.
 //!
 //! The forbidden flags and modes are listed here and nowhere else in the source:
 //! `cargo xtask launch-guard` rejects their literals in any other file.
+
+pub(crate) mod opencode;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -13,6 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::domain::agent::Agent;
 use crate::domain::error::{GoneReason, TypedError};
 use crate::domain::hook;
 use crate::domain::state::ADMIN_DIR_NAME;
@@ -33,11 +38,14 @@ pub(crate) const STRIPPED_VARS: &[&str] = &[
     "CLAUDE_CODE_CHILD_SESSION",
 ];
 
-/// Flags no launch may carry. `--permission-mode` is allowed only with [`PERMISSION_MODE`].
+/// Flags no launch may carry: claude's, and opencode's (whose TUI takes `--auto`, `--yolo` and
+/// `--dangerously-skip-permissions` alike, measured in its 1.18.0 source). `--permission-mode` is
+/// allowed only with [`PERMISSION_MODE`].
 const FORBIDDEN_FLAGS: &[&str] = &[
     "--dangerously-skip-permissions",
     "--allow-dangerously-skip-permissions",
     "--auto",
+    "--yolo",
 ];
 
 /// Values `permissions.defaultMode` may never take in the settings.
@@ -61,6 +69,10 @@ pub(crate) const HOOK_TIMEOUT_SECS: u64 = 5;
 /// The flag that continues a recorded session under its own id. claude's `--fork-session`, which
 /// would give it a new id, is never used: the worktree keeps one current session.
 const RESUME_FLAG: &str = "--resume";
+
+/// Every flag that names a session to continue, whose value the guard checks is a [`SessionId`]:
+/// claude's `--resume`, and opencode's `-s` (also spelt `--session`).
+const SESSION_FLAGS: &[&str] = &[RESUME_FLAG, "-s", "--session"];
 
 /// The longest session id ever put on claude's command line.
 const MAX_SESSION_ID_CHARS: usize = 128;
@@ -86,10 +98,11 @@ pub(crate) fn claude_argv(
     argv
 }
 
-/// A session id that is safe to put on claude's command line: 1 to 128 characters among ASCII
-/// letters, digits, `_` and `-`, not starting with `-`. claude's ids are UUIDs, which pass. The
-/// rule keeps whatever `status.json` holds from ever reading as a flag (an "id" such as
-/// `--dangerously-skip-permissions`) or as anything but one argument.
+/// A session id that is safe to put on an agent's command line: 1 to 128 characters among ASCII
+/// letters, digits, `_` and `-`, not starting with `-`. claude's ids are UUIDs and opencode's read
+/// `ses_` and letters and digits, which pass. The rule keeps whatever `status.json` holds from
+/// ever reading as a flag (an "id" such as `--dangerously-skip-permissions`) or as anything but
+/// one argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionId(String);
 
@@ -115,42 +128,58 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// The session a cold start would continue: its id, and the transcript claude keeps it in.
+/// The session a cold start would continue: its id, and the transcript claude keeps it in
+/// (`None` for opencode, which keeps its sessions in a database of its own).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Resume {
     pub(crate) session: SessionId,
-    pub(crate) transcript: PathBuf,
+    pub(crate) transcript: Option<PathBuf>,
 }
 
-/// What a cold start of the worktree `name` does with the session `status` records (`None` when
-/// `status.json` is missing or cannot be used): nothing to resume without a recorded session, so
-/// a new session starts; else the session to resume. Fails as `session_gone` when the recorded
-/// id is not a [`SessionId`] or no absolute transcript path is recorded for it.
+/// What a cold start of `agent` in the worktree `name` does with the session `status` records
+/// (`None` when `status.json` is missing or cannot be used): nothing to resume without a recorded
+/// session, or with a session another agent recorded (the worktree's agent was swapped), so a new
+/// session starts; else the session to resume. Fails as `session_gone` when the recorded id is not
+/// a [`SessionId`] or, for claude, no absolute transcript path is recorded for it.
 pub(crate) fn session_to_resume(
     name: &str,
     status: Option<&Status>,
+    agent: Agent,
 ) -> Result<Option<Resume>, TypedError> {
-    let Some(recorded) = status.and_then(|status| status.session.as_deref()) else {
+    let Some(status) = status else {
         return Ok(None);
     };
+    let Some(recorded) = status.session.as_deref() else {
+        return Ok(None);
+    };
+    if status.session_agent() != agent.program() {
+        return Ok(None);
+    }
     let gone = |reason| TypedError::SessionGone {
         name: name.to_owned(),
         session: recorded.to_owned(),
         reason,
     };
     let session = SessionId::parse(recorded).ok_or_else(|| gone(GoneReason::InvalidId))?;
-    let transcript = status
-        .and_then(|status| status.transcript.clone())
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| gone(GoneReason::NoTranscript))?;
+    let transcript = match agent {
+        Agent::ClaudeCode => Some(
+            status
+                .transcript
+                .clone()
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| gone(GoneReason::NoTranscript))?,
+        ),
+        Agent::OpenCode => None,
+    };
     Ok(Some(Resume {
         session,
         transcript,
     }))
 }
 
-/// The session to put after `--resume`, once the caller has looked whether its transcript is
-/// still on disk (`transcript_exists`). Fails as `session_gone` when it is not.
+/// The session to put on the agent's command line, once the caller has looked whether its
+/// transcript, when it has one (claude's), is still on disk (`transcript_exists`). Fails as
+/// `session_gone` when it is not.
 ///
 /// Why look first: claude resumes a session from its transcript, and refuses one it cannot find.
 /// Measured with claude 2.1.301: `claude --resume 00000000-0000-4000-8000-000000000000 --print
@@ -162,14 +191,14 @@ pub(crate) fn check_transcript(
     resume: Resume,
     transcript_exists: bool,
 ) -> Result<SessionId, TypedError> {
-    if transcript_exists {
-        return Ok(resume.session);
+    match resume.transcript {
+        Some(transcript) if !transcript_exists => Err(TypedError::SessionGone {
+            name: name.to_owned(),
+            session: resume.session.as_str().to_owned(),
+            reason: GoneReason::TranscriptGone(transcript),
+        }),
+        _ => Ok(resume.session),
     }
-    Err(TypedError::SessionGone {
-        name: name.to_owned(),
-        session: resume.session.as_str().to_owned(),
-        reason: GoneReason::TranscriptGone(resume.transcript),
-    })
 }
 
 /// The settings passed to claude as `--settings <file>`: its sandbox on and set to fail rather
@@ -323,18 +352,23 @@ fn check_permission_mode(arg: &str, value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Refuses `arg` when it is `--resume` (followed by `value`) or `--resume=...` with a value
-/// that is not a [`SessionId`].
+/// Refuses `arg` when it is a flag of [`SESSION_FLAGS`] (followed by `value`), or one of its
+/// long forms written `--flag=...`, with a value that is not a [`SessionId`].
 fn check_resume(arg: &str, value: Option<&str>) -> Result<()> {
-    let session = if arg == RESUME_FLAG {
-        Some(value.unwrap_or_default())
-    } else {
-        arg.strip_prefix("--resume=")
-    };
-    if let Some(session) = session
-        && SessionId::parse(session).is_none()
-    {
-        bail!("refusing to launch the agent with `{RESUME_FLAG} {session}`, not a session id");
+    for flag in SESSION_FLAGS {
+        let session = if arg == *flag {
+            Some(value.unwrap_or_default())
+        } else if flag.starts_with("--") {
+            arg.strip_prefix(*flag)
+                .and_then(|rest| rest.strip_prefix('='))
+        } else {
+            None
+        };
+        if let Some(session) = session
+            && SessionId::parse(session).is_none()
+        {
+            bail!("refusing to launch the agent with `{flag} {session}`, not a session id");
+        }
     }
     Ok(())
 }
@@ -468,21 +502,62 @@ mod tests {
         }
     }
 
+    const CLAUDE: Agent = Agent::ClaudeCode;
+
     #[test]
     fn a_cold_start_resumes_the_recorded_session_or_starts_a_new_one() {
-        assert_eq!(session_to_resume("fix", None), Ok(None));
+        assert_eq!(session_to_resume("fix", None, CLAUDE), Ok(None));
         assert_eq!(
-            session_to_resume("fix", Some(&Status::default())),
+            session_to_resume("fix", Some(&Status::default()), CLAUDE),
             Ok(None),
             "no session recorded"
         );
         let status = recorded(UUID, Some("/h/t/s.jsonl"));
         assert_eq!(
-            session_to_resume("fix", Some(&status)),
+            session_to_resume("fix", Some(&status), CLAUDE),
             Ok(Some(Resume {
                 session: SessionId::parse(UUID).unwrap(),
-                transcript: PathBuf::from("/h/t/s.jsonl"),
+                transcript: Some(PathBuf::from("/h/t/s.jsonl")),
             }))
+        );
+    }
+
+    #[test]
+    fn a_session_is_resumed_only_by_the_agent_that_recorded_it() {
+        let claudes = recorded(UUID, Some("/h/t/s.jsonl"));
+        assert_eq!(
+            session_to_resume("fix", Some(&claudes), Agent::OpenCode),
+            Ok(None),
+            "a session recorded before the agent was named is claude's"
+        );
+        let opencodes = Status {
+            agent: Some("opencode".to_owned()),
+            ..recorded("ses_2Ab9", None)
+        };
+        assert_eq!(
+            session_to_resume("fix", Some(&opencodes), Agent::OpenCode),
+            Ok(Some(Resume {
+                session: SessionId::parse("ses_2Ab9").unwrap(),
+                transcript: None,
+            })),
+            "opencode keeps no transcript to look at"
+        );
+        assert_eq!(session_to_resume("fix", Some(&opencodes), CLAUDE), Ok(None));
+        let flag = Status {
+            agent: Some("opencode".to_owned()),
+            ..recorded("-x", None)
+        };
+        assert_eq!(
+            gone_reason(session_to_resume("fix", Some(&flag), Agent::OpenCode)),
+            GoneReason::InvalidId
+        );
+        let resume = session_to_resume("fix", Some(&opencodes), Agent::OpenCode)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            check_transcript("fix", resume, false),
+            Ok(SessionId::parse("ses_2Ab9").unwrap()),
+            "with no transcript there is nothing to find gone"
         );
     }
 
@@ -490,17 +565,22 @@ mod tests {
     fn a_session_with_a_bad_id_or_no_transcript_cannot_be_resumed() {
         let flag = recorded("--dangerously-skip-permissions", Some("/h/t/s.jsonl"));
         assert_eq!(
-            gone_reason(session_to_resume("fix", Some(&flag))),
+            gone_reason(session_to_resume("fix", Some(&flag), CLAUDE)),
             GoneReason::InvalidId
         );
         assert_eq!(
-            gone_reason(session_to_resume("fix", Some(&recorded(UUID, None)))),
+            gone_reason(session_to_resume(
+                "fix",
+                Some(&recorded(UUID, None)),
+                CLAUDE
+            )),
             GoneReason::NoTranscript
         );
         assert_eq!(
             gone_reason(session_to_resume(
                 "fix",
-                Some(&recorded(UUID, Some("t/s.jsonl")))
+                Some(&recorded(UUID, Some("t/s.jsonl"))),
+                CLAUDE
             )),
             GoneReason::NoTranscript,
             "a relative path is not trusted"
@@ -511,7 +591,7 @@ mod tests {
     fn a_session_whose_transcript_is_gone_cannot_be_resumed() {
         let resume = Resume {
             session: SessionId::parse(UUID).unwrap(),
-            transcript: PathBuf::from("/h/t/s.jsonl"),
+            transcript: Some(PathBuf::from("/h/t/s.jsonl")),
         };
         assert_eq!(
             check_transcript("fix", resume.clone(), true),
@@ -666,6 +746,7 @@ mod tests {
             "--dangerously-skip-permissions",
             "--allow-dangerously-skip-permissions",
             "--auto",
+            "--yolo",
         ] {
             let err = check_launch(&argv(&[flag]), &settings).unwrap_err();
             assert!(err.to_string().contains(flag), "{err}");
@@ -683,6 +764,38 @@ mod tests {
         check_launch(&argv(&["--permission-mode=acceptEdits"]), &settings).unwrap();
         // Compared as whole arguments: a longer argument containing a flag is not that flag.
         check_launch(&argv(&["--autocomplete"]), &settings).unwrap();
+    }
+
+    #[test]
+    fn opencodes_session_flag_takes_only_a_session_id_and_its_bypasses_are_refused() {
+        let opencode = |args: &[&str]| -> Vec<String> {
+            ["sandbox-exec", "-f", "/a/opencode-sandbox.sb", "opencode"]
+                .iter()
+                .chain(args)
+                .map(|arg| (*arg).to_owned())
+                .collect()
+        };
+        check_launch(&opencode(&[]), &Value::Null).unwrap();
+        check_launch(&opencode(&["-s", "ses_2Ab9"]), &Value::Null).unwrap();
+        check_launch(&opencode(&["--session=ses_2Ab9"]), &Value::Null).unwrap();
+        for bad in [
+            &["-s", "--yolo"][..],
+            &["-s"],
+            &["--session", "a b"],
+            &["--session=--auto"],
+            &["-s", "ses_2Ab9", "--yolo"],
+            &["--dangerously-skip-permissions"],
+            &["--auto"],
+        ] {
+            assert!(
+                check_launch(&opencode(bad), &Value::Null).is_err(),
+                "{bad:?}"
+            );
+        }
+        let err = check_launch(&opencode(&["-s", "-x"]), &Value::Null)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`-s -x`, not a session id"), "{err}");
     }
 
     #[test]

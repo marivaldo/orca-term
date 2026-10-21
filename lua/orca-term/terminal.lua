@@ -149,4 +149,28 @@ function M.open(path, cwd)
   return nil
 end
 
+---Shows the agent of the worktree at `path` in the current window, in terminal mode, in a new
+---terminal attached to its holder, once its agent was swapped (#35): the terminal it had, still
+---attached to the agent that was stopped or already ended, is detached and wiped. The caller has
+---made the worktree's main window current, and has started the new agent.
+---@param path string
+---@param cwd string where the core runs
+---@return orca_term.Error? err
+function M.reattach(path, cwd)
+  local existing = M.find(path)
+  local job = existing and M.running_job(existing)
+  if job then
+    vim.fn.jobstop(job)
+  end
+  if existing then
+    -- No longer the worktree's terminal, so open() attaches a new one.
+    vim.b[existing][M.MARK] = nil
+  end
+  local err = M.open(path, cwd)
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    vim.api.nvim_buf_delete(existing, { force = true })
+  end
+  return err
+end
+
 return M

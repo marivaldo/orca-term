@@ -39,6 +39,10 @@ jobs:
       - name: Allow unprivileged user namespaces
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # opencode's sandbox boundary test (#35) runs the fake opencode through the real bwrap.
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
       - run: just rust
 
   deny:

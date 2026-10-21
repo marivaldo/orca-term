@@ -10,9 +10,10 @@ Read it before changing the code; update it when a module moves. The words follo
 `orca-term` gives a person a fleet of git worktrees, each on its own branch, for parallel coding
 agents. The core is a Rust command-line program: each command reads the repository through git and
 the file system, decides what to do with pure rules, does it, and prints the result as text for a
-person or as JSON for the Neovim client. A worktree's agent (claude, for now) runs inside a
+person or as JSON for the Neovim client. A worktree's agent (claude or opencode) runs inside a
 detached process of the core, its holder, which keeps the agent's terminal and screen so that any
-terminal can attach to it and detach again (ADR 0009), under claude's native sandbox (ADR 0007).
+terminal can attach to it and detach again (ADR 0009), under claude's native sandbox, or the
+sandbox the core generates for opencode (ADR 0007, #35).
 
 The core is a library (`src/lib.rs`) with a thin binary (`src/main.rs`). Inside the library, every
 module sits in one of five layers, and code may use only its own layer and the layers below it:
@@ -43,8 +44,11 @@ the adapters, and returns a domain value that `output` prints.
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
   opens a review, `worktree detail`, what the detail float shows,
-  `agent start|attach|stop`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, the hidden `agent holder`, the holder process itself, and the
-  hidden `hook claude`, which claude runs for every hook event, and the hidden
+  `agent start|attach|stop` (`agent start --agent claude-code|opencode`), `agent swap <worktree>
+  <agent>`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, the hidden `agent holder`, the holder process itself (`--events <agent>` for an agent
+  that reports its events through a pipe), and the
+  hidden `hook claude`, which claude runs for every hook event (and `hook opencode`, which the
+  holder runs for every line opencode's plugin writes), and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
   `doctor [--json]` needs no repository; every other command but the hidden `hook` and `agent
@@ -53,7 +57,8 @@ the adapters, and returns a domain value that `output` prints.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
-  drift), of `agent start` and `stop` (and, on stderr, the
+  drift), of `agent start`, `swap` (`stopped agent <previous> in worktree <name>`, then what the
+  start printed) and `stop` (and, on stderr, the
   sandbox's extra writable paths with the config file that set them, and how an attach ended),
   of the note commands (a note's lines as made and, when they moved, `(now line 5)`; the prompt a
   send pasted), of the turn commands (`turn ls`'s table, `turn diff`'s patch written to stdout
@@ -68,8 +73,9 @@ the adapters, and returns a domain value that `output` prints.
   missing or too old, the whole report comes first, then the `prerequisite` error as any command
   prints it, and its exit code.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
-  `worktree rm`, `worktree review`, `agent start`, `agent stop` and errors), built as views from domain values, with the `contract`
-  and `version` envelope. Each worktree carries `agent` (`"claude-code"` or null) and `holder`
+  `worktree rm`, `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
+  null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
+  and `version` envelope. Each worktree carries `agent` (`"claude-code"`, `"opencode"` or null) and `holder`
   (whether a holder is alive) and `unseen` (whether it carries the unseen mark); `worktree seen`
   and `unseen` print the worktree and its mark; `worktree review` prints the worktree object
   (now seen), `base` (the review's base, a full commit id) and `against` (the default branch it
@@ -112,7 +118,9 @@ the adapters, and returns a domain value that `output` prints.
   (the whole `turns.jsonl` and `status.json`, read with no lock: the hook only appends to the one
   and replaces the other whole). The prerequisites: `check_program` finds a program on PATH as a
   shell would and asks its `--version`; `check_git` (called once per command by `cli`) and
-  `find_claude` (by `agent start`) refuse a missing or too old one as the typed `prerequisite`.
+  `find_agent` (by `agent start` and `agent swap`, claude or opencode) refuse a missing or too old
+  one as the typed `prerequisite`. `ensure_trust_file` writes an approvals' file approving nothing,
+  under its lock, when there is none, before opencode starts (#35).
 - `ops/doctor.rs`: `doctor`: check git, claude's sandbox tools, each agent and the contract, in
   that order. It only looks, needs no repository and never fails.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
@@ -157,12 +165,30 @@ the adapters, and returns a domain value that `output` prints.
   found on disk, or the typed `session_gone`), build and check the settings and the command line
   (`--resume <id>` on a cold start), write `claude-settings.json`, start the holder and wait for
   its first word, record the agent. The report says which session was `resumed`, if any.
+  The agent is `--agent`'s, else the one `worktree.json` records, else claude-code; a holder alive
+  running another agent is the typed `busy`. For opencode (#35) the sandbox check and the
+  prerequisite are opencode's, the session resumed only one opencode recorded (no transcript), and
+  instead of claude's settings it makes the approvals' file, builds the sandbox's policy (making
+  opencode's own directories first), the wrapper (`sandbox-exec -f <admin>/opencode-sandbox.sb` or
+  `bwrap <arguments> --`) and the command line `opencode [-s <id>]`, checks it, writes the profile
+  and the config directory with the plugin, and starts the holder with `OPENCODE_CONFIG_DIR` set
+  and `--events opencode`. `start` is what `agent swap` reuses, under its own lock.
+- `ops/agent_swap.rs`: `agent swap` (#35): find the target (ready, not the primary checkout), lock
+  it (or fail as `busy`), and when another agent's holder is alive refuse as `busy` an agent in a
+  turn (`working` or `waiting`), check the new agent's sandbox and program, stop the holder
+  (`agent_stop::stop_holder`); then start the new agent as `agent start` does, resuming only its
+  own session, which records it. The report names the agent swapped out and whether it was
+  stopped.
 - `ops/agent_attach.rs`: `agent attach`: find the target, refuse when no holder is alive (naming
   `agent start`), connect, hand the terminal to the holder until detach or the agent's end.
 - `ops/agent_stop.rs`: `agent stop`: find the target, nothing to do when no holder is alive, else
-  ask the holder to stop and wait for `agent.lock` to be released (at most 10 s).
+  ask the holder to stop and wait for `agent.lock` to be released (at most 10 s; `stop_holder`,
+  which `agent swap` reuses).
 - `ops/agent_holder.rs`: the hidden `agent holder`: the holder process, `adapters/holder/process.rs`.
-- `ops/hook.rs`: the hidden `hook claude --admin <dir> <event>`: read the payload from stdin,
+- `ops/hook.rs`: the hidden `hook claude --admin <dir> <event>` (and `hook opencode --admin <dir>`,
+  whose stdin is one line of opencode's plugin, read as claude's payload by
+  `domain/hook/opencode.rs`; a line that changes nothing writes and notifies nothing; the turn
+  and the end snapshot belong to `opencode`): read the payload from stdin,
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event, take
   the snapshot when the event opened or closed a turn, fill its id into the records, append to
   `turns.jsonl`, replace `status.json`, and exit 0 without printing whatever happens; what went
@@ -215,12 +241,14 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
-  `PATH`.
+  `PATH`; and the variables opencode finds its own directories by (`opencode_dirs_env`: `HOME`, the
+  four XDG base directories, `TMPDIR`).
 - `adapters/program.rs`: running a program for its `--version`.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
   the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
-  (`ok <pid>` or `error <why>`, 10 s at most), connecting to a holder's socket, typing into the
+  (`ok <pid>` or `error <why>`, 10 s at most), with variables set in its environment for the
+  agent to inherit (`OPENCODE_CONFIG_DIR`) and, for opencode, `--events opencode`, connecting to a holder's socket, typing into the
   agent's terminal as one more client (`type_input`: two input frames with a pause between, no
   size, no stop, never reading the replay), and asking it to stop. The socket is bound and connected by its bare name after a change of directory into the
   admin directory, since a unix socket address holds about 100 bytes.
@@ -234,11 +262,18 @@ the adapters, and returns a domain value that `output` prints.
   the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
   a second later) so the agent redraws for the new terminal. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
-  Each connection is first checked by `holder/peer.rs`; one it refuses is closed at once.
-- `adapters/holder/peer.rs`: whether the holder serves a client (#61). On Linux it reads the
-  client's pid from the socket (`SO_PEERCRED`), then its network namespace
-  (`/proc/<pid>/ns/net`) and the holder's own (`/proc/self/ns/net`), and asks
-  `protocol::admit`; elsewhere every client is served.
+  Each connection is first checked by `holder/peer.rs`; one it refuses is closed at once. With
+  `--events <agent>` it also opens the events pipe before starting the agent, which inherits its
+  write end under `ORCA_TERM_EVENTS_FD`, keeps only the read end, starts the events thread once
+  the agent runs, and on the agent's exit waits up to 5 s for it before leaving.
+- `adapters/holder/events.rs`: an agent's events pipe (#35): the pipe (its write end made
+  inheritable, its read end close-on-exec) and the thread that reads it line by line (a line past
+  256 KiB dropped whole) and runs `orca-term hook <agent> --admin <dir>` in the worktree for each,
+  in order, the line on its stdin, waiting at most 10 s for each.
+- `adapters/holder/peer.rs`: whether the holder serves a client (#61, #35). On Linux it reads the
+  client's pid from the socket (`SO_PEERCRED`), then its network and user namespaces
+  (`/proc/<pid>/ns/net`, `/proc/<pid>/ns/user`) and the holder's own (`/proc/self/ns/...`), and
+  asks `protocol::admit`; elsewhere every client is served.
 - `adapters/nvim.rs`: a running Neovim's server socket: `send` connects, writes one message and
   hangs up, on a thread of its own, within 200 ms, and only says whether it was `Delivered`, the
   Neovim is `Gone` (no socket, or nobody listening) or it was `Skipped` (anything else); it never
@@ -273,14 +308,20 @@ the adapters, and returns a domain value that `output` prints.
   unix socket, `v:servername`); and the msgpack-RPC request, encoded by hand, that fires
   `User OrcaTermWorktreeChanged` with the worktree's path.
 - `domain/agent.rs`: the agent a worktree runs (`Agent::ClaudeCode`, recorded as `claude-code`,
-  run as `claude`), whether its holder is alive, the holder's record (`agent.json`), a terminal
-  size, and the reports of `agent start`, `stop` and `attach`.
+  run as `claude`; `Agent::OpenCode`, recorded and run as `opencode`, #35), whether its holder is alive, the holder's record (`agent.json`), a terminal
+  size, and the reports of `agent start`, `swap`, `stop` and `attach`.
 - `domain/launch.rs`: claude's launch: the command line (`--settings <file>
   --permission-mode acceptEdits`, plus `--resume <id>` on a cold start), the session a cold start
   resumes (`session_to_resume`, `check_transcript`), the settings file that turns its sandbox on and denies our
   state (ADR 0007) and registers the hooks, the variables stripped
   from its environment, and the guard that refuses a launch bypassing permissions. The
-  forbidden flags and modes are listed here and nowhere else.
+  forbidden flags and modes are listed here and nowhere else. The session a cold start resumes is
+  per agent: only one that agent recorded, opencode's with no transcript to check.
+- `domain/launch/opencode.rs`: opencode's launch (#35): its command line inside the sandbox's
+  wrapper (`opencode [-s <id>]`), `OPENCODE_CONFIG_DIR`, the plugin (`orca-term.js` beside it,
+  embedded with `include_str!`) and where it goes in the config directory, the `.gitignore`
+  written there, and opencode's own directories and the temporary ones, found from the
+  environment as opencode finds them.
 - `domain/hook.rs`: what claude's hook payloads report and how each event changes a worktree's
   live status: a prompt opens a turn, `Stop` finishes it, `StopFailure` fails it, a new prompt or
   a session start or end interrupts the open one; queued prompts are told apart by `prompt_id`,
@@ -289,9 +330,22 @@ the adapters, and returns a domain value that `output` prints.
   `PostToolBatch` reports the tool calls denied (`is_denial`, by claude's words in a call's
   `tool_response`), recorded on the open turn its `prompt_id` names, a subagent's too, once per
   `tool_use_id`, never touching the phase or the activity. A failed turn keeps the agent's whole
-  last message.
+  last message. A payload naming a session records the agent whose hook it is as the session's.
+  `EVENTS_FD_VAR` names the events pipe of an agent whose hooks cannot run orca-term themselves.
+- `domain/hook/opencode.rs`: the lines opencode's plugin writes, each read as the payload claude's
+  hook of the same meaning carries (#35), so `apply` makes the same transitions: `start`
+  (`SessionStart`), the person's `prompt` (`UserPromptSubmit`, its session as the prompt's id, so
+  a message sent mid-turn folds into it), `tool` (`PreToolUse`, under claude's tool names),
+  `permission` and `question` (`PermissionRequest`), `replied` (`PostToolUse`), `idle` (`Stop`,
+  with the last words, when the agent's latest message since the prompt has a finish reason and
+  did not end aborted; else `SessionEnd`, the person's Esc while opencode waited to retry its
+  provider or between two steps, which opencode reports with no error), `error` (`StopFailure`;
+  the person's Esc mid-stream, `MessageAbortedError`, as `SessionEnd`; `ContextOverflowError`
+  ignored), `end` (`SessionEnd`); a subagent's session is reported under the person's, with an
+  agent id; a line of no session changes nothing. A provider being retried sends nothing: the turn
+  stays working.
 - `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes, the current
-  session and its `transcript`) and the turn log
+  session, its `transcript` and the `agent` whose hooks named it, claude's when none is recorded) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
   sessions), with texts kept to one capped line; each turn's denials (`Denial`: the tool, the
   call as the activity shows it, and its id in `status.json` only; at most 100 a turn) and the
@@ -333,16 +387,27 @@ the adapters, and returns a domain value that `output` prints.
   refusals (a worktree whose directory is gone, a history unrelated to the default branch).
 - `domain/sandbox.rs`: whether claude's sandbox can run here: `sandbox-exec` on macOS, `bwrap`
   and `socat` on Linux, nothing elsewhere; missing means the typed `no_sandbox`, whose message is
-  the doctor's sandbox check (`check`, `diagnosis`) word for word.
+  the doctor's sandbox check (`check`, `diagnosis`) word for word. opencode's needs `sandbox-exec`
+  or `bwrap` alone, and its `no_sandbox` names it (#35).
+- `domain/sandbox/policy.rs`: the sandbox the core wraps opencode in (#35): `Policy` (the
+  writable places, the denied ones, the denied files missing at launch, the git common dir), the
+  macOS profile (`seatbelt_profile`: writes denied, then allowed to the writable places and the
+  devices, then denied to our state, every worktree's admin directory by pattern, and the
+  directories above it; unix sockets denied but the name resolver's; a path it cannot hold
+  refused) and the Linux `bwrap` arguments (`bwrap_args`: `/` read-only, the writable places
+  bound, the denied ones bound read-only over them, a missing denied file covered by `/dev/null`,
+  a user namespace of its own, the network kept).
 - `domain/prerequisite.rs`: the programs orca-term needs (`Requirement`: git from 2.38, claude
-  from 2.1.295 and tested up to 2.1.303, opencode from 1.18.0 and optional until #35), read from
+  from 2.1.295 and tested up to 2.1.303, opencode from 1.18.0, optional to `doctor` and required
+  to start it, `agent_requirement`), read from
   what `--version` printed (`Version`, `Probe`), and each `Check` of the doctor's `Report`: `ok`,
   `warn` (claude newer than tested, an old optional program), `missing`, `too_old` or `info` (the
   contract). A missing or too old check is the typed `prerequisite` (`refusal`, `require`).
 - `domain/protocol.rs`: the frames between a holder and its clients (a tag byte, a 4-byte
   big-endian length, the payload: input `i`, resize `r`, stop `s`, output `o`, exit `x`), their
   incremental decoder, and the scrollback a holder keeps; and `admit`, the rule for which
-  clients a holder serves (both network namespaces read, and the same).
+  clients a holder serves (both network namespaces read, and the same; and since #35 both user
+  namespaces too).
 - `domain/setup.rs`: the setup: how it ended, what `worktree.json` records, the variables its
   script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
   the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
@@ -392,15 +457,18 @@ validate"):
   prunable, or the state file cannot be read. Broken wins over every other state.
 - `AdminDir` (`domain/state.rs`): the directory holding a worktree's state: its `worktree.json`,
   its `setup.log`, its `lock`, and the holder's files `agent.lock`, `agent.json`, `agent.sock` and
-  `claude-settings.json`, the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
+  `claude-settings.json` (for opencode, `opencode-sandbox.sb` and the config directory `opencode/`
+  holding the plugin), the hooks' `status.json`, `turns.jsonl`, `hook.lock` and `hook.log`,
   and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
   contents kept for notes on lines), and `snapshot.index`, the throwaway index a snapshot is taken
   through. `worktree_id` is the name of git's admin directory it sits in, which names the chain.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
-- `StartOutcome`, `Started`, `StopOutcome`, `Stopped`, `AttachEnd` (`domain/agent.rs`): what the
-  agent commands did and report (`Started` names the session it `resumed`, if any).
+- `StartOutcome`, `Started`, `Swapped`, `StopOutcome`, `Stopped`, `AttachEnd` (`domain/agent.rs`):
+  what the agent commands did and report (`Started` names the session it `resumed`, if any;
+  `Swapped` the agent swapped out and whether it was stopped). `agent_start::Wanted` is what
+  `agent start` is asked for: the agent, the first size, the session mode.
 - `StartMode` (`domain/agent.rs`): `Resume` or `Fresh`, the `--fresh` flag of `agent start` from
   the edge down to the op.
 - `SessionId` (`domain/launch.rs`): a session id safe on claude's command line: 1 to 128 ASCII
@@ -411,7 +479,10 @@ validate"):
 - `Frame`, `Decoder`, `Scrollback` (`domain/protocol.rs`): the holder protocol's messages, their
   decoder and the replay buffer.
 - `NsId` (`domain/protocol.rs`): a network namespace, parsed from a `/proc/<pid>/ns/net` link
-  (`net:[<number>]`).
+  (`net:[<number>]`); since #35 of either `NsKind`, network or user (`user:[<number>]`), and
+  `Namespaces`, a process's two, each `None` when it cannot be read.
+- `Policy` (`domain/sandbox/policy.rs`): what opencode's sandbox allows and denies, every path
+  resolved.
 - `NotePath`, `LineRange`, `Anchor` and `BlobId` (`domain/note.rs`): a note's path (relative to
   the worktree, `/`-separated, no `..`), a range of two or more lines (`S-E`, parsed by clap for
   `--lines`), where a note is attached (`Line`, `Lines` or `File`), and the git blob id naming a
@@ -446,7 +517,8 @@ validate"):
   `worktree detail` found, the latest setup and where it is, how far `HEAD` is ahead of and
   behind the local default branch.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
-  `BusyReason`: the lock is held, or the agent is running), `NoSandbox`, `Dirty` (a worktree
+  `BusyReason`: the lock is held, or the agent is running, or another agent runs where one is
+  started, or the agent is in a turn where one is swapped), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
@@ -465,7 +537,8 @@ validate"):
   decisions or errors. That is why it is unit-tested without a repository.
 - **Only adapters touch the outside world.** Only `adapters/git.rs` starts git, only
   `adapters/script.rs` starts the setup script, only `adapters/holder.rs` starts the holder (and
-  only `adapters/holder/process.rs` starts an agent, on a PTY), only `adapters/program.rs` runs a
+  only `adapters/holder/process.rs` starts an agent, on a PTY, and only `adapters/holder/events.rs`
+  runs the hook for each event an agent reports through its pipe), only `adapters/program.rs` runs a
   program for its version, only `adapters/fs.rs` reads or writes files, and only
   `adapters/env.rs` reads the environment.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
@@ -535,6 +608,28 @@ validate"):
   PATH (`sandbox-exec`; `bwrap` and `socat`) nothing is launched: the typed `no_sandbox`.
   It checks every argument, the values of flags included, so a forbidden flag hidden as a value
   is still refused.
+- **opencode is launched only through `domain/launch/opencode.rs` and `domain/sandbox/policy.rs`**
+  (#35). The command line is `sandbox-exec -f <admin>/opencode-sandbox.sb opencode [-s <id>]`
+  on macOS, `bwrap <arguments> -- opencode [-s <id>]` on Linux, in the worktree, on the holder's
+  PTY, opencode by its absolute path, with `OPENCODE_CONFIG_DIR=<admin>/opencode` and the events
+  pipe; the profile or the arguments are generated for each launch from a `Policy`, and the guard
+  refuses opencode's `--yolo` beside the other bypasses and an `-s`/`--session` that is not a
+  session id. Reads and the network stay open; writes go only to the worktree, the git common
+  dir, opencode's own directories (made before the launch), the temporary directories and the
+  approved `sandbox.writable` paths (the #58 gate applies), never to orca-term's state. The config
+  directory holds only our plugin and the `.gitignore` opencode would write there; nothing is
+  written to opencode's global config. Without `sandbox-exec` or `bwrap` nothing is launched
+  (`no_sandbox`), and opencode must be 1.18.0 or later (`prerequisite`).
+- **opencode's events reach the core through its holder** (#35). The plugin runs inside the
+  sandbox, which denies the admin directory, so it never runs orca-term nor reaches any
+  `agent.sock`: it writes one JSON line per event to the pipe the holder handed opencode
+  (`ORCA_TERM_EVENTS_FD`), and the holder, outside the sandbox, runs `orca-term hook opencode
+  --admin <dir>` for each line, in order, which applies it through `domain/hook.rs` exactly as a
+  claude hook: the same states, turn log, snapshots and notifications.
+- **A session belongs to its agent** (#35). `status.json` records which agent's hooks named the
+  current session; a cold start resumes it only for that agent, and after `agent swap` the other
+  agent's session reads `idle` and a turn it left open `interrupted`. Turns, notes and snapshots
+  belong to the worktree and survive a swap; `agent swap` never stops an agent in a turn.
 - **A cold start resumes the current session** (ADR 0009). With no live holder, `agent start`
   launches claude with `--resume <id>` on the session `status.json` records, and a new session
   when none is recorded or the person passes `--fresh`. It never uses `--fork-session`: the
@@ -609,7 +704,9 @@ validate"):
   kept, as in Orca. With no live holder nothing is typed and nothing consumed (`no_holder`).
   Translation never writes, and `worktree ls` only reads `notes.json` to count the pending notes.
 - **The holder is agent-agnostic**: it runs the command line it is given, in the directory it is
-  given, and knows nothing of claude. Building that command line is domain code.
+  given, and knows nothing of claude. Building that command line is domain code. Given
+  `--events <agent>`, it runs that agent's hook for each line of the events pipe, without reading
+  the lines.
 - **On Linux, the holder serves only clients from its own network namespace** (#61). claude's
   sandbox runs commands in a network namespace of their own (bwrap `--unshare-net`), and without
   its optional seccomp helper nothing else stops a sandboxed command from connecting to another
@@ -618,7 +715,9 @@ validate"):
   it any replay or reading any of its input; it says nothing to the client, keeps serving the
   others, and the agent is untouched. `agent attach`, `agent stop`, `note send` and Neovim run
   in the person's own namespace and are served as before. macOS needs no check: Seatbelt blocks
-  unix sockets.
+  unix sockets. Since #35 the holder also compares user namespaces: opencode's sandbox keeps the
+  network, so a command it runs shares the holder's network namespace, but it runs in a user
+  namespace of its own (bwrap `--unshare-user`), and is refused the same way.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
   `thiserror` enums (`WorktreeNameError`, `BranchNameError`) whose messages a person can read.
   Failures the client must tell apart are `TypedError` cases (`domain/error.rs`), carried inside
@@ -637,18 +736,18 @@ validate"):
   or untracked files; 7 for `no_holder`, a worktree `note send` refuses because its agent is not
   running; 8 for `untrusted`, a setup script or writable list from a committed `orca-term.yaml`
   not approved, so `worktree new` or `worktree setup` did not run the script, or `agent start` did
-  not start; 9 for `prerequisite`, a program the command needs (git, claude) that is missing or
+  not start; 9 for `prerequisite`, a program the command needs (git, claude, opencode) that is missing or
   too old, and for `doctor` when any check is.
 
 ## Known limits of the agent holder
 
-- **The Linux peer check is network namespace equality, nothing finer.** A client is served
-  when it shares the holder's network namespace, so a client run from another one on purpose
-  (inside a container, under `unshare --net`, from another agent's sandbox) is refused too, with
-  no message: it simply sees the connection close. A sandbox that kept the host's network
-  namespace would not be told apart. The namespace is read from the client's pid as the kernel
-  recorded it when it connected: a client that hands its connection to a child and exits leaves
-  a pid that could be reused before the holder reads it.
+- **The Linux peer check is namespace equality, nothing finer.** A client is served when it
+  shares the holder's network and user namespaces, so a client run from another one on purpose
+  (inside a container, under `unshare --net` or `unshare --user`, from an agent's sandbox) is
+  refused too, with no message: it simply sees the connection close. A sandbox that kept both
+  the host's network and user namespaces would not be told apart. The namespaces are read from
+  the client's pid as the kernel recorded it when it connected: a client that hands its
+  connection to a child and exits leaves a pid that could be reused before the holder reads it.
 - **The person's own `~/.claude/settings.json` can widen the sandbox**: array keys such as
   `sandbox.excludedCommands`, `sandbox.filesystem.allowWrite`, `permissions.additionalDirectories`
   and `Edit(...)` allow rules merge across scopes, and hooks, MCP servers and status lines run
@@ -667,7 +766,8 @@ validate"):
   claude's `denyWrite` on macOS.
 - **The real sandbox boundary is not exercised by the tests**: a fake claude enforces nothing.
   Seam 1 asserts the generated settings and command line; the boundary with the real claude waits
-  for the live checks of #44.
+  for the live checks of #44. opencode's sandbox, being orca-term's own, is exercised for real by
+  `tests/opencode_sandbox.rs` (#35).
 - **Esc fires no hook**, nor does Esc on a permission dialog or declining a question, so the turn
   shows `working` or `waiting` until the next prompt, the session's end or the holder's death.
 - **Hooks can be silenced**: a person's or repository's `disableAllHooks: true`, or managed
@@ -732,6 +832,32 @@ validate"):
 - **claude refuses a resume whose transcript is gone**: measured on claude 2.1.301, it exits at
   once saying no session was found with that id, which is why the core checks the transcript
   first and reports `session_gone` instead.
+- **opencode keeps its sessions in a database of its own**, so the core cannot check a recorded
+  one before `-s <id>`: one opencode no longer has makes it exit at once with its own message
+  (opencode 1.18.0 validates `-s` before its screen shows), and `agent start --fresh` starts a new
+  one.
+- **The plugin follows opencode 1.18.0** (its plugin API, its event names and shapes, read from its
+  source at that tag): a newer opencode may report differently, and the status then stays where it
+  was. opencode still tries to install `@opencode-ai/plugin` into every config directory it can
+  write; ours, inside the admin directory, it cannot, so nothing is installed there.
+- **A command opencode runs may inherit the events pipe**: the write end is not close-on-exec in
+  opencode, and whether its tools' processes get it depends on how opencode's runtime spawns them.
+  Such a command can then forge events, changing only the status, turns and snapshots of its own
+  worktree, never anything outside the admin directory and the chain.
+- **opencode's config directory is writable** (opencode writes there), so an agent could add a
+  plugin that runs unsandboxed the next time the person runs opencode outside orca-term; the same
+  holds for `.git/hooks` in the common dir, which every agent may write (ADR 0007).
+- **opencode follows one session at a time**: a subagent session it continues (rather than
+  creates) reports its first message as the person's, interrupting the turn; a message it adds on
+  its own (a background subagent's result) opens no turn; a prompt in a second session while a
+  turn runs in the first is taken for a new turn.
+- **On macOS opencode reaches no unix socket but the name resolver**: pushing over SSH and signing
+  through an agent fail inside its sandbox, as in claude's. **On Linux its sandbox covers the admin
+  directories that exist at launch** and a missing `.git/orca-term.yaml` is covered by an empty
+  file that stays; a pathname socket outside the admin directories (a Neovim's) is reachable from
+  either agent's sandbox there, as it was for claude before.
+- **A person's own `OPENCODE_CONFIG_DIR` is replaced** by the worktree's for opencode in a
+  worktree.
 
 ## Guards
 
@@ -745,7 +871,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `//! Main: ...`), and the Clippy opt-out outside adapters. Its table of modules and layers is
   `MODULES` in `xtask/src/layers.rs`; a new top-level module is added there on purpose.
 - `cargo xtask launch-guard` (`xtask/src/launch_guard.rs`) rejects the literals
-  `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--auto` and
+  `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--auto`, `--yolo`
+  (opencode's) and
   `bypassPermissions`, as whole tokens outside comments, in every file under `src/`, `lua/` and
   `plugin/` but `src/domain/launch.rs`, where the run-time guard lists them.
 - Clippy `print_stdout` and `print_stderr` keep printing in `output`.
@@ -777,6 +904,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `tests/sandbox_approval.rs` that of a committed writable list with the fake claude, without a
   terminal and, for the prompt, on a real pseudo-terminal (`Repo::pty_command` and
   `support::run_at_terminal`, through `pty-process`).
+  `tests/opencode.rs` drives opencode worktrees (#35) with a fake `opencode` and fake
+  `sandbox-exec` and `bwrap` that record their arguments and run what they wrap
+  (`tests/support/opencode.rs`): the fake writes events to the holder's pipe as the plugin does,
+  typed `send <n> <line>` through an attach, and the tests read the states, turns and snapshots.
+  `tests/opencode_sandbox.rs` launches the fake through the real `sandbox-exec` or `bwrap` with
+  the generated profile and checks what it may write and that another worktree's agent stays out
+  of reach; its fixture sits in `target/tmp` (`Repo::new_in`), outside the temporary directories
+  the sandbox allows, and it says why and skips only where the tool is absent or cannot make a
+  user namespace (CI installs bubblewrap). The agent fixture unsets `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME` and `XDG_STATE_HOME`, so opencode's directories land in the fixture's `HOME`.
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
@@ -805,7 +942,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   calls. `spec/install_spec.lua` runs the build hook against a fake release packed by the release
   workflow's own script and served through a `file://` base URL, with a fake `cargo` first on
   PATH, checks the workflow's verification script on tampered, missing and extra assets, and links
-  `install-cli` into temporary directories only. See "Neovim client" below.
+  `install-cli` into temporary directories only. `spec/swap_spec.lua` swaps a worktree's fake
+  claude for a fake opencode from the `.` menu (#35), with fake sandbox tools that run what they
+  wrap. `support.isolate()` sets the XDG base directories inside the fixture's `HOME`. See
+  "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -875,7 +1015,9 @@ what they print.
   warning, the review needs it). It only reports.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
-  `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`. `agent_attach` is
+  `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`.
+  `agent_swap(path, agent, size, approve, cwd, on_done)` runs `agent swap` the same way (#35),
+  typed as `orca_term.Swapped` (the start document, `previous`, `stopped`). `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
@@ -999,7 +1141,8 @@ what they print.
   one through `core.agent_attach`. Closing it only detaches: `:q` hides it, still attached, and
   wiping it ends the attach; the agent runs on in its holder. The first terminal opened adds an
   `ExitPre` autocommand that detaches every agent terminal, so a running attach never makes Neovim
-  refuse `:wqa` or `:xa` (E948).
+  refuse `:wqa` or `:xa` (E948). `reattach` shows a new terminal attached to the worktree's new
+  agent after a swap (#35), the old one's attach stopped and the buffer wiped.
 - `lua/orca-term/review.lua`: the review tabs, and the only module that calls diffview.nvim (its
   modules and views typed loosely, as plain tables, since LuaLS knows no types of diffview). A
   review tab is a tab holding a diffview view (`diffview.lib`'s `tabpage_to_view`, asked only once
@@ -1097,7 +1240,11 @@ what they print.
   tab through `tabs.lua` and the turn review through `review.lua`, then `turn N of <worktree>`, or,
   for an interrupted turn, that its end was not observed; no turns is said; without diffview.nvim
   it only says it is needed; a turn review counts as its worktree's for all three commands),
-  `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
+  `menu` (`.`: `run_setup`, `copy_path`, `swap_agent`, `remove`; `swap_agent`, #35, asks with
+  `vim.ui.select` for one of the other agents (`swap_choices`, from `ALL_AGENTS`), goes to the
+  worktree's tab, runs `agent swap` without blocking and attaches its terminal to the new agent
+  through `terminal.reattach`; `untrusted` writable paths are asked about as for `<CR>`, any other
+  refusal, such as `busy`, is told), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
   they start (showing *setting up*) and when they finish. When either fails as `untrusted`, a

@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::domain::agent::{HolderStatus, StartOutcome, Started, StopOutcome, Stopped};
+use crate::domain::agent::{
+    Agent, HolderStatus, StartOutcome, Started, StopOutcome, Stopped, Swapped,
+};
 use crate::domain::blame::{Blame, Source};
 use crate::domain::branch::Branch;
 use crate::domain::contract::{CONTRACT, VERSION};
@@ -120,6 +122,16 @@ struct StartedView<'a> {
     holder: HolderView,
     writable: Option<WritableView<'a>>,
     resumed: Option<&'a str>,
+}
+
+/// `agent swap --json`: the document of `agent start` for the agent swapped in, with the agent the
+/// worktree had before (`previous`, null for none) and whether its holder was `stopped`.
+#[derive(Debug, Serialize)]
+struct SwappedView<'a> {
+    #[serde(flatten)]
+    started: StartedView<'a>,
+    previous: Option<&'static str>,
+    stopped: bool,
 }
 
 /// `status` is `started` or `already_running`; `pid` is the holder's, when known.
@@ -472,6 +484,19 @@ fn removed_branch_view(outcome: &BranchOutcome) -> RemovedBranchView<'_> {
 
 /// What `agent start` did, as one JSON document.
 pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
+    document(started_view(started))
+}
+
+/// What `agent swap` did, as one JSON document.
+pub(crate) fn swapped(swapped: &Swapped) -> serde_json::Result<String> {
+    document(SwappedView {
+        started: started_view(&swapped.started),
+        previous: swapped.previous.map(Agent::name),
+        stopped: swapped.stopped,
+    })
+}
+
+fn started_view(started: &Started) -> StartedView<'_> {
     let (status, pid, resumed) = match &started.outcome {
         StartOutcome::Started { pid, resumed } => (
             "started",
@@ -480,7 +505,7 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
         ),
         StartOutcome::AlreadyRunning { pid } => ("already_running", *pid, None),
     };
-    document(StartedView {
+    StartedView {
         worktree: worktree_view(&started.worktree),
         agent: started.agent.name(),
         holder: HolderView { status, pid },
@@ -489,7 +514,7 @@ pub(crate) fn started(started: &Started) -> serde_json::Result<String> {
             source: writable.source.as_deref(),
         }),
         resumed,
-    })
+    }
 }
 
 /// What `agent stop` did, as one JSON document.
@@ -972,6 +997,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc["resumed"], "0b983a87-4074-466e-b864-422ce6f063c8");
+    }
+
+    #[test]
+    fn the_swap_document_is_the_start_document_with_the_previous_agent() {
+        let mut worktree = idle_worktree();
+        worktree.agent = Some("opencode".to_owned());
+        let doc = swapped(&Swapped {
+            previous: Some(Agent::ClaudeCode),
+            stopped: true,
+            started: Started {
+                worktree,
+                agent: Agent::OpenCode,
+                outcome: StartOutcome::Started {
+                    pid: 4243,
+                    resumed: None,
+                },
+                writable: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"previous":"claude-code","stopped":true}}"#
+            )
+        );
     }
 
     #[test]
