@@ -1,0 +1,11 @@
+# A plain prompt in opencode: it answers and the turn finishes. One prompt.
+agent opencode
+recording opencode-hello
+timeout 120
+expect finished
+
+wait-for start
+sleep 3
+type reply with the single word ok
+press enter
+wait-for idle

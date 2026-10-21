@@ -1,0 +1,17 @@
+# Esc mid-turn in opencode, which takes two Escs to stop, while it writes a long answer: the turn
+# is interrupted. One prompt, cut short.
+agent opencode
+recording opencode-esc
+timeout 120
+expect interrupted
+
+wait-for start
+sleep 3
+type write the numbers from 1 to 300, one per line
+press enter
+wait-for prompt
+sleep 3
+press esc
+sleep 0.3
+press esc
+wait-for idle

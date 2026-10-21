@@ -1,0 +1,16 @@
+# A plain prompt: claude answers and the turn finishes, as in
+# tests/fixtures/claude-hooks/p-hello-*.log. One prompt.
+agent claude-code
+recording p-hello
+timeout 120
+expect finished
+
+# Let claude draw its screen, then accept the trust dialog it shows for a folder it has not seen
+# before. On claude's own prompt, Enter with nothing typed does nothing.
+sleep 5
+press enter
+wait-for SessionStart
+sleep 2
+type reply with the single word ok
+press enter
+wait-for Stop

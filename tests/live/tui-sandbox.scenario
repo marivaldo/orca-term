@@ -1,0 +1,17 @@
+# A command claude's sandbox stops: a write into the worktree's admin directory, which orca-term's
+# settings deny. The command fails and the turn still finishes, as in
+# tests/fixtures/claude-hooks/tui-sandbox-*.log, and the file must not exist afterwards: this is
+# the real boundary of claude's sandbox with the settings orca-term writes. One prompt.
+agent claude-code
+recording tui-sandbox
+timeout 180
+expect finished
+check-missing {{denied}}/from-bash.txt
+
+sleep 5
+press enter
+wait-for SessionStart
+sleep 2
+type run exactly this shell command and nothing else, then reply with the single word ok: touch {{denied}}/from-bash.txt
+press enter
+wait-for Stop

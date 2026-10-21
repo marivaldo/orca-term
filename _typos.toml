@@ -1,8 +1,13 @@
 # typos: https://github.com/crate-ci/typos
 
 [files]
-# The map's original input, kept verbatim in Portuguese.
-extend-exclude = ["docs/wayfinder-input.md"]
+# The map's original input, kept verbatim in Portuguese, and what the agents sent, recorded
+# verbatim with their random ids (#44).
+extend-exclude = [
+  "docs/wayfinder-input.md",
+  "tests/fixtures/claude-hooks/",
+  "tests/fixtures/opencode-events/",
+]
 
 [default.extend-words]
 # Neovim's `:enew` command (edit a new, empty buffer).

@@ -758,6 +758,9 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "pty-process",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

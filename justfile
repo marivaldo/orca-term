@@ -181,3 +181,15 @@ hooks:
         chmod +x "$dir/$hook"
     done
     echo "installed pre-commit and commit-msg in $dir"
+
+# The live checks (#44), which CI never runs: every scenario of tests/live/ against the installed
+# claude and opencode, through the real orca-term, re-recording what they send into
+# tests/fixtures/, then the suites that replay the recordings, and a summary. It spends real
+# prompts (README.md, "Live checks"). `just check-live p-hello` runs only the scenarios named.
+check-live *scenarios:
+    cargo xtask check-live {{ scenarios }}
+
+# Records one live scenario by hand, this terminal attached to the agent, for what cannot be typed
+# reliably; the scenario's file says what to do.
+record-live scenario:
+    cargo xtask record-live {{ scenario }}

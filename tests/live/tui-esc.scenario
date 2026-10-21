@@ -1,0 +1,21 @@
+# Esc mid-turn, then a new prompt: the first turn is interrupted and the second finishes, as in
+# tests/fixtures/claude-hooks/tui-esc-*.log. Esc lands while a slow command runs, so the turn is
+# still going however fast claude answers (claude's sandbox lets `sleep` run unasked). Two prompts.
+agent claude-code
+recording tui-esc
+timeout 180
+expect interrupted finished
+
+sleep 5
+press enter
+wait-for SessionStart
+sleep 2
+type run the shell command sleep 30, then reply with the single word ok
+press enter
+wait-for PreToolUse
+sleep 2
+press esc
+sleep 3
+type reply with the single word ok
+press enter
+wait-for Stop
