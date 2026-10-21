@@ -5,7 +5,8 @@
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
--- commands (`note add`, `ls`, `edit`, `rm`, `send`) and `turn ls` are not waited for, and hand their
+-- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls` and the session commands (`session ls`,
+-- `resume`, `new`) are not waited for, and hand their
 -- result to a callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
@@ -666,6 +667,83 @@ end
 ---@param on_done fun(listed: orca_term.TurnList?, err: orca_term.Error?)
 function M.turn_ls(target, cwd, on_done)
   run_async({ 'turn', 'ls', target }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---One session of a worktree, as `session ls --json` prints it.
+---@class orca_term.Session
+---@field id string the agent's own id for it
+---@field agent string the agent it belongs to, `claude-code` or `opencode`
+---@field first_prompt? string its first turn's prompt, first line; `nil` before its first turn
+---@field turns integer how many turns it holds
+---@field last_activity? integer when it was last active, in milliseconds since the epoch
+---@field current boolean whether it is the worktree's current session
+
+---What `session ls --json` prints: the worktree and its sessions, the most recently active first.
+---@class orca_term.SessionList
+---@field contract integer
+---@field version string
+---@field worktree orca_term.Worktree
+---@field sessions orca_term.Session[]
+
+---What `session resume --json` prints: `agent swap`'s document for the session's agent, and the
+---session now current.
+---@class orca_term.Resumed: orca_term.Swapped
+---@field session string
+
+---What `session new --json` prints: the worktree, the session discarded, and what restarting a
+---running agent on a new session did.
+---@class orca_term.Discarded
+---@field worktree orca_term.Worktree
+---@field discarded? string the session that was current, `nil` when there was none
+---@field started? orca_term.Started `nil` when the agent was not running
+
+---The sessions of the worktree `target` (its name or its path), without waiting:
+---`orca-term session ls <target> --json`. It only reads.
+---@param target string
+---@param cwd string
+---@param on_done fun(listed: orca_term.SessionList?, err: orca_term.Error?)
+function M.session_ls(target, cwd, on_done)
+  run_async({ 'session', 'ls', target }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---Makes the session `id` of the worktree at `path` its current one and restarts its agent on it,
+---without waiting: `orca-term session resume <path> <id> --rows R --cols C --json`, `size` being the
+---agent's first terminal size. A session of the other agent swaps the worktree's agent. An agent
+---in a turn fails as `busy`; a session that cannot be resumed as `session_gone`; extra writable
+---paths from a committed `orca-term.yaml` not approved as `untrusted`, unless `approve` passes
+---`--approve-sandbox`; the other refusals are `agent start`'s.
+---@param path string
+---@param id string
+---@param size { rows: integer, cols: integer }
+---@param approve boolean
+---@param cwd string
+---@param on_done fun(resumed: orca_term.Resumed?, err: orca_term.Error?)
+function M.session_resume(path, id, size, approve, cwd, on_done)
+  local rows, cols = tostring(size.rows), tostring(size.cols)
+  local args = { 'session', 'resume', path, id, '--rows', rows, '--cols', cols }
+  if approve then
+    table.insert(args, '--approve-sandbox')
+  end
+  run_async(args, cwd, on_done)
+end
+
+---Discards the current session of the worktree at `path`, without waiting: `orca-term session new
+---<path> --rows R --cols C --json`. A running agent is restarted on a new session (`started`);
+---otherwise its next start begins one. An agent in a turn fails as `busy`; the restart refuses as
+---`agent start` does, extra writable paths not approved as `untrusted` unless `approve` passes
+---`--approve-sandbox`.
+---@param path string
+---@param size { rows: integer, cols: integer }
+---@param approve boolean
+---@param cwd string
+---@param on_done fun(discarded: orca_term.Discarded?, err: orca_term.Error?)
+function M.session_new(path, size, approve, cwd, on_done)
+  local rows, cols = tostring(size.rows), tostring(size.cols)
+  local args = { 'session', 'new', path, '--rows', rows, '--cols', cols }
+  if approve then
+    table.insert(args, '--approve-sandbox')
+  end
+  run_async(args, cwd, on_done)
 end
 
 ---What `nvim register --json` and `nvim unregister --json` print: only the contract and the core's

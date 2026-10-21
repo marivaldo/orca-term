@@ -203,7 +203,7 @@ describe('the worktree actions', function()
 
       assert.are.same({ 'Worktree beta' }, ui.prompts)
       assert.are.same(
-        { { 'Re-run setup', 'Copy path', 'Swap agent', 'Remove worktree' } },
+        { { 'Re-run setup', 'Copy path', 'Swap agent', 'New session', 'Remove worktree' } },
         ui.shown
       )
     end)

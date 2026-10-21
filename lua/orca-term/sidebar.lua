@@ -6,7 +6,8 @@
 -- that every tab shows in its own window. Its keys, local to that buffer, move the selection (`j`,
 -- `k`), open a worktree (`<CR>`: its tab, and its agent's terminal when it has an agent), create a
 -- worktree (`a`), open the menu of the worktree under the cursor (`.`), toggle its unseen mark
--- (`u`) and open its review (`d`), all five through `actions.lua`, and show its detail in a float
+-- (`u`), open its review (`d`) and list its sessions to resume one (`s`), all six through
+-- `actions.lua`, and show its detail in a float
 -- (`K`, through `detail.lua`). The selection follows the current tab when it is a worktree's. The
 -- sidebar is never shown in a review tab (`review.lua`), where diffview lays out the whole tab.
 --
@@ -312,6 +313,14 @@ local function open_review()
   end
 end
 
+---`s`: lists the sessions of the worktree under the cursor, to resume one.
+local function list_sessions()
+  local worktree = worktree_under_cursor()
+  if worktree then
+    actions.sessions(worktree, primary_path())
+  end
+end
+
 ---`K`: shows the detail of the worktree under the cursor in a float next to the sidebar, or closes
 ---it (`detail.lua`).
 local function toggle_detail()
@@ -383,6 +392,7 @@ local function ensure_buffer()
   map('.', worktree_menu, 'the actions of the worktree under the cursor')
   map('u', toggle_unseen, 'mark the worktree under the cursor unseen, or seen when it is unseen')
   map('d', open_review, 'open the review of the worktree under the cursor in diffview')
+  map('s', list_sessions, 'list the sessions of the worktree under the cursor, to resume one')
   map('K', toggle_detail, 'show the detail of the worktree under the cursor, or hide it')
 
   state.buf = buf

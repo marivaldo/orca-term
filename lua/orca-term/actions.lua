@@ -1,7 +1,7 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
--- again, copy its path, swap its agent, remove it), toggle its unseen mark (`u`), open its review
--- (`d`, `:OrcaTerm review`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
+-- again, copy its path, swap its agent, start a new session, remove it), toggle its unseen mark
+-- (`u`), open its review (`d`, `:OrcaTerm review`), list its sessions to resume one (`s`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
 --
@@ -24,7 +24,7 @@ local M = {}
 M.EARLY_REFRESH_MS = 500
 
 ---The entries of the worktree menu, in the order shown.
-M.MENU = { 'Re-run setup', 'Copy path', 'Swap agent', 'Remove worktree' }
+M.MENU = { 'Re-run setup', 'Copy path', 'Swap agent', 'New session', 'Remove worktree' }
 
 ---Every agent a worktree can run, as the core names them.
 M.ALL_AGENTS = { 'claude-code', 'opencode' }
@@ -64,6 +64,12 @@ M.AGENTS = { 'claude-code', 'No agent' }
 
 ---The answers offered when a worktree's recorded session can no longer be resumed.
 M.SESSION_GONE = { 'Start a fresh session', 'Cancel' }
+
+---The answers offered before a worktree's current session is discarded for a new one.
+M.NEW_SESSION = { 'Start a new session', 'Cancel' }
+
+---The mark of the current session in the list of sessions.
+M.CURRENT_MARK = '*'
 
 ---The answers offered when a worktree's setup script, from a committed `orca-term.yaml`, is not
 ---approved yet.
@@ -221,6 +227,23 @@ function start_and_attach(worktree, primary, fresh, approve)
   end)
 end
 
+---Shows the agent of the worktree at `path` in its tab, in a terminal attached again to its holder,
+---the terminal of the agent stopped replaced: what follows a swap, a session resumed and a new
+---session. A person who has moved to another tab meanwhile is left there: the terminal opens on
+---their next `<CR>`.
+---@param path string
+---@param primary string the primary checkout's path, where the core runs
+local function show_reattached(path, primary)
+  if not tabs.is_current(path) then
+    return
+  end
+  tabs.go_to(path)
+  local attach_err = terminal.reattach(path, primary)
+  if attach_err then
+    fail(attach_err)
+  end
+end
+
 ---Swaps the agent of `worktree` for `agent` through the core (`agent swap`, without blocking),
 ---then shows the new agent in the worktree's tab, in a terminal attached to its holder, the
 ---terminal of the agent stopped replaced. Refusals show as they do for `<CR>`: extra writable paths
@@ -245,16 +268,7 @@ local function swap_and_attach(worktree, agent, primary, approve)
       end
       return
     end
-    -- A person who has moved to another tab meanwhile is left there: the terminal opens on their
-    -- next `<CR>`.
-    if not tabs.is_current(path) then
-      return
-    end
-    tabs.go_to(path)
-    local attach_err = terminal.reattach(path, primary)
-    if attach_err then
-      fail(attach_err)
-    end
+    show_reattached(path, primary)
   end)
 end
 
@@ -505,6 +519,8 @@ function M.menu(worktree, primary)
       M.copy_path(worktree)
     elseif choice == 'Swap agent' then
       M.swap_agent(worktree, primary)
+    elseif choice == 'New session' then
+      M.new_session(worktree, primary)
     elseif choice == 'Remove worktree' then
       M.remove(worktree, primary)
     end
@@ -695,6 +711,146 @@ function M.turns_current()
   if path then
     M.turns(path)
   end
+end
+
+---How long ago `then` was at `now`, both in milliseconds since the epoch, in words, as `session
+---ls` says it: `just now`, `5 min ago`, `3 h ago`, `1 day ago`, `2 days ago`.
+---@param now integer
+---@param then_ms integer
+---@return string
+function M.age(now, then_ms)
+  local minute = 60 * 1000
+  local hour = 60 * minute
+  local day = 24 * hour
+  local elapsed = math.max(0, now - then_ms)
+  if elapsed < minute then
+    return 'just now'
+  elseif elapsed < hour then
+    return ('%d min ago'):format(math.floor(elapsed / minute))
+  elseif elapsed < day then
+    return ('%d h ago'):format(math.floor(elapsed / hour))
+  elseif elapsed < 2 * day then
+    return '1 day ago'
+  end
+  return ('%d days ago'):format(math.floor(elapsed / day))
+end
+
+---A session as the list of sessions shows it, at `now` (milliseconds since the epoch): the mark
+---of the current one, its agent, how many turns it holds, how long ago it was last active and its
+---first prompt, cut (`-` for what is not known).
+---@param session orca_term.Session
+---@param now integer
+---@return string
+function M.session_item(session, now)
+  local mark = session.current and M.CURRENT_MARK or ' '
+  local turns = session.turns == 1 and '1 turn' or ('%d turns'):format(session.turns)
+  local age = session.last_activity and M.age(now, session.last_activity) or '-'
+  local prompt = session.first_prompt and cut(session.first_prompt, M.PROMPT_CELLS) or '-'
+  return ('%s %s  %s  %s  %s'):format(mark, session.agent, turns, age, prompt)
+end
+
+---Makes the session `id` of `worktree` its current one through the core (`session resume`, without
+---blocking), then shows its agent in the worktree's tab, in a terminal attached again. Refusals
+---show as they do for `Swap agent`: extra writable paths not approved yet are shown and asked about
+---(`approve` passes the approval), and any other refusal, such as an agent busy in a turn or a
+---session that cannot be resumed, is told with the core's reason. The caller has gone to the
+---worktree's tab.
+---@param worktree orca_term.Worktree
+---@param id string
+---@param primary string the primary checkout's path, where the core runs
+---@param approve boolean
+local function resume_and_attach(worktree, id, primary, approve)
+  local path = worktree.path
+  core.session_resume(path, id, terminal.size(), approve, primary, function(resumed, err)
+    refresh_sidebar()
+    if not resumed then
+      if err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
+        offer_sandbox(worktree, err, function()
+          resume_and_attach(worktree, id, primary, true)
+        end)
+      else
+        fail(err)
+      end
+      return
+    end
+    show_reattached(path, primary)
+  end)
+end
+
+---`s` in the sidebar: lists the sessions of `worktree` through the core (`session ls`, without
+---waiting), the most recently active first, the current one marked, and makes the one chosen
+---current (`resume_and_attach`), in the worktree's tab. Choosing the current session, of the
+---worktree's own agent, only goes to it, as `<CR>` does. A worktree with no session says so.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.sessions(worktree, primary)
+  core.session_ls(worktree.path, primary, function(listed, err)
+    if not listed then
+      fail(err)
+      return
+    end
+    if #listed.sessions == 0 then
+      info('no sessions in worktree ' .. worktree.name)
+      return
+    end
+    local now = os.time() * 1000
+    local options = {
+      prompt = 'Sessions of ' .. worktree.name,
+      format_item = function(session)
+        return M.session_item(session, now)
+      end,
+    }
+    vim.ui.select(listed.sessions, options, function(session)
+      if not session then
+        return
+      end
+      if session.current and session.agent == worktree.agent then
+        M.open(worktree, primary)
+        return
+      end
+      tabs.go_to(worktree.path)
+      resume_and_attach(worktree, session.id, primary, false)
+    end)
+  end)
+end
+
+---`New session` in the menu: asks first, then discards the current session of `worktree` through
+---the core (`session new`, without blocking), in the worktree's tab. A running agent is restarted
+---on a new session and shown in a terminal attached again; otherwise its next start begins one,
+---which is said. Extra writable paths not approved yet, for the restart, are shown and asked about
+---before the agent starts; any other refusal, such as an agent busy in a turn, is told with the
+---core's reason. Cancelling changes nothing.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.new_session(worktree, primary)
+  local prompt = ('Start a new session in %s? The current one keeps its turns; s brings it back.'):format(
+    worktree.name
+  )
+  vim.ui.select(M.NEW_SESSION, { prompt = prompt }, function(choice)
+    if choice ~= M.NEW_SESSION[1] then
+      return
+    end
+    local path = worktree.path
+    tabs.go_to(path)
+    core.session_new(path, terminal.size(), false, primary, function(new, err)
+      refresh_sidebar()
+      if not new then
+        if err and err.kind == 'untrusted' and err.what == 'sandbox' then
+          offer_sandbox(worktree, err, function()
+            start_and_attach(worktree, primary, true, true)
+          end)
+        else
+          fail(err)
+        end
+        return
+      end
+      if new.started then
+        show_reattached(path, primary)
+      else
+        info(('the next start of the agent of %s begins a new session'):format(worktree.name))
+      end
+    end)
+  end)
 end
 
 ---The worktrees of the current directory's repository, in the sidebar's order, or `nil` after
