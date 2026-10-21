@@ -337,9 +337,13 @@ the adapters, and returns a domain value that `output` prints.
   (`SessionStart`), the person's `prompt` (`UserPromptSubmit`, its session as the prompt's id, so
   a message sent mid-turn folds into it), `tool` (`PreToolUse`, under claude's tool names),
   `permission` and `question` (`PermissionRequest`), `replied` (`PostToolUse`), `idle` (`Stop`,
-  with the last words), `error` (`StopFailure`; the person's Esc, `MessageAbortedError`, as
-  `SessionEnd`; `ContextOverflowError` ignored), `end` (`SessionEnd`); a subagent's session is
-  reported under the person's, with an agent id; a line of no session changes nothing.
+  with the last words, when the agent's latest message since the prompt has a finish reason and
+  did not end aborted; else `SessionEnd`, the person's Esc while opencode waited to retry its
+  provider or between two steps, which opencode reports with no error), `error` (`StopFailure`;
+  the person's Esc mid-stream, `MessageAbortedError`, as `SessionEnd`; `ContextOverflowError`
+  ignored), `end` (`SessionEnd`); a subagent's session is reported under the person's, with an
+  agent id; a line of no session changes nothing. A provider being retried sends nothing: the turn
+  stays working.
 - `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes, the current
   session, its `transcript` and the `agent` whose hooks named it, claude's when none is recorded) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across

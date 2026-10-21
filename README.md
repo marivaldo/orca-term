@@ -132,7 +132,9 @@ launch into the worktree's own opencode config directory (`orca-term/opencode` i
 directory, which `OPENCODE_CONFIG_DIR` names); nothing goes into opencode's global config. It
 reports the message you send (a turn starts), the tool opencode runs, a permission or a question
 (waiting), your answer, the session going idle (the turn finishes, with opencode's last words) and
-an error (the turn fails; Esc reads as interrupted), with the session's id. It writes them to a pipe
+an error (the turn fails), with the session's id. Esc reads as interrupted, whether opencode was
+answering or waiting to retry an unreachable provider; while it retries, the turn stays working. It
+writes them to a pipe
 the holder hands opencode, and the holder, outside the sandbox, records them as claude's hooks are
 recorded: the states, the turn log and the snapshots are the same for both agents.
 
