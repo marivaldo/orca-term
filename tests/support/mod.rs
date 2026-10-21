@@ -76,6 +76,20 @@ impl Repo {
         String::from_utf8(out.stdout).unwrap()
     }
 
+    /// Runs git in the primary checkout and panics unless it fails: for a merge or rebase that
+    /// stops on a conflict.
+    pub(crate) fn git_failing(&self, args: &[&str]) {
+        let out = self
+            .env(Command::new("git").arg("-C").arg(&self.root).args(args))
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "git {args:?} was expected to fail: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
     /// Writes `contents` to `rel` under the primary checkout, creating parent directories.
     pub(crate) fn write(&self, rel: &str, contents: &str) -> PathBuf {
         let path = self.root.join(rel);

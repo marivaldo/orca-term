@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::branch::Branch;
 use crate::domain::config::Setting;
+use crate::domain::operation::Operation;
 use crate::domain::state::State;
 
 /// The file, in the worktree's admin directory, that holds the output of its latest setup.
@@ -103,6 +104,9 @@ pub(crate) struct SetupReport {
     pub(crate) notes: usize,
     /// How many tool calls its agent was denied in its latest turn; a setup never changes it.
     pub(crate) denials: usize,
+    /// The git operation the worktree is in the middle of (`domain/operation.rs`); a setup never
+    /// changes it.
+    pub(crate) operation: Option<Operation>,
 }
 
 /// What `worktree setup` did.

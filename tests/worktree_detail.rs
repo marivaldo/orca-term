@@ -224,3 +224,138 @@ fn detail_refuses_the_primary_checkout_and_an_unknown_worktree() {
         assert_eq!(doc["error"]["kind"], "other", "{target}");
     }
 }
+
+/// Writes `contents` to `file` in the worktree at `worktree` and commits it there.
+fn commit_file_in(repo: &Repo, worktree: &Path, file: &str, contents: &str, message: &str) {
+    fs::write(worktree.join(file), contents).unwrap();
+    git_in(repo, worktree, &["add", file]);
+    git_in(repo, worktree, &["commit", "--quiet", "-m", message]);
+}
+
+/// Runs git in the worktree at `worktree`, which must stop on a conflict.
+fn conflict_in(repo: &Repo, worktree: &Path, args: &[&str]) {
+    let mut all = vec!["-C", worktree.to_str().unwrap()];
+    all.extend_from_slice(args);
+    repo.git_failing(&all);
+}
+
+/// A repository whose `a.txt` changed one way on `main` and another way in the worktree `fix`
+/// created from it, so that bringing either into the other conflicts. Returns the worktree's path.
+fn diverged(repo: &Repo) -> PathBuf {
+    repo.write("a.txt", "base\n");
+    repo.commit_all("base");
+    let worktree = new_worktree(repo, "fix");
+    commit_file_in(repo, &worktree, "a.txt", "fix\n", "fix a");
+    repo.write("a.txt", "main\n");
+    repo.commit_all("main a");
+    worktree
+}
+
+/// The `operation` of `fix` as `worktree ls --json` and `worktree detail --json` report it, which
+/// must agree, and the detail's `operation_step`.
+fn operation(repo: &Repo) -> (Value, Value) {
+    let out = orca_term(repo, &["worktree", "ls", "--json"]);
+    assert!(out.status.success());
+    let listed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc = detail(repo, "fix");
+    assert_eq!(
+        listed["worktrees"][0]["operation"],
+        doc["worktree"]["operation"]
+    );
+    (
+        doc["worktree"]["operation"].clone(),
+        doc["operation_step"].clone(),
+    )
+}
+
+/// What `worktree <command> ...` printed as text.
+fn text_of(repo: &Repo, args: &[&str]) -> String {
+    String::from_utf8(orca_term(repo, args).stdout).unwrap()
+}
+
+#[test]
+fn a_conflicting_merge_reads_as_a_merge_until_it_is_aborted() {
+    let repo = Repo::new();
+    let worktree = diverged(&repo);
+    assert_eq!(operation(&repo), (Value::Null, Value::Null));
+
+    conflict_in(&repo, &worktree, &["merge", "--quiet", "main"]);
+    assert_eq!(operation(&repo), (json!("merge"), Value::Null));
+    assert_eq!(
+        detail(&repo, "fix")["worktree"]["state"],
+        "no_agent",
+        "an operation is never a state"
+    );
+    let listed = text_of(&repo, &["worktree", "ls"]);
+    assert!(listed.contains("no agent, merging"), "{listed}");
+    let text = text_of(&repo, &["worktree", "detail", "fix"]);
+    assert!(
+        text.starts_with("fix: no agent, merging\nmerge in progress\n"),
+        "{text}"
+    );
+
+    git_in(&repo, &worktree, &["merge", "--abort"]);
+    assert_eq!(operation(&repo), (Value::Null, Value::Null));
+}
+
+#[test]
+fn a_conflicting_rebase_reads_as_a_rebase_with_its_step() {
+    let repo = Repo::new();
+    let worktree = diverged(&repo);
+    commit_file_in(&repo, &worktree, "b.txt", "more\n", "fix b");
+
+    conflict_in(&repo, &worktree, &["rebase", "main"]);
+    assert_eq!(
+        operation(&repo),
+        (json!("rebase"), json!({"current": 1, "total": 2}))
+    );
+    let text = text_of(&repo, &["worktree", "detail", "fix"]);
+    assert!(text.contains("\nrebase in progress (1/2)\n"), "{text}");
+
+    git_in(&repo, &worktree, &["rebase", "--abort"]);
+    assert_eq!(operation(&repo), (Value::Null, Value::Null));
+}
+
+#[test]
+fn a_conflicting_cherry_pick_and_revert_read_as_themselves() {
+    let repo = Repo::new();
+    let worktree = diverged(&repo);
+
+    conflict_in(&repo, &worktree, &["cherry-pick", "main"]);
+    assert_eq!(operation(&repo), (json!("cherry-pick"), Value::Null));
+    git_in(&repo, &worktree, &["cherry-pick", "--abort"]);
+
+    commit_file_in(&repo, &worktree, "a.txt", "fix again\n", "fix a again");
+    conflict_in(&repo, &worktree, &["revert", "--no-edit", "HEAD~1"]);
+    assert_eq!(operation(&repo), (json!("revert"), Value::Null));
+    git_in(&repo, &worktree, &["revert", "--abort"]);
+    assert_eq!(operation(&repo), (Value::Null, Value::Null));
+}
+
+#[test]
+fn reading_an_operation_in_progress_writes_nothing() {
+    let repo = Repo::new();
+    let worktree = diverged(&repo);
+    conflict_in(&repo, &worktree, &["merge", "--quiet", "main"]);
+    let git_dir =
+        PathBuf::from(git_in(&repo, &worktree, &["rev-parse", "--absolute-git-dir"]).trim());
+    let status = || git_in(&repo, &worktree, &["status", "--porcelain=v2", "--branch"]);
+    let refs = || repo.git(&["for-each-ref"]);
+    let files = || {
+        let mut names: Vec<String> = fs::read_dir(&git_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let merge_head = fs::read(git_dir.join("MERGE_HEAD")).unwrap();
+    let (status_before, refs_before, files_before) = (status(), refs(), files());
+    operation(&repo);
+    text_of(&repo, &["worktree", "ls"]);
+    text_of(&repo, &["worktree", "detail", "fix"]);
+    assert_eq!(status(), status_before);
+    assert_eq!(refs(), refs_before);
+    assert_eq!(files(), files_before);
+    assert_eq!(fs::read(git_dir.join("MERGE_HEAD")).unwrap(), merge_head);
+}
