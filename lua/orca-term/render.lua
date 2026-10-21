@@ -10,8 +10,9 @@
 -- `vim.list_extend`, `vim.tbl_map`, `vim.split`).
 --
 -- The layout is prototype variant D (branch `prototype/fleet-sidebar`, spec issue #25). This is
--- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `⊘N` counts
--- the tool calls a worktree's latest turn had denied, and `✎N` its pending notes:
+-- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `≠` a git
+-- operation in progress (a merge here), `⊘N` counts the tool calls a worktree's latest turn had
+-- denied, and `✎N` its pending notes:
 --
 --   ▾ repo  main
 --
@@ -41,7 +42,7 @@
 --   ● reviewed
 --     ok
 --   ○ standby
---   · docs                          ✎2
+--   · docs                        ≠ ✎2
 --   · spike
 --     ⎇ other-branch
 --
@@ -82,6 +83,10 @@ M.NOTE = '✎'
 ---The mark of denials: before a worktree's count of denied tool calls at the right of its name
 ---line, and before each denied call in its detail.
 M.DENIED = '⊘'
+
+---The mark of a git operation in progress (a merge, a rebase, a cherry-pick or a revert) at the
+---right of a worktree's name line.
+M.OPERATION = '≠'
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
 ---shows it. `sidebar.lua` turns them while a worktree is working.
@@ -278,12 +283,16 @@ local function second_line_text(worktree)
   return text
 end
 
----The icons at the right of a worktree's name line, from left to right: `⊘N` for the tool calls
----its latest turn had denied, then `✎N` for its pending notes. Empty when it has nothing to show.
+---The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
+---in progress, `⊘N` for the tool calls its latest turn had denied, then `✎N` for its pending
+---notes. Empty when it has nothing to show.
 ---@param worktree orca_term.Worktree
 ---@return { text: string, group: string }[]
 local function icons(worktree)
   local found = {}
+  if worktree.operation then
+    table.insert(found, { text = M.OPERATION, group = 'OrcaTermOperation' })
+  end
   if (worktree.denials or 0) > 0 then
     table.insert(found, { text = M.DENIED .. worktree.denials, group = 'OrcaTermDenied' })
   end
@@ -523,12 +532,26 @@ local function drift_text(drift)
   return table.concat(parts, ' ')
 end
 
+---How the detail float says a git operation in progress: `merge in progress`, or
+---`rebase in progress (2/5)` with a rebase's step.
+---@param operation string `merge`, `rebase`, `cherry-pick` or `revert`
+---@param step? orca_term.OperationStep
+---@return string
+function M.operation_text(operation, step)
+  if step then
+    return string.format('%s in progress (%d/%d)', operation, step.current, step.total)
+  end
+  return operation .. ' in progress'
+end
+
 ---A worktree's detail, as the float `detail.lua` opens from the sidebar shows it, laid out to
 ---`width` cells: one cell of margin on each side, and parts apart by a blank line, each only when
 ---it has something to say. Nothing is ever cut: the error, the denials and the setup's log wrap.
 ---
 ---   ● failed · claude-code
 ---   fix  ↑2 ↓1 main
+---
+---   rebase in progress (2/5)
 ---
 ---   API Error: 400 the whole message, however long, wrapped to the width
 ---
@@ -587,6 +610,12 @@ function M.detail(detail, width)
     add(branch_line, drift, 'OrcaTermMuted')
   end
   table.insert(built, branch_line)
+
+  -- The git operation in progress, with a rebase's step when git records it.
+  if worktree.operation then
+    table.insert(built, new_line(width - 1))
+    add_line(M.operation_text(worktree.operation, detail.operation_step), 'OrcaTermOperation')
+  end
 
   -- Why the worktree is in its state, whole, in the state's colour.
   local why = detail.detail and wrap_lines(detail.detail, text_width) or {}

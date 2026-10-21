@@ -173,6 +173,45 @@ describe('the detail float', function()
     end
   )
 
+  it('names a conflicting rebase with its step, and the row shows ≠', function()
+    support.load_client()
+    local repo = support.repo()
+    vim.fn.writefile({ 'base' }, repo.root .. '/a.txt')
+    support.git(repo, { 'add', 'a.txt' })
+    support.git(repo, { 'commit', '--quiet', '-m', 'base' })
+    support.run({ support.binary, 'worktree', 'new', 'fix' }, repo.root)
+    local fix = support.worktree_path(repo, 'fix')
+    vim.fn.writefile({ 'fix' }, fix .. '/a.txt')
+    vim.fn.writefile({ 'more' }, fix .. '/b.txt')
+    support.run({ 'git', 'add', 'a.txt' }, fix)
+    support.run({ 'git', 'commit', '--quiet', '-m', 'fix a' }, fix)
+    support.run({ 'git', 'add', 'b.txt' }, fix)
+    support.run({ 'git', 'commit', '--quiet', '-m', 'fix b' }, fix)
+    vim.fn.writefile({ 'main' }, repo.root .. '/a.txt')
+    support.git(repo, { 'commit', '--quiet', '--all', '-m', 'main a' })
+    local rebase = vim.system({ 'git', 'rebase', 'main' }, { cwd = fix, text = true }):wait()
+    assert.are_not.equal(0, rebase.code, 'the rebase stops on its conflict')
+    support.cd(repo.root)
+    vim.cmd('OrcaTerm sidebar')
+
+    local float, lines = open_detail('fix')
+    -- A stopped rebase leaves the worktree detached on the commits replayed so far: here none, on
+    -- `main` itself.
+    assert.are.same({
+      ' · no agent',
+      ' detached  up to date with main',
+      '',
+      ' rebase in progress (1/2)',
+    }, lines)
+    assert.is_true(
+      vim.tbl_contains(highlighted(float), 'OrcaTermOperation rebase in progress (1/2)')
+    )
+    local cursor = vim.api.nvim_win_get_cursor(sidebar_window())
+    local row =
+      vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), cursor[1] - 1, cursor[1], false)[1]
+    assert.is_truthy(row:find(' fix%s+≠ │$'))
+  end)
+
   it('shows a failed setup whole: its error and the end of its log', function()
     support.load_client()
     local repo = support.repo()

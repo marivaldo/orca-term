@@ -557,8 +557,8 @@ end
 ---are the fake claude of `agent_repo()`, and their states come from recordings of claude's hooks
 ---played through the handlers their settings register (`play_hooks`). A turn that ends leaves its
 ---worktree unseen; the core's `worktree seen` and `worktree unseen` clear and set the mark of
----others. Two worktrees have pending notes, and one the denials of its latest turn. The
----repository's directory is named `repo`.
+---others. Two worktrees have pending notes, one the denials of its latest turn, and one (`docs`)
+---a merge in progress. The repository's directory is named `repo`.
 ---
 ---`install-deps` stays *setting up* until `release()` is called: call it in a `finally`, so its
 ---setup ends even when the spec fails.
@@ -610,6 +610,13 @@ function M.every_state_repo()
   for _, note in ipairs({ { 'docs', 'one' }, { 'docs', 'two' }, { 'pick-colour', 'one' } }) do
     M.run({ M.binary, 'note', 'add', note[1], 'notes.txt', '--body=' .. note[2] }, repo.root)
   end
+
+  -- A git operation in progress: a merge of `main` into `docs`, stopped before its commit, which
+  -- leaves git's `MERGE_HEAD` as a conflicting merge does.
+  local docs = M.worktree_path(repo, 'docs')
+  M.run({ 'git', 'commit', '--quiet', '--allow-empty', '-m', 'docs' }, docs)
+  M.git(repo, { 'commit', '--quiet', '--allow-empty', '-m', 'main moves on' })
+  M.run({ 'git', 'merge', '--quiet', '--no-ff', '--no-commit', 'main' }, docs)
 
   -- not_ready: a setup that fails.
   M.set_setup(repo, { 'echo "npm ERR! missing script: build"', 'exit 1' })

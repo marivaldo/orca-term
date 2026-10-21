@@ -62,6 +62,9 @@
 ---How many tool calls its agent's permission rules refused in its latest turn (`CONTEXT.md`,
 ---**Denial**)
 ---@field denials integer
+---The git operation it is in the middle of, `merge`, `rebase`, `cherry-pick` or `revert`; `nil`
+---when there is none. Never a state.
+---@field operation? string
 
 ---The fleet, as `worktree ls --json` prints it.
 ---@class orca_term.Fleet
@@ -495,6 +498,13 @@ end
 ---@field denials orca_term.Denial[] the latest turn's denials, in order
 ---@field setup? orca_term.SetupDetail `nil` when the worktree has no setup
 ---@field drift? orca_term.Drift `nil` when there is no local default branch
+---@field operation_step? orca_term.OperationStep the step of the rebase in progress; `nil` for any
+---other operation, for none, or when git records no step
+
+---The step a rebase in progress is at: `current` of `total` commits.
+---@class orca_term.OperationStep
+---@field current integer
+---@field total integer
 
 ---The detail of the worktree `target` (its name or its path), without waiting:
 ---`orca-term worktree detail <target> --json`. Drift is computed on request against the local

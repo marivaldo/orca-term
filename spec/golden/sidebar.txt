@@ -26,7 +26,7 @@
  ● reviewed
    ok
  ○ standby
- · docs                          ✎2
+ · docs                        ≠ ✎2
  · spike
    ⎇ other-branch
 
@@ -73,6 +73,7 @@
 27:3-5 OrcaTermMuted
 28:1-4 OrcaTermStateIdle
 29:1-3 OrcaTermStateNoAgent
-29:34-38 OrcaTermBadge
+29:32-35 OrcaTermOperation
+29:36-40 OrcaTermBadge
 30:1-3 OrcaTermStateNoAgent
 31:3-19 OrcaTermMuted
