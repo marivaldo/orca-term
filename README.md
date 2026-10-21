@@ -41,6 +41,41 @@ opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists i
 and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
 key.
 
+## Install
+
+orca-term runs on macOS and Linux and needs Neovim 0.11 or later. With
+[lazy.nvim](https://github.com/folke/lazy.nvim) it is one line:
+
+```lua
+{ 'marivaldo/orca-term', version = '*' }
+```
+
+`version = '*'` checks out the latest release tag. After installing or updating the plugin,
+lazy.nvim runs its build hook, `build.lua`, by itself. The hook downloads that release's core
+binary for your OS and architecture (macOS or Linux, arm64 or x86_64) from GitHub, checks its
+sha256 against the checksum the release publishes beside it, and installs it in the plugin's
+`bin/` directory. When the plugin is not at a release tag, the release has no binary for your
+machine, or the download or the check fails, the hook says which and builds the core with
+`cargo build --release` instead, which needs [Rust](https://rustup.rs). A binary whose checksum
+does not match is never installed.
+
+Other plugin managers run the same hook as a shell command in the plugin's directory,
+`nvim -l build.lua`: `{ 'do': 'nvim -l build.lua' }` with vim-plug, `run = 'nvim -l build.lua'`
+with packer. Pin the plugin to a release tag for the download; any other commit is built with
+cargo.
+
+The client looks for the core binary in this order: `binary` from
+`require('orca-term').setup({ binary = '/path/to/orca-term' })`, the plugin's `bin/orca-term`,
+the plugin's `target/release/orca-term` and `target/debug/orca-term` (from cargo), then
+`orca-term` on `PATH`.
+
+To run the core from the shell too, `:OrcaTerm install-cli` (or `<Plug>(OrcaTermInstallCli)`)
+links the binary the client uses into `$XDG_BIN_HOME`, or `~/.local/bin` when that is not set,
+creating the directory, and says where:
+`orca-term: linked /home/you/.local/bin/orca-term -> /home/you/.local/share/nvim/lazy/orca-term/bin/orca-term`.
+It warns when that directory is not on your `PATH`, and refuses to replace anything there that is
+not a symlink.
+
 ## Setup
 
 `worktree new` runs the setup script `scripts.setup` from `orca-term.yaml` in the new worktree, and
@@ -263,6 +298,14 @@ just lua-rocks   # installs busted, nlua, lualine.nvim and diffview.nvim, pinned
 On Linux, CI shows the way: the tools come from their GitHub releases at the versions pinned in
 `.github/workflows/check.yml`, LuaRocks and the Lua 5.1 headers from the distribution
 (`luarocks liblua5.1-0-dev` on Ubuntu), then `just lua-rocks`.
+
+### Releases
+
+Pushing a tag `v*` runs `.github/workflows/release.yml`: it builds the core for the four targets,
+packs each binary with LICENSE as `orca-term-<tag>-<target>.tar.gz` beside its `.sha256`, checks
+every checksum, and only then creates the GitHub release with them. A pull request that touches
+the build runs the same build and check as a dry run that publishes nothing, and so does
+`gh workflow run release.yml --ref <branch>`.
 
 ## Scope
 
