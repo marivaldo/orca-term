@@ -150,13 +150,55 @@ Limits:
 - A subagent session that opencode continues, rather than creates, reports its first message as
   yours, which interrupts the turn; a message opencode adds on its own (a background subagent's
   result) starts no turn.
-- A recorded session opencode no longer has makes it exit at once with its own message; start a
-  new one with `orca-term agent start <worktree> --fresh`.
+- A recorded session opencode no longer has makes it exit at once with its own message on a cold
+  start (`agent start`, `<CR>`); start a new one with `orca-term agent start <worktree> --fresh`.
+  `session resume` asks opencode first (see Sessions).
 - On macOS, pushing over SSH and signing commits through an agent (ssh-agent, gpg-agent) fail inside
   the sandbox, which allows no unix socket but the resolver's. On Linux, the sandbox covers the admin
   directories that exist at launch, and a missing `.git/orca-term.yaml` is covered by an empty file,
   which stays.
 - Your own `OPENCODE_CONFIG_DIR` is replaced by orca-term's for opencode in a worktree.
+
+## Sessions
+
+A session is an agent's own record of your prompts and its answers, under its id for it. A
+worktree has one current session, which its agent resumes when it starts again, and keeps every
+session it held:
+`orca-term session ls <worktree>` lists them, the most recently active first, the current one
+marked:
+
+```
+   SESSION                               AGENT        TURNS  LAST ACTIVITY  FIRST PROMPT
+*  5d1c2e9f-8a7b-4c3d-9e2f-1a0b9c8d7e6f  claude-code  1      just now       write the docs
+   ses_2Ab9                              opencode     3      2 h ago        add the tests
+   0b983a87-4074-466e-b864-422ce6f063c8  claude-code  2      1 day ago      fix the login
+```
+
+`orca-term session resume <worktree> <id>` makes that session current and restarts the agent on
+it (`claude --resume <id>`, `opencode -s <id>`), starting it if it was not running. A session of
+the other agent swaps the worktree's agent, as `agent swap` does. Both are refused as `busy` (exit
+code 3) while the agent is in a turn. A claude session whose transcript claude has since deleted,
+or an opencode session opencode no longer lists (`opencode session list`, which only reads), is
+refused as `session_gone` (exit code 4), with the reason, and nothing starts. Resuming the current
+session while its agent runs only says so.
+
+`orca-term session new <worktree>` discards the current session: the agent's next start begins a
+new one, and a running agent is restarted on a new session at once. The discarded session keeps
+its turns, and `session ls` still lists it, for `session resume` to bring back. Each command takes
+`--json`.
+
+In Neovim, `s` on a worktree in the sidebar lists its sessions, each as its agent, its turns, how
+long ago it was last active and its first prompt, the current one marked `*`; choosing another one
+resumes it and shows its agent's terminal in the worktree's tab. `.` then `New session` asks
+first, then starts a new session.
+
+Limits:
+
+- A session is known from the turns it holds and from being current: one you leave before its
+  first prompt is forgotten once another session is current.
+- A claude session from before orca-term recorded each session's transcript (in the turn log) can
+  be resumed only while it is the current one; any other refuses as `session_gone`, no transcript
+  recorded.
 
 ## Review
 

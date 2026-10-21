@@ -45,7 +45,7 @@ the adapters, and returns a domain value that `output` prints.
   person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
   opens a review, `worktree detail`, what the detail float shows,
   `agent start|attach|stop` (`agent start --agent claude-code|opencode`), `agent swap <worktree>
-  <agent>`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, the hidden `agent holder`, the holder process itself (`--events <agent>` for an agent
+  <agent>`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, `session ls|resume|new` (#41), the hidden `agent holder`, the holder process itself (`--events <agent>` for an agent
   that reports its events through a pipe), and the
   hidden `hook claude`, which claude runs for every hook event (and `hook opencode`, which the
   holder runs for every line opencode's plugin writes), and the hidden
@@ -64,7 +64,11 @@ the adapters, and returns a domain value that `output` prints.
   send pasted), of the turn commands (`turn ls`'s table, `turn diff`'s patch written to stdout
   byte for byte with, on stderr, the warning of an end not observed, and `turn blame`'s lines:
   the turn right-aligned in 4 columns, `-` for no turn, `·` for since the latest snapshot, then
-  the line number and the text),
+  the line number and the text), of the session commands (#41: `session ls`'s table, the current
+  session marked `*`, its age in words, the first prompt cut to 60 characters; `session resume`
+  as `agent swap`, after `session <id> is already current in worktree <name>` when it only
+  reported; `session new`'s session discarded, how `session resume` brings it back, then what
+  restarting the agent printed or that its next start begins a new session),
   and errors (as text on stderr, or as JSON on stdout with `--json`). `Format` is text or JSON. Before a command that may run a setup starts, `cli`
   has `output` say on stderr what it starts (`creating worktree fix...`); `live_echo` is the
   writer the setup's output is then echoed to while it runs (stderr, or nowhere with `--json`),
@@ -100,7 +104,11 @@ the adapters, and returns a domain value that `output` prints.
   "turn", "agent", "snapshot", "text"}`. `doctor` prints `checks`, each `{"name", "status",
   "found", "need", "message"}` (`status` `ok`, `warn`, `missing`, `too_old` or `info`; `found` and
   `need` null when there is nothing to say), and `error` (kind `prerequisite`) only when a check
-  is missing or too old.
+  is missing or too old. `session ls` (#41) prints the `worktree` object and `sessions`, each
+  `{"id", "agent", "first_prompt", "turns", "last_activity", "current"}`, the most recently active
+  first; `session resume` the `agent swap` document and the `session` now current; `session new`
+  the `worktree` object, the session `discarded` (or null) and `started`, the `agent start`
+  document of the agent restarted on a new session (or null when it was not running).
 
 ### ops
 
@@ -211,6 +219,22 @@ the adapters, and returns a domain value that `output` prints.
   Orca's prompt, type it into the agent through the holder (the paste, 50 ms, then Enter), and only
   then, under `notes.lock`, consume the notes sent whose revision did not change; notify.
 - `ops/turn_ls.rs`: `turn ls`: the worktree's turns from its turn log. Only reads.
+- `ops/session_ls.rs`: `session ls` (#41): the worktree's sessions from its turn log and its live
+  status (`ops::read_sessions`, `domain/session.rs`), with the time now for their ages. Only reads.
+- `ops/session_resume.rs`: `session resume` (#41): find the target (ready), lock it, find the
+  session (an id the worktree never held is refused); the current session, its agent running, is
+  only reported (`agent start`'s `already_running`). Otherwise check it can be resumed before
+  anything stops (`session_gone`: a bad id, claude's transcript not recorded or gone, or opencode's
+  own `opencode session list --format json --pure`, run through `adapters/program.rs` in the
+  worktree, not holding it; a list that cannot be had or read checks nothing), then, with a holder
+  alive, refuse as `busy` an agent in a turn and check the session's agent's sandbox and program
+  (`agent_swap`'s checks) and stop the holder; make the session current in `status.json`
+  (`ops::change_status`, under `hook.lock`), notify, and start its agent with `agent_start::start`,
+  which resumes it and records the agent. The report is `agent swap`'s, with the session.
+- `ops/session_new.rs`: `session new` (#41): find the target, lock it; with a holder alive, refuse
+  as `busy` an agent in a turn, check its sandbox and program and stop the holder; clear the
+  current session in `status.json` (`ops::change_status`), notify, and restart a running agent
+  with `--fresh`'s mode. Every session keeps its turns.
 - `ops/turn_diff.rs`: `turn diff`: the turn's begin and end snapshots from the turn log (refusing
   a turn that does not exist, one not ended, one without snapshots), then `git diff <begin>
   <end>`. Only reads.
@@ -243,7 +267,8 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
   `PATH`; and the variables opencode finds its own directories by (`opencode_dirs_env`: `HOME`, the
   four XDG base directories, `TMPDIR`).
-- `adapters/program.rs`: running a program for its `--version`.
+- `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
+  sessions (`listed_by`, #41), with an empty stdin; both only read.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
   the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
@@ -362,6 +387,14 @@ the adapters, and returns a domain value that `output` prints.
   turn log's start and end lines merged per number, oldest first, the open turn and its phase
   from the live status), and the snapshots a turn's diff runs between (`diff_bounds`, refusing
   with `TurnError`).
+- `domain/session.rs`: a worktree's sessions (#41): every distinct pair of agent and session id
+  its turns name, plus the current one `status.json` records even before its first turn
+  (`sessions`, the most recently active first), the one an id names (`find`, refusing with
+  `SessionError`), what resuming one needs (`to_resume`: its id checked and, for claude, its
+  transcript, the latest one recorded, from the turns' start lines or the status), the status
+  with one made current (`make_current`) or with none (`discard`), and an age in words (`age`).
+  Nothing else records sessions: one left before its first turn is forgotten once another is
+  current.
 - `domain/blame.rs`: `turn blame`'s mapping: `git blame --porcelain` parsed into lines
   (`parse_porcelain`), each line's commit mapped through the turn log (`attribute`: a turn's end
   snapshot is that turn, any other snapshot no turn, git's all-zero id since the latest
@@ -512,13 +545,15 @@ validate"):
   `TurnDiff` (`domain/history.rs`): what `turn ls` and `turn diff` found; `Blame`, `BlamedLine`,
   `LineAuthor` and `Source` (`Turn`, `BetweenTurns` or `SinceSnapshot`, `domain/blame.rs`): what
   `turn blame` found.
+- `Session`, `SessionList`, `Resumed` and `Discarded` (`domain/session.rs`): one session of a
+  worktree, what `session ls`, `session resume` and `session new` report.
 - `Denial` (`domain/turn.rs`): a tool call the agent's permission settings denied, its tool and
   its text; `Detail`, `SetupDetail`, `SetupProgress` and `Drift` (`domain/detail.rs`): what
   `worktree detail` found, the latest setup and where it is, how far `HEAD` is ahead of and
   behind the local default branch.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
   `BusyReason`: the lock is held, or the agent is running, or another agent runs where one is
-  started, or the agent is in a turn where one is swapped), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
+  started, or the agent is in a turn where one is swapped or its session changed), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
@@ -539,7 +574,7 @@ validate"):
   `adapters/script.rs` starts the setup script, only `adapters/holder.rs` starts the holder (and
   only `adapters/holder/process.rs` starts an agent, on a PTY, and only `adapters/holder/events.rs`
   runs the hook for each event an agent reports through its pipe), only `adapters/program.rs` runs a
-  program for its version, only `adapters/fs.rs` reads or writes files, and only
+  program for its version (or opencode for its list of sessions), only `adapters/fs.rs` reads or writes files, and only
   `adapters/env.rs` reads the environment.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
   Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
@@ -914,6 +949,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   the sandbox allows, and it says why and skips only where the tool is absent or cannot make a
   user namespace (CI installs bubblewrap). The agent fixture unsets `XDG_DATA_HOME`,
   `XDG_CACHE_HOME` and `XDG_STATE_HOME`, so opencode's directories land in the fixture's `HOME`.
+  `tests/sessions.rs` (#41) builds claude's sessions by firing the real hooks and opencode's
+  through the fake's pipe, then lists, resumes (reading the fakes' command lines), discards and
+  swaps across agents; the fake opencode answers `session list` with what the test wrote.
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
@@ -944,7 +982,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   PATH, checks the workflow's verification script on tampered, missing and extra assets, and links
   `install-cli` into temporary directories only. `spec/swap_spec.lua` swaps a worktree's fake
   claude for a fake opencode from the `.` menu (#35), with fake sandbox tools that run what they
-  wrap. `support.isolate()` sets the XDG base directories inside the fixture's `HOME`. See
+  wrap. `spec/sessions_spec.lua` (#41) lists and resumes sessions with `s`, across agents too
+  (opencode's lines recorded by running `orca-term hook opencode` itself), and starts a new one
+  from the `.` menu. `support.isolate()` sets the XDG base directories inside the fixture's `HOME`. See
   "Neovim client" below.
 - **Lints** have their own unit tests in `xtask/src/`.
 
@@ -1017,7 +1057,11 @@ what they print.
   while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
   `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`.
   `agent_swap(path, agent, size, approve, cwd, on_done)` runs `agent swap` the same way (#35),
-  typed as `orca_term.Swapped` (the start document, `previous`, `stopped`). `agent_attach` is
+  typed as `orca_term.Swapped` (the start document, `previous`, `stopped`).
+  `session_ls(target, cwd, on_done)` (10 s at most), `session_resume(path, id, size, approve, cwd,
+  on_done)` and `session_new(path, size, approve, cwd, on_done)` run the session commands without
+  blocking (#41), typed as `orca_term.SessionList`, `orca_term.Resumed` and `orca_term.Discarded`.
+  `agent_attach` is
   the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
@@ -1101,7 +1145,7 @@ what they print.
   the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
   the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
   creates a worktree, `u` toggles the unseen mark of the worktree under the cursor, `d` opens its
-  review and `.` opens the menu of the worktree under the cursor (through
+  review, `s` lists its sessions (#41) and `.` opens the menu of the worktree under the cursor (through
   `actions.lua`), and `K` shows or hides its detail float (through `detail.lua`, which closing the
   sidebar closes too). It is never shown in a review tab (`review.lua`): `show_in` skips one, also
   while a review opens, and on `User DiffviewViewOpened` (a diffview the person opened by hand,
@@ -1240,7 +1284,17 @@ what they print.
   tab through `tabs.lua` and the turn review through `review.lua`, then `turn N of <worktree>`, or,
   for an interrupted turn, that its end was not observed; no turns is said; without diffview.nvim
   it only says it is needed; a turn review counts as its worktree's for all three commands),
-  `menu` (`.`: `run_setup`, `copy_path`, `swap_agent`, `remove`; `swap_agent`, #35, asks with
+  `sessions` (`s`, #41: `session ls` without waiting, then `vim.ui.select` titled `Sessions of
+  <worktree>`, each `<mark> <agent>  <N turns>  <age>  <first prompt>` by `session_item`, the
+  current one marked `*`, the age in words by `age`; the current session of the worktree's own
+  agent only opens it, as `<CR>` does; another goes to the worktree's tab, runs `session resume`
+  without blocking and attaches its terminal again through `terminal.reattach`; `untrusted` and
+  `busy` show as for `swap_agent`; no sessions is said), `new_session` (`.`, `New session`, #41:
+  asks `Start a new session` or `Cancel` (`NEW_SESSION`), then goes to the worktree's tab and runs
+  `session new` without blocking; a restarted agent is attached again, otherwise it says the next
+  start begins a new session; an `untrusted` restart is asked about, then `agent start --fresh
+  --approve-sandbox`),
+  `menu` (`.`: `run_setup`, `copy_path`, `swap_agent`, `new_session`, `remove`; `swap_agent`, #35, asks with
   `vim.ui.select` for one of the other agents (`swap_choices`, from `ALL_AGENTS`), goes to the
   worktree's tab, runs `agent swap` without blocking and attaches its terminal to the new agent
   through `terminal.reattach`; `untrusted` writable paths are asked about as for `<CR>`, any other

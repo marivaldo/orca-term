@@ -2,7 +2,8 @@
 //! directory beside `worktree.json`, in files only the hook writes:
 //!
 //! - `status.json`, the live status: the current session, the open turn, the latest closed turn.
-//!   The hook replaces it whole on every run (write and rename).
+//!   The hook replaces it whole on every run (write and rename). The session commands also
+//!   replace it, to move the current session while no agent runs (#41, `domain/session.rs`).
 //! - `turns.jsonl`, the turn log: one line when a turn starts and one when it ends, only ever
 //!   appended to.
 //!
