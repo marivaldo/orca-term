@@ -438,7 +438,7 @@ the adapters, and returns a domain value that `output` prints.
   bound, the denied ones bound read-only over them, a missing denied file covered by `/dev/null`,
   a user namespace of its own, the network kept).
 - `domain/prerequisite.rs`: the programs orca-term needs (`Requirement`: git from 2.38, claude
-  from 2.1.295 and tested up to 2.1.303, opencode from 1.18.0, optional to `doctor` and required
+  from 2.1.295 and tested up to 2.1.306, opencode from 1.18.0, optional to `doctor` and required
   to start it, `agent_requirement`), read from
   what `--version` printed (`Version`, `Probe`), and each `Check` of the doctor's `Report`: `ok`,
   `warn` (claude newer than tested, an old optional program), `missing`, `too_old` or `info` (the

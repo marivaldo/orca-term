@@ -359,7 +359,7 @@ installs nothing, and works outside a repository:
 ```
 ok       git 2.55.0
 ok       sandbox sandbox-exec
-warn     claude 2.1.310: newer than the tested 2.1.303; it may still work
+warn     claude 2.1.310: newer than the tested 2.1.306; it may still work
 ok       opencode not installed (optional)
 info     contract 1, orca-term 0.1.0
 ```
