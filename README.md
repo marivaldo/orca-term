@@ -402,6 +402,62 @@ On Linux, CI shows the way: the tools come from their GitHub releases at the ver
 `.github/workflows/check.yml`, LuaRocks and the Lua 5.1 headers from the distribution
 (`luarocks liblua5.1-0-dev` on Ubuntu), then `just lua-rocks`.
 
+### Live checks
+
+The suites replay recordings of what claude and opencode sent orca-term, so CI needs neither agent.
+`just check-live`, which CI never runs, checks that those recordings still hold: it drives the
+installed claude and opencode through the real orca-term, records what they send, and runs the
+suites that replay the recordings. Run it before each release and whenever an agent's version
+floor rises.
+
+```sh
+just check-live                  # every scenario
+just check-live p-hello tui-esc  # only the scenarios named (these need only claude)
+```
+
+It first checks the agents the scenarios need as `orca-term doctor` does, opencode included, and
+refuses when one is missing or too old. Each scenario then runs in a throwaway repository under the
+system's temporary directory: `worktree new`, `agent start`, and an attach on a pseudo-terminal
+that types the scenario's keys and waits for the hooks it names. orca-term writes nothing to the
+agents' config, but the agents run with your own login and settings, so claude keeps its
+transcripts and remembers the temporary folders it was told to trust, as it always does.
+
+It costs real prompts on your account, each asking for a one-word answer or a few seconds of
+output. A full run is 10 prompts (8 of them claude's) and takes a few minutes:
+
+| Scenario | Agent | What the recording shows | Prompts |
+|---|---|---|---|
+| `p-hello` | claude | a plain prompt finishes | 1 |
+| `tui-esc` | claude | Esc mid-turn interrupts it; the next prompt finishes | 2 |
+| `tui-queuetool` | claude | a prompt queued while a command runs folds into that turn | 2 |
+| `tui-perm` | claude | a permission ask waits; refused with Esc, then allowed | 2 |
+| `tui-sandbox` | claude | the sandbox stops a write into the worktree's admin directory, and the file is checked missing | 1 |
+| `opencode-hello` | opencode | a plain prompt finishes | 1 |
+| `opencode-esc` | opencode | Esc twice mid-turn interrupts it | 1 |
+| `tui-ask` | claude | a question waits for an answer; recorded by hand, `just record-live tui-ask` | 2 |
+
+Each recording is written in place, named after the agent's version:
+`tests/fixtures/claude-hooks/<recording>-<version>.log` for claude,
+`tests/fixtures/opencode-events/<recording>-<version>.log` for opencode, its local paths replaced by
+`{{worktree}}`, `{{transcripts}}` and `{{denied}}`. A new version lands beside the older ones, so
+`git diff --no-index` between the two files shows what the agent now sends differently, and
+recording the same version again shows in `git diff`. The summary lists each scenario as recorded
+or failed (a failed one writes nothing and keeps its directory, with the attach's screen in
+`screen.log`), each suite as passed or diverged with its failing tests, and `git status --short` of
+the fixtures; it exits 1 when a suite diverged or a scenario failed. A newer claude makes the
+`doctor` suite diverge until `CLAUDE_TESTED` in `src/domain/prerequisite.rs` names it: raise it and
+commit it with the recordings.
+
+A scenario is a small file in `tests/live/`: the agent, the recording's name, a timeout, the
+outcome of each turn the recording must replay to, then the keys to type and the hooks to wait for
+(`xtask/src/live/scenario.rs` documents the format). One that cannot be typed reliably, such as
+picking an answer in a menu, is marked `manual`: its comments are the procedure, and
+`just record-live <scenario>` attaches your terminal to the agent and writes the recording once you
+detach. The older recordings no scenario reproduces stay as they were made by hand: an API error
+(`p-stopfailure`), print mode, which orca-term never launches (`p-sandbox-denied-bash`), a hang-up
+or `/exit` (`tui-kill`, `tui-exit`, `tui-web`, `tui-esctool`), timing-dependent queues (`tui-queue`,
+`tui-queueesc`) and deny rules with their menus (`tui-deny-*`).
+
 ### Releases
 
 Pushing a tag `v*` runs `.github/workflows/release.yml`: it builds the core for the four targets,

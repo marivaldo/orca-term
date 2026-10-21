@@ -205,7 +205,9 @@ the adapters, and returns a domain value that `output` prints.
   and `git write-tree` through the copy (`GIT_INDEX_FILE`), `git commit-tree` with the identities
   and dates in the environment, `git update-ref` as a compare-and-swap, remove the copy. A failed
   snapshot is logged and the turn recorded without its id. Every other event runs no git, to stay
-  fast.
+  fast. When `ORCA_TERM_RECORD` names a file, the payload is first appended to it as received
+  (`domain/hook/record.rs`), claude's after the event its command line names: the live checks'
+  recording tap (#44), off unless the variable is set.
 - `ops/note_add.rs`: `note add`: check the body and the path, find the target (refusing the
   primary checkout and a worktree whose directory is gone), refuse a path that leaves the worktree
   through a symlink, read the file for a note on lines and check the lines fit, then, under
@@ -265,8 +267,9 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
-  `PATH`; and the variables opencode finds its own directories by (`opencode_dirs_env`: `HOME`, the
-  four XDG base directories, `TMPDIR`).
+  `PATH`; the variables opencode finds its own directories by (`opencode_dirs_env`: `HOME`, the
+  four XDG base directories, `TMPDIR`); and the recording tap's file (`record_file`:
+  `ORCA_TERM_RECORD`, `None` when unset or empty, #44).
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
   sessions (`listed_by`, #41), with an empty stdin; both only read.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
@@ -369,6 +372,10 @@ the adapters, and returns a domain value that `output` prints.
   ignored), `end` (`SessionEnd`); a subagent's session is reported under the person's, with an
   agent id; a line of no session changes nothing. A provider being retried sends nothing: the turn
   stays working.
+- `domain/hook/record.rs`: the live checks' recording tap (#44): `RECORD_VAR`
+  (`ORCA_TERM_RECORD`), the file it names (`target`, none when unset or empty), and the line a
+  payload is recorded as (`line`): `<event> <payload>` for claude, the plugin's line for opencode,
+  kept as received on one line.
 - `domain/turn.rs`: the live status (`status.json`, its schema rules and bytes, the current
   session, its `transcript` and the `agent` whose hooks named it, claude's when none is recorded) and the turn log
   (`turns.jsonl`, one line at a turn's start and one at its end, numbered per worktree across
@@ -687,6 +694,10 @@ validate"):
   agent state on read: an open turn is `working` or `waiting` while the holder lives and
   `interrupted` once it is gone; otherwise the latest turn's outcome in the current session, or
   `idle` after a fresh session; `--json` carries the `activity`.
+- **The recording tap is off unless asked for** (#44). `orca-term hook` appends what it receives
+  to the file `ORCA_TERM_RECORD` names, before handling it, only when the variable is set and not
+  empty; nothing orca-term launches sets it, and only the live checks do, for the agents they
+  start. A failure to record goes to `hook.log` and the hook carries on.
 - **Turns are bounded by snapshots under a shared ref** (ADR 0006, #38). Only the hook of an
   event that opens or closes a turn takes one, exactly one, and it is both the end of the turn
   closed and the begin of the turn opened. It goes through a throwaway copy of the index, so the
@@ -800,8 +811,9 @@ validate"):
 - **Paths with glob characters** (`*`, `?`, `[`) in the repository's path are read as globs by
   claude's `denyWrite` on macOS.
 - **The real sandbox boundary is not exercised by the tests**: a fake claude enforces nothing.
-  Seam 1 asserts the generated settings and command line; the boundary with the real claude waits
-  for the live checks of #44. opencode's sandbox, being orca-term's own, is exercised for real by
+  Seam 1 asserts the generated settings and command line; the boundary with the real claude is
+  checked only by the live checks of #44 (`tests/live/tui-sandbox.scenario`, which the maintainer
+  runs with `just check-live`). opencode's sandbox, being orca-term's own, is exercised for real by
   `tests/opencode_sandbox.rs` (#35).
 - **Esc fires no hook**, nor does Esc on a permission dialog or declining a question, so the turn
   shows `working` or `waiting` until the next prompt, the session's end or the holder's death.
@@ -917,6 +929,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   ADR 0008, packs each with `.github/scripts/package-release.sh` and checks every asset with
   `.github/scripts/verify-release.sh` before its `publish` job, the only one that may write,
   creates the release; pull requests touching the build run it as a dry run.
+- The live checks never run in CI: a unit test of `xtask/src/live.rs`
+  (`no_workflow_and_no_other_recipe_runs_the_live_checks`) fails when a workflow, or any recipe
+  of the justfile but `check-live` itself, mentions `check-live`.
 
 ## Tests
 
@@ -955,6 +970,22 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `tests/notify.rs` registers fake Neovims (unix sockets the
   test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
   never reads holds nothing up, and `worktree ls` sends nothing.
+  `tests/recordings.rs` replays every version of every live scenario's recording
+  (`tests/live/*.scenario`, recordings in `tests/fixtures/claude-hooks/` and
+  `tests/fixtures/opencode-events/`) through the real `orca-term hook` and checks the outcome of
+  each turn against the scenario's `expect`; `tests/record.rs` checks the recording tap with the
+  fake agents.
+- **Live checks, against the real agents** (#44): `cargo xtask check-live` (`just check-live`),
+  never run by CI, in `xtask/src/live.rs`: it checks the agents with `orca-term doctor --json`,
+  runs each scenario of `tests/live/` (`live/scenario.rs` reads them) in a throwaway repository
+  under the temporary directory, its worktrees placed beside it by an `orca-term.yaml` override,
+  through `worktree new`, `agent start` with `ORCA_TERM_RECORD` set, and `agent attach` on a
+  pseudo-terminal typing the keys (`live/drive.rs`), writes what the tap recorded, its local paths
+  made placeholders, as `<recording>-<version>.log` (`live/recording.rs`), runs the suites that
+  replay the recordings with `cargo test`, and prints the summary (`live/summary.rs`). `cargo xtask
+  record-live <scenario>` does the same with this terminal attached, for a scenario recorded by
+  hand. `xtask/tests/check_live.rs` runs it end to end against a fake claude and a fake opencode
+  that send known hooks and lines through the real orca-term, and a fake cargo (`CARGO`).
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
   each domain and edge module. Adapters keep the few tests that need a real directory.
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in

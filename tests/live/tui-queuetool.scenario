@@ -1,0 +1,18 @@
+# A prompt queued while a command runs: claude folds it into the running turn, which finishes, as
+# in tests/fixtures/claude-hooks/tui-queuetool-*.log. Two prompts.
+agent claude-code
+recording tui-queuetool
+timeout 180
+expect finished
+
+sleep 5
+press enter
+wait-for SessionStart
+sleep 2
+type run the shell command sleep 8, then reply with the single word ok
+press enter
+wait-for PreToolUse
+sleep 1
+type reply with the single word ok
+press enter
+wait-for Stop

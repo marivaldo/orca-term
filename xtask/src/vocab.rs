@@ -14,8 +14,9 @@ const WAIVERS: &str = "docs/vocabulary-waivers.md";
 /// Banned outright: the config file is `orca-term.yaml`.
 const ALWAYS: &[&str] = &["orca.yaml"];
 /// Paths never scanned: the glossary itself, decision records that discuss rejected terms, the
-/// skill setup docs, the map's original input, the waiver file, the payloads claude's hooks sent,
-/// recorded verbatim in claude's own words, and this lint's own source.
+/// skill setup docs, the map's original input, the waiver file, the payloads claude's hooks sent
+/// and the lines opencode's plugin wrote, recorded verbatim in the agents' own words (#44), and
+/// this lint's own source.
 const SKIP: &[&str] = &[
     GLOSSARY,
     WAIVERS,
@@ -23,6 +24,7 @@ const SKIP: &[&str] = &[
     "docs/agents/",
     "docs/wayfinder-input.md",
     "tests/fixtures/claude-hooks/",
+    "tests/fixtures/opencode-events/",
     "xtask/src/vocab.rs",
     "Cargo.lock",
 ];

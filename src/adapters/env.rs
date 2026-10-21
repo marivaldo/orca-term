@@ -1,5 +1,6 @@
 //! Adapter: the process environment, meaning the current directory, the variables the
-//! configuration depends on, the directories of PATH, the running binary's path and the clock.
+//! configuration depends on, the directories of PATH, the running binary's path, the clock and the
+//! live checks' recording tap.
 #![expect(
     clippy::disallowed_methods,
     reason = "this adapter is the one place that reads the process environment"
@@ -11,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 use crate::domain::config::Env;
+use crate::domain::hook::record;
 use crate::domain::launch::opencode::DirsEnv;
 
 /// The directory the core was started in.
@@ -65,4 +67,10 @@ pub(crate) fn config_env() -> Env {
         home: var("HOME"),
         xdg_config_home: var("XDG_CONFIG_HOME"),
     }
+}
+
+/// The file the live checks' recording tap appends to (`ORCA_TERM_RECORD`), or `None`, the tap
+/// off, when the variable is unset or empty (#44).
+pub(crate) fn record_file() -> Option<PathBuf> {
+    record::target(std::env::var_os(record::RECORD_VAR).as_deref())
 }

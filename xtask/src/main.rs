@@ -1,4 +1,5 @@
-//! The repository's own lints, which no off-the-shelf tool covers. Run with `cargo xtask`.
+//! The repository's own lints, which no off-the-shelf tool covers, and the live checks against the
+//! real agents (`live.rs`). Run with `cargo xtask`.
 #![expect(
     clippy::disallowed_methods,
     clippy::disallowed_types,
@@ -14,14 +15,21 @@ mod client_boundary;
 mod commit;
 mod launch_guard;
 mod layers;
+mod live;
 mod pr_title;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The live checks print their own summary and choose their own exit code.
+    match args.as_slice() {
+        ["check-live", rest @ ..] => return live::check_live(rest),
+        ["record-live", rest @ ..] => return live::record_live(rest),
+        _ => {}
+    }
     match run(&args) {
         Ok(problems) if problems.is_empty() => ExitCode::SUCCESS,
         Ok(problems) => {

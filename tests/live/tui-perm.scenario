@@ -1,0 +1,25 @@
+# A permission ask, refused with Esc, then asked again and allowed with Enter (the dialog's first
+# choice, Yes, is the one selected): the first turn is interrupted and the second finishes, as in
+# tests/fixtures/claude-hooks/tui-perm-*.log. A command that sets a variable is not one claude's
+# sandbox lets run unasked. Two prompts.
+agent claude-code
+recording tui-perm
+timeout 180
+expect interrupted finished
+
+sleep 5
+press enter
+wait-for SessionStart
+sleep 2
+type run exactly this shell command: FOO=bar ls
+press enter
+wait-for PermissionRequest
+sleep 2
+press esc
+sleep 3
+type run exactly this shell command again: FOO=bar ls
+press enter
+wait-for PermissionRequest
+sleep 2
+press enter
+wait-for Stop

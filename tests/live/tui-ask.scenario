@@ -1,0 +1,15 @@
+# Recorded by hand: claude asks a question, which needs picking an answer in its menu, then asks
+# again and the session ends while the question shows. The first turn finishes and the second is
+# interrupted, as in tests/fixtures/claude-hooks/tui-ask-*.log. Two prompts.
+#
+# Run `just record-live tui-ask`, which starts claude in a throwaway repository and attaches this
+# terminal to it, then:
+#   1. type `ask me which colour I prefer, red or blue, then reply with the single word ok`, Enter;
+#   2. pick an answer in the question, and wait for claude to finish;
+#   3. type the same prompt again, Enter, and wait for the question to show;
+#   4. detach with Ctrl-\ while the question shows: the recording is written once claude stops.
+agent claude-code
+recording tui-ask
+manual
+timeout 600
+expect finished interrupted
