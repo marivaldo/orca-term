@@ -120,7 +120,8 @@ local TIMEOUT_SECONDS = 10
 local UNREGISTER_TIMEOUT_SECONDS = 1
 
 ---The repository this client is loaded from: three directories up from this file,
----`<root>/lua/orca-term/core.lua`. `cargo build` puts the core binary under `<root>/target/`.
+---`<root>/lua/orca-term/core.lua`. The build hook (`build.lua`) installs a release's core binary
+---at `<root>/bin/orca-term`, and `cargo build` puts it under `<root>/target/`.
 local ROOT = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 
 ---@param kind string
@@ -130,8 +131,9 @@ local function failure(kind, message)
   return { kind = kind, message = 'orca-term: ' .. message }
 end
 
----The core binary: `binary` from setup() when set; else the one `cargo build --release` or
----`cargo build` made in this repository; else `orca-term` on PATH.
+---The core binary: `binary` from setup() when set; else the release binary the build hook
+---installed at `bin/orca-term` in this repository; else the one `cargo build --release` or
+---`cargo build` made there; else `orca-term` on PATH.
 ---@return string? path
 ---@return orca_term.Error? err
 function M.find_binary()
@@ -147,8 +149,12 @@ function M.find_binary()
     return nil, failure('no_binary', message)
   end
 
-  local built = { ROOT .. '/target/release/orca-term', ROOT .. '/target/debug/orca-term' }
-  for _, path in ipairs(built) do
+  local installed = {
+    ROOT .. '/bin/orca-term',
+    ROOT .. '/target/release/orca-term',
+    ROOT .. '/target/debug/orca-term',
+  }
+  for _, path in ipairs(installed) do
     if vim.fn.executable(path) == 1 then
       return path
     end
@@ -159,9 +165,9 @@ function M.find_binary()
     return on_path
   end
 
-  local message = 'no core binary found; run `cargo build` in '
+  local message = 'no core binary found; run `nvim -l build.lua` in '
     .. ROOT
-    .. ' or set `binary` in setup()'
+    .. ' to download or build it, or set `binary` in setup()'
   return nil, failure('no_binary', message)
 end
 

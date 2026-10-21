@@ -4,8 +4,9 @@
 -- the defaults until setup() is called.
 
 ---@class orca_term.Config
----Path to the core binary. When unset, the client looks for the binary `cargo build` makes in the
----repository it is loaded from, then for `orca-term` on PATH.
+---Path to the core binary. When unset, the client looks for the release binary the build hook
+---installed in the repository it is loaded from, then for the binary `cargo build` makes there,
+---then for `orca-term` on PATH.
 ---@field binary? string
 
 local M = {}
