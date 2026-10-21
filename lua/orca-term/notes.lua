@@ -20,6 +20,10 @@
 -- diffview's `User` events and the core's (`live.lua`); the autocommands are made by the first
 -- review opened, never at startup.
 --
+-- A turn review (`review.lua`) shows two snapshots, not the files on disk, so no note is drawn or
+-- added there: its buffers get only a `gn` that says to add notes from the worktree's review (`d`),
+-- taken off as the other keys are.
+--
 -- This module, `sidebar.lua`, `tabs.lua`, `terminal.lua` and `review.lua` are the only ones that
 -- touch windows, tabs and buffers (`cargo xtask client-boundary` checks it). It asks `review.lua`
 -- what a review shows, so that diffview is called from there only, and runs the core through
@@ -53,6 +57,9 @@ local GROUP = 'orca-term-notes'
 
 ---What `gn` says on the review's base side.
 local BASE_SIDE = "notes go on the right-hand side, the worktree's file"
+
+---What `gn` says in a turn review.
+M.IN_TURN = "notes go on the worktree's files: add them from its review (d)"
 
 ---What the notes hold between calls.
 ---@class orca_term.NotesState
@@ -217,6 +224,38 @@ local KEYS = {
   },
 }
 
+---The keys put on a turn review's buffers: `gn`, in normal and visual mode, only says where notes
+---are added.
+---@type { [1]: string, [2]: string, [3]: fun(), [4]: string }[]
+local TURN_KEYS = {}
+for _, mode in ipairs({ 'n', 'x' }) do
+  table.insert(TURN_KEYS, {
+    mode,
+    'gn',
+    function()
+      if mode == 'x' then
+        vim.cmd.normal({ args = { vim.keycode('<Esc>') }, bang = true })
+      end
+      warn(M.IN_TURN)
+    end,
+    "orca-term: notes are added from the worktree's review (d), not from a turn review",
+  })
+end
+
+---Puts `keys` on `buf`, local to it.
+---@param buf integer
+---@param keys { [1]: string, [2]: string, [3]: fun(), [4]: string }[]
+local function set_keys(buf, keys)
+  for _, key in ipairs(keys) do
+    vim.keymap.set(key[1], key[2], key[3], {
+      buffer = buf,
+      nowait = true,
+      silent = true,
+      desc = key[4],
+    })
+  end
+end
+
 ---Puts the notes' keys on `buf`, local to it; the visual `gn` only when `visual`.
 ---@param buf integer
 ---@param visual boolean
@@ -240,10 +279,12 @@ local function forget(buf)
     return
   end
   vim.api.nvim_buf_clear_namespace(buf, M.NAMESPACE, 0, -1)
-  for _, key in ipairs(KEYS) do
-    for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, key[1])) do
-      if map.lhs == key[2] and map.desc == key[4] then
-        vim.api.nvim_buf_del_keymap(buf, key[1], key[2])
+  for _, keys in ipairs({ KEYS, TURN_KEYS }) do
+    for _, key in ipairs(keys) do
+      for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, key[1])) do
+        if map.lhs == key[2] and map.desc == key[4] then
+          vim.api.nvim_buf_del_keymap(buf, key[1], key[2])
+        end
       end
     end
   end
@@ -296,11 +337,16 @@ local function attach_panel(buf)
 end
 
 ---Draws the notes last listed in the current tab when it is orca-term's review: on the right-hand
----window's file, in the file panel, and the keys on those and on the base side's buffers. Every
----other buffer they were on loses them, so in any other tab nothing of the notes is left.
+---window's file, in the file panel, and the keys on those and on the base side's buffers. In a turn
+---review it only puts the `gn` that says where notes are added. Every other buffer they were on
+---loses them, so in any other tab nothing of the notes is left.
 function M.draw()
   local shown = review.shown()
   local keep = {}
+  for _, buf in ipairs(review.turn_buffers() or {}) do
+    set_keys(buf, TURN_KEYS)
+    keep[buf] = true
+  end
   if shown then
     local notes = state.notes[shown.worktree] or {}
     if shown.file then

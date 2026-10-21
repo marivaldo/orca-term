@@ -17,6 +17,13 @@
 -- In orca-term's review tabs (only those), `gf` in diffview's file panel and diff windows edits the
 -- file in the worktree's tab instead of diffview's previous tab.
 --
+-- A turn review shows what one turn of the worktree's agent changed: diffview on `<begin>..<end>`,
+-- the turn's two snapshots, in a tab of its own marked `t:orca_term_turn` (the worktree's path and
+-- the turn's number) instead of `t:orca_term_review`. It is a review tab like the other (the
+-- sidebar is not shown there, `tabs.lua` leaves it out, `gf` edits the file in the worktree's tab,
+-- removing the worktree closes it), but never the worktree's review: `find` and `d` never go to it,
+-- and the notes are not drawn there, since they go on the files on disk.
+--
 -- The autocommands of `gf` are made by the first review opened, never at startup. The notes drawn
 -- in orca-term's review tabs are `notes.lua`'s; this module tells it what a review shows
 -- (`shown()`, `file_in_panel()`), so that diffview is called from here only.
@@ -25,6 +32,9 @@ local M = {}
 
 ---The tab variable that marks orca-term's review tabs, holding the worktree's path.
 M.MARK = 'orca_term_review'
+
+---The tab variable that marks orca-term's turn reviews, holding `{ path = <worktree>, number = N }`.
+M.TURN_MARK = 'orca_term_turn'
 
 ---Where to get diffview.nvim, for the message that says the review needs it.
 M.DIFFVIEW_URL = 'https://github.com/sindrets/diffview.nvim'
@@ -100,21 +110,46 @@ function M.worktree_of(tab)
   return vim.t[tab][M.MARK]
 end
 
----The worktree path the current tab is orca-term's review of, or `nil`.
+---The worktree path the current tab is orca-term's review of, or `nil`. A turn review is not the
+---worktree's review: it gives `nil` there too.
 ---@return string?
 function M.current()
   return M.worktree_of(vim.api.nvim_get_current_tabpage())
 end
 
----Whether `tab` is a review tab: it holds a diffview view, orca-term marked it as a review, or it
----is the tab a review is being opened in.
+---The turn `tab` is orca-term's turn review of, its worktree's path and the turn's number, or
+---`nil` when it is no turn review.
+---@param tab integer
+---@return { path: string, number: integer }?
+function M.turn_of(tab)
+  return vim.t[tab][M.TURN_MARK]
+end
+
+---The worktree path `tab` is a review of, orca-term's review or one of its turn reviews; `nil`
+---for any other tab, a diffview opened by hand included.
+---@param tab integer
+---@return string?
+local function reviewed_in(tab)
+  local turn = M.turn_of(tab)
+  return M.worktree_of(tab) or (turn and turn.path)
+end
+
+---The worktree path the current tab is a review of, orca-term's review or one of its turn
+---reviews, or `nil`.
+---@return string?
+function M.reviewed()
+  return reviewed_in(vim.api.nvim_get_current_tabpage())
+end
+
+---Whether `tab` is a review tab: it holds a diffview view, orca-term marked it as a review or a
+---turn review, or it is the tab a review is being opened in.
 ---@param tab integer
 ---@return boolean
 function M.is_review(tab)
   if opening and tab == vim.api.nvim_get_current_tabpage() then
     return true
   end
-  return M.worktree_of(tab) ~= nil or view_in(tab) ~= nil
+  return reviewed_in(tab) ~= nil or view_in(tab) ~= nil
 end
 
 ---The open review tab of the worktree at `path`: a tab orca-term marked as its review, whose
@@ -129,6 +164,40 @@ function M.find(path)
     end
   end
   return nil
+end
+
+---The open turn review of turn `number` of the worktree at `path`: a tab orca-term marked as that
+---turn's review, whose diffview view is still there. `nil` when there is none.
+---@param path string
+---@param number integer
+---@return integer?
+function M.find_turn(path, number)
+  local wanted = resolved(path)
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    local turn = M.turn_of(tab)
+    if turn and turn.path == wanted and turn.number == number and view_in(tab) then
+      return tab
+    end
+  end
+  return nil
+end
+
+---The buffers of orca-term's turn review in the current tab, its diff windows' and its file
+---panel's, on which `notes.lua` puts the `gn` that says notes are added from the worktree's review;
+---`nil` when the current tab is no turn review.
+---@return integer[]?
+function M.turn_buffers()
+  local tab = vim.api.nvim_get_current_tabpage()
+  if not M.turn_of(tab) then
+    return nil
+  end
+  local buffers = {}
+  for win in pairs(M.view_windows(tab)) do
+    if vim.api.nvim_win_is_valid(win) then
+      table.insert(buffers, vim.api.nvim_win_get_buf(win))
+    end
+  end
+  return buffers
 end
 
 ---What orca-term's review in the current tab shows, for the notes drawn on it (`notes.lua`).
@@ -288,13 +357,13 @@ local function fallback_gf(view)
   end
 end
 
----`gf` in orca-term's review tab: goes to the worktree's tab (making it when missing) and edits the
----file under the cursor there, by its absolute path, in a window that is not the sidebar nor the
----agent's terminal. On the right-hand window, the worktree's own file, the cursor lands on the same
----line. A file the change deleted is not on disk: that is told, and nothing opens.
+---`gf` in orca-term's review tab or turn review: goes to the worktree's tab (making it when
+---missing) and edits the file under the cursor there, by its absolute path, in a window that is not
+---the sidebar nor the agent's terminal. From the right-hand window the cursor lands on the same
+---line. A file not on disk (the change, or a later one, deleted it) is told, and nothing opens.
 local function goto_file()
   local tab = vim.api.nvim_get_current_tabpage()
-  local path = M.worktree_of(tab)
+  local path = reviewed_in(tab)
   local view = view_in(tab)
   if not (path and view and view.infer_cur_file) then
     fallback_gf(view)
@@ -339,13 +408,13 @@ local function map_gf(buf)
   })
 end
 
----After a diffview event in orca-term's review tab (or the one being opened), puts orca-term's `gf`
----on the current buffer, the diff window diffview just filled, and on the view's file panel.
----diffview sets its own buffer-local `gf` on a diff buffer each time it shows it, just before
----`DiffviewDiffBufWinEnter`, so setting ours on that event, every time, keeps ours on top.
+---After a diffview event in orca-term's review tab or turn review (or the one being opened), puts
+---orca-term's `gf` on the current buffer, the diff window diffview just filled, and on the view's
+---file panel. diffview sets its own buffer-local `gf` on a diff buffer each time it shows it, just
+---before `DiffviewDiffBufWinEnter`, so setting ours on that event, every time, keeps ours on top.
 local function on_diffview_event()
   local tab = vim.api.nvim_get_current_tabpage()
-  if not (opening or M.worktree_of(tab)) then
+  if not (opening or reviewed_in(tab)) then
     return
   end
   map_gf(vim.api.nvim_get_current_buf())
@@ -367,6 +436,35 @@ local function ensure_autocmds()
     desc = "orca-term: gf in a review edits the file in the worktree's tab",
     callback = on_diffview_event,
   })
+end
+
+---Opens diffview on `revisions` (a commit, or a range `A..B`) of the worktree at `path`, in the new
+---tab diffview makes, and returns that tab; or `nil` and an error naming `what` when diffview
+---failed or opened no view.
+---@param dv table diffview's main module
+---@param path string
+---@param revisions string
+---@param what string what is being opened, for the error
+---@return integer? tab
+---@return orca_term.Error? err
+local function open_diffview(dv, path, revisions, what)
+  local before = vim.api.nvim_get_current_tabpage()
+  opening = true
+  -- diffview reads `-C`'s value through expand(), which would expand a `$`, `%` or `#` in the path:
+  -- fnameescape() keeps it literal. The arguments are a list, so spaces need nothing more.
+  local opened, problem = pcall(dv.open, { '-C' .. vim.fn.fnameescape(path), revisions })
+  opening = false
+
+  local view = view_in(vim.api.nvim_get_current_tabpage())
+  if not opened or not view or view.tabpage == before then
+    local why = opened and 'it opened no view' or tostring(problem)
+    return nil,
+      {
+        kind = 'failed',
+        message = ('orca-term: diffview could not open %s: %s'):format(what, why),
+      }
+  end
+  return view.tabpage, nil
 end
 
 ---Opens the review of the worktree at `path` against `base`, from the worktree's tab (the caller
@@ -397,35 +495,63 @@ function M.open(path, base)
 
   ensure_autocmds()
   notes.start()
-  local before = vim.api.nvim_get_current_tabpage()
-  opening = true
-  -- diffview reads `-C`'s value through expand(), which would expand a `$`, `%` or `#` in the path:
-  -- fnameescape() keeps it literal. The arguments are a list, so spaces need nothing more.
-  local opened, problem = pcall(dv.open, { '-C' .. vim.fn.fnameescape(path), base })
-  opening = false
-
-  local view = view_in(vim.api.nvim_get_current_tabpage())
-  if not opened or not view or view.tabpage == before then
-    local why = opened and 'it opened no view' or tostring(problem)
-    return {
-      kind = 'failed',
-      message = ('orca-term: diffview could not open the review of %s: %s'):format(path, why),
-    }
+  local tab, err = open_diffview(dv, path, base, 'the review of ' .. path)
+  if not tab then
+    return err
   end
-  vim.t[view.tabpage][M.MARK] = resolved(path)
+  vim.t[tab][M.MARK] = resolved(path)
   on_diffview_event()
   notes.refresh()
   return nil
 end
 
----Closes every review tab of the worktree at `path`, as after the worktree is removed: diffview
----closes its own view and tab, as `:DiffviewClose` does (opening an empty tab first when it was the
----last one).
+---Opens the turn review of `turn` of the worktree at `path`, from the worktree's tab (the caller has
+---gone there): diffview with `-C<path> <begin>..<end>` in a new tab, marked as that turn's review,
+---so it shows exactly what the turn changed. When that turn's review is already open, goes to it.
+---Returns an error when diffview is not installed or opened no view. The turn must have both
+---snapshots.
+---@param path string
+---@param turn orca_term.Turn
+---@return orca_term.Error? err
+function M.open_turn(path, turn)
+  local dv = diffview()
+  if not dv then
+    return {
+      kind = 'no_diffview',
+      message = 'orca-term: the review needs diffview.nvim (' .. M.DIFFVIEW_URL .. ')',
+    }
+  end
+
+  local notes = require('orca-term.notes')
+  local existing = M.find_turn(path, turn.number)
+  if existing then
+    vim.api.nvim_set_current_tabpage(existing)
+    notes.draw()
+    return nil
+  end
+
+  ensure_autocmds()
+  notes.start()
+  local range = assert(turn.begin) .. '..' .. assert(turn['end'])
+  local what = ('turn %d of %s'):format(turn.number, path)
+  local tab, err = open_diffview(dv, path, range, what)
+  if not tab then
+    return err
+  end
+  vim.t[tab][M.TURN_MARK] = { path = resolved(path), number = turn.number }
+  on_diffview_event()
+  notes.draw()
+  return nil
+end
+
+---Closes every review tab of the worktree at `path`, its turn reviews included, as after the
+---worktree is removed: diffview closes its own view and tab, as `:DiffviewClose` does (opening an
+---empty tab first when it was the last one).
 ---@param path string
 function M.close_all(path)
   local wanted = resolved(path)
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
-    if vim.api.nvim_tabpage_is_valid(tab) and M.worktree_of(tab) == wanted then
+    if vim.api.nvim_tabpage_is_valid(tab) and reviewed_in(tab) == wanted then
       local view = view_in(tab)
       if view then
         view:close()

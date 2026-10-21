@@ -793,7 +793,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   diffview.nvim, pinned in `.rocks/diffview.nvim` by `just lua-rocks` and added to the runtimepath
   for that file only, which closes every view and review tab it opens; `spec/notes_spec.lua` does
   the same to add, draw, list, send, edit and delete notes there, its fake claude recording every
-  line it reads (`support.claude_input`). `spec/detail_spec.lua` opens the detail float with `K` on
+  line it reads (`support.claude_input`); `spec/turn_review_spec.lua` the same to review single
+  turns, made by running the real `orca-term hook claude` with claude's payloads on stdin.
+  `spec/detail_spec.lua` opens the detail float with `K` on
   worktrees whose denials are replayed from a recording, whose setup failed and whose branch
   drifted, and fires `CursorMoved` itself, since headless Neovim runs no main loop between a spec's
   calls. See "Neovim client" below.
@@ -807,10 +809,10 @@ Neovim 0.11 or later. The client is thin: it runs the core's commands with `--js
 what they print.
 
 - `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
-  `review`, `notes`, `worktree N`), with completion of the subcommands, and the
+  `review`, `notes`, `turns`, `worktree N`), with completion of the subcommands, and the
   `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
-  `<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and
-  nothing else.
+  `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)` and `<Plug>(OrcaTermWorktree1)` to
+  `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
 - `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
   the core binary). Calling setup() is optional; `config` holds the defaults until then.
 - `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
@@ -839,7 +841,10 @@ what they print.
   `drift` (`orca_term.Drift`). `doctor()` runs `doctor` in Neovim's current directory and waits
   for it (10 s at most), for `:checkhealth orca-term` only, typed as `orca_term.Report`: a report
   with a missing or too old program is returned whole, its `error` inside, rather than as an
-  error.
+  error. `turn_ls(target, cwd, on_done)` runs `turn ls` without waiting (10 s at most), typed as
+  `orca_term.TurnList`: the worktree's `name` and `path` and its `turns` (`orca_term.Turn`:
+  `number`, `outcome` or, while open, `phase`, `prompt`, `end_observed`, the `begin` and `end`
+  snapshots, ...), oldest first; it is the turn review's only source.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1001,6 +1006,15 @@ what they print.
   components diffview rendered; a file in a folded directory has none); `file_in_panel()` gives
   the file under the cursor in the panel. Opening a review starts the notes (`notes.start()`) and
   lists them (`notes.refresh()`), and so does going back to one already open.
+  A turn review is a review tab of its own kind, marked `t:orca_term_turn` (`{ path, number }`,
+  `TURN_MARK`) and never `t:orca_term_review`: `open_turn(path, turn)`, called from the worktree's
+  tab, goes to that turn's review when one is open (`find_turn`), or runs `require('diffview').open({
+  '-C' .. fnameescape(path), begin .. '..' .. end })` and marks the new tab, so it shows exactly
+  `git diff <begin> <end>`. `is_review` counts it (the sidebar and `tabs.lua` leave it out), `gf`
+  works there as in the review (its right-hand side is the turn's end snapshot), and `close_all`
+  closes it with the worktree's review; but `current()`, `find` and `shown()` ignore it, so `d`
+  never goes to it and no note is drawn on it. `reviewed()` gives the worktree of either kind, and
+  `turn_buffers()` the buffers of the current turn review, for the `gn` that refuses there.
 - `lua/orca-term/notes.lua`: the notes in orca-term's review tabs, with no buffer of their own. It
   asks `review.lua` what the current tab shows, never diffview itself, and keeps each worktree's
   notes as `note ls` last printed them. `draw()` draws them in one namespace (`NAMESPACE`) at their
@@ -1032,7 +1046,9 @@ what they print.
   `Cancel`. With no pending notes it says so. Sending tells `sent N notes to <worktree>`; a
   `no_holder` refusal says to press `<CR>` on the worktree in the sidebar to start its agent. After
   every change the notes are listed again and the sidebar reads the fleet again (its `✎N`).
-  `_reset()` forgets it all, for the specs.
+  `_reset()` forgets it all, for the specs. In a turn review it draws nothing and lists nothing: its
+  buffers get only a `gn` (normal and visual) that says `notes go on the worktree's files: add them
+  from its review (d)`, taken off with the other keys.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
@@ -1051,6 +1067,13 @@ what they print.
   whose review tab is; anywhere else it says it needs a worktree's tab),
   `notes_current` (`:OrcaTerm notes`: the notes of the same worktree, through `notes.lua`;
   anywhere else it says it needs a worktree's tab or its review),
+  `turns` and `turns_current` (`:OrcaTerm turns`: the same worktree's turns from `turn ls`, newest
+  first, picked with `vim.ui.select` (`Turns of <worktree>`, each `N  outcome  prompt` by
+  `turn_item`, the prompt cut to 60 cells); a turn without both snapshots says `turn N has not
+  ended yet` or `turn N has no snapshots` (`unreviewable`) and opens nothing; else the worktree's
+  tab through `tabs.lua` and the turn review through `review.lua`, then `turn N of <worktree>`, or,
+  for an interrupted turn, that its end was not observed; no turns is said; without diffview.nvim
+  it only says it is needed; a turn review counts as its worktree's for all three commands),
   `menu` (`.`: `run_setup`, `copy_path`, `remove`), `jump` (`:OrcaTerm jump`) and `go_to_nth`
   (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
@@ -1088,7 +1111,9 @@ Its rules:
   `spec/strip_spec.lua` checks both.
 - **A review tab is never a worktree's tab, and never shows the sidebar.** A tab holding a
   diffview view, or marked `t:orca_term_review`, is left out by `tabs.lua` and skipped by the
-  sidebar, whoever opened it; `spec/review_spec.lua` checks both.
+  sidebar, whoever opened it; `spec/review_spec.lua` checks both. A turn review, marked
+  `t:orca_term_turn`, is a review tab too, but never the worktree's review: `d` never goes to it;
+  `spec/turn_review_spec.lua` checks it.
 - **No global keymap.** Every key the client adds is local to one of its buffers, and the
   commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
   `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
@@ -1133,6 +1158,8 @@ Its known limits:
   back on diffview's next event there, as `gf` does.
 - `gn` and `gN` take the place of Neovim's own `gn` (select the next match) and `gN` in the
   review's buffers, while the review tab is current.
+- In a turn review, `gf` from the right-hand side, the turn's end snapshot, lands on the same line
+  number in the file on disk, which later edits may have moved.
 - The detail float is as high as half the editor at most: a longer detail shows the rest only once
   the person enters the float (`<C-w>w`) and scrolls. It shows the detail as it was when `K` was
   pressed, and closes when the sidebar is drawn again with the cursor moved.

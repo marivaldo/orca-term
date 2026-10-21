@@ -35,10 +35,11 @@ log. The float closes when the cursor moves, on `K` again, or on `q` once you en
 right of a row, `⊘N` counts the tool calls denied in the worktree's latest turn and `✎N` its notes
 waiting to be sent.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
-opens the review of the worktree whose tab you are in and `:OrcaTerm notes` lists its notes; bind
-keys to `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
-`<Plug>(OrcaTermNotes)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the
-client sets no global key.
+opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
+`:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
+`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`, `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`
+and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
+key.
 
 ## Setup
 
@@ -146,6 +147,16 @@ another prompt, or the session ended) is *interrupted*, its end *not observed*: 
 snapshot taken by whatever told orca-term it was over, so its diff may include edits made after the
 interruption, and `turn diff` says so.
 
+In Neovim, `:OrcaTerm turns` in a worktree's tab (or its review) lists the worktree's turns, newest
+first, each as its number, how it ended and its prompt; bind a key to `<Plug>(OrcaTermTurns)` for
+it. Choosing one opens what that turn changed in diffview, its begin snapshot against its end
+snapshot, in a tab of its own where the sidebar is not shown; choosing it again goes back to that
+tab. An interrupted turn says that its end was not observed. An open turn, or one from before
+orca-term took snapshots, cannot be reviewed: choosing it says why and opens nothing. In a turn
+review, `gf` on a file edits it in the worktree's tab, as in the review. Notes are not added there:
+they go on the files on disk, so `gn` says to add them from the worktree's review (`d`), which `d`
+always opens, never a turn review.
+
 Limits:
 
 - A snapshot stores every untracked file `.gitignore` does not exclude in the repository's objects,
@@ -158,6 +169,8 @@ Limits:
   keeps it from rewriting the chain.
 - If orca-term fails to record a snapshot after taking it, the next snapshot starts the chain again,
   and blame gives the lines of the older turns to no turn.
+- In a turn review, `gf` from the right-hand side (the turn's end) lands on the same line number in
+  the file on disk, which later edits may have moved.
 
 ## Status strip
 
