@@ -147,7 +147,7 @@ describe('the build hook', function()
     local status = install.build({ root = root, base_url = base })
 
     assert.are.equal('built', status)
-    assert.is_nil(vim.uv.fs_lstat(root .. '/bin/orca-term'))
+    assert.are.equal('', vim.fn.getftype(root .. '/bin/orca-term'))
     assert.are.same({ root .. ' build --release' }, lines_of(log))
     local mismatch = ('orca-term: the sha256 of %s is %s, not %s as its release says, '):format(
       name,
@@ -396,7 +396,7 @@ describe(':OrcaTerm install-cli', function()
 
     assert.is_nil(install.install_cli(dir))
 
-    assert.is_nil(vim.uv.fs_lstat(dir .. '/orca-term'))
+    assert.are.equal('', vim.fn.getftype(dir .. '/orca-term'))
     assert.are.equal(levels.ERROR, ui.notes[1].level)
     assert(vim.startswith(ui.notes[1].message, 'orca-term: the core binary set in setup()'))
   end)

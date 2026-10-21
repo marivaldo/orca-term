@@ -319,7 +319,7 @@ function M.build(opts)
   end
   report(why .. '; building it with `cargo build --release` instead', levels.WARN, yield)
   local stale = root .. '/bin/' .. NAME
-  if vim.uv.fs_lstat(stale) then
+  if vim.fn.getftype(stale) ~= '' then
     vim.uv.fs_unlink(stale)
   end
   return cargo_build(root, yield)
@@ -368,14 +368,14 @@ function M.install_cli(dir)
     return nil
   end
   local link = dir .. '/' .. NAME
-  local existing = vim.uv.fs_lstat(link)
-  if existing and existing.type ~= 'link' then
+  local existing = vim.fn.getftype(link)
+  if existing ~= '' and existing ~= 'link' then
     local message = '%s: %s exists and is not a symlink; move it away, '
       .. 'then run `:OrcaTerm install-cli` again'
     vim.notify(message:format(NAME, link), levels.ERROR)
     return nil
   end
-  if existing then
+  if existing == 'link' then
     vim.uv.fs_unlink(link)
   end
   local linked, why = vim.uv.fs_symlink(binary, link)
