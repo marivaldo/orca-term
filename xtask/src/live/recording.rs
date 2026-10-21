@@ -1,5 +1,5 @@
 //! What the recording tap wrote, made a recording: its local paths replaced by the placeholders the
-//! replaying suites write back (`{{worktree}}`, `{{transcripts}}`, `{{denied}}`), and its file
+//! replaying suites write back (`{{worktree}}`, `{{transcripts}}`, `{{tasks}}`, `{{denied}}`), and its file
 //! named after the agent's version, so that a new version lands beside the old ones. Also the kind
 //! of each hook or line, for `wait-for`.
 
@@ -44,6 +44,19 @@ pub(crate) fn transcripts_dir(tapped: &str) -> Option<String> {
         let value: Value = serde_json::from_str(payload).ok()?;
         let path = Path::new(value["transcript_path"].as_str()?);
         Some(path.parent()?.to_str()?.to_owned())
+    })
+}
+
+/// The temporary directory claude keeps a project's sessions in (`/private/tmp/claude-<uid>/<the
+/// project's path, escaped>`, holding `<session>/tasks` and `<session>/scratchpad`), from the first
+/// `scratchpad_dir` a hook of the tapped text carries (claude 2.1.306 and later): the placeholder
+/// `{{tasks}}` stands for it, as in the recordings made by hand before.
+pub(crate) fn tasks_dir(tapped: &str) -> Option<String> {
+    tapped.lines().find_map(|line| {
+        let (_, payload) = line.split_once(' ')?;
+        let value: Value = serde_json::from_str(payload).ok()?;
+        let scratchpad = Path::new(value["scratchpad_dir"].as_str()?);
+        Some(scratchpad.parent()?.parent()?.to_str()?.to_owned())
     })
 }
 
@@ -174,6 +187,33 @@ mod tests {
         assert_eq!(count(&opencode, "prompt"), 1);
         assert_eq!(
             transcripts_dir("{\"type\":\"start\"}\n"),
+            None,
+            "opencode has none"
+        );
+    }
+
+    #[test]
+    fn claudes_temporary_project_directory_becomes_the_tasks_placeholder() {
+        let project =
+            "/private/tmp/claude-501/-private-var-folders-x-orca-term-live-1-worktrees-live";
+        let tapped = format!(
+            concat!(
+                "SessionStart {{\"session_id\":\"s1\",\"scratchpad_dir\":\"{p}/s1/scratchpad\"}}\n",
+                "PostToolUse {{\"tool_response\":\"Output is being written to: {p}/s1/tasks/b1.output\"}}\n"
+            ),
+            p = project
+        );
+        let tasks = tasks_dir(&tapped).unwrap();
+        assert_eq!(tasks, project);
+        assert_eq!(
+            normalise(&tapped, &placeholders(&[(&tasks, "{{tasks}}")])),
+            concat!(
+                "SessionStart {\"session_id\":\"s1\",\"scratchpad_dir\":\"{{tasks}}/s1/scratchpad\"}\n",
+                "PostToolUse {\"tool_response\":\"Output is being written to: {{tasks}}/s1/tasks/b1.output\"}\n"
+            )
+        );
+        assert_eq!(
+            tasks_dir("{\"type\":\"start\"}\n"),
             None,
             "opencode has none"
         );
