@@ -2,7 +2,8 @@
 //! directory beside `worktree.json`, in files only the hook writes:
 //!
 //! - `status.json`, the live status: the current session, the open turn, the latest closed turn.
-//!   The hook replaces it whole on every run (write and rename).
+//!   The hook replaces it whole on every run (write and rename). The session commands also
+//!   replace it, to move the current session while no agent runs (#41, `domain/session.rs`).
 //! - `turns.jsonl`, the turn log: one line when a turn starts and one when it ends, only ever
 //!   appended to.
 //!
@@ -315,6 +316,11 @@ pub(crate) struct TurnRecord {
     /// Whether the turn's end was observed, on an end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) end_observed: Option<bool>,
+    /// The transcript claude keeps the turn's session in, on a start, when its hooks named one
+    /// (#41): what `session resume` checks before it resumes a session that is no longer the
+    /// current one. Added within schema 1: a line written before it reads as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) transcript: Option<PathBuf>,
 }
 
 impl TurnRecord {
@@ -336,7 +342,13 @@ impl TurnRecord {
             begin: turn.begin.clone(),
             end: None,
             end_observed: None,
+            transcript: None,
         }
+    }
+
+    /// The same line, recording `transcript` as its session's transcript.
+    pub(crate) fn with_transcript(self, transcript: Option<PathBuf>) -> Self {
+        Self { transcript, ..self }
     }
 
     /// The line that says `turn` ended.
@@ -364,6 +376,7 @@ impl TurnRecord {
             begin: turn.begin.clone(),
             end: turn.end.clone(),
             end_observed: Some(turn.end_observed),
+            transcript: None,
         }
     }
 
@@ -754,6 +767,22 @@ mod tests {
         let latest = status.latest.unwrap();
         assert!(latest.denials.is_empty());
         assert_eq!(latest.message, None);
+    }
+
+    #[test]
+    fn a_start_line_carries_its_sessions_transcript_and_an_older_line_reads_as_none() {
+        let line = TurnRecord::start(&open(1)).with_transcript(Some(PathBuf::from("/t/s1.jsonl")));
+        let text = String::from_utf8(line.to_line().unwrap()).unwrap();
+        assert!(
+            text.ends_with("\"transcript\":\"/t/s1.jsonl\"}\n"),
+            "{text}"
+        );
+        let read = read_log(text.as_bytes()).unwrap();
+        assert_eq!(read[0].transcript, Some(PathBuf::from("/t/s1.jsonl")));
+        let without = String::from_utf8(TurnRecord::start(&open(1)).to_line().unwrap()).unwrap();
+        assert!(!without.contains("transcript"), "{without}");
+        let old = br#"{"schema":1,"kind":"start","turn":1,"session":"s1","prompt_id":"p1","at":10,"prompt":"old"}"#;
+        assert_eq!(read_log(old).unwrap()[0].transcript, None);
     }
 
     #[test]

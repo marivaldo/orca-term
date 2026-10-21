@@ -1,7 +1,7 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
-//! notes, reading its turns, telling the running Neovims that a worktree changed and checking the
+//! notes, reading its turns and its sessions, changing its current session, telling the running Neovims that a worktree changed and checking the
 //! programs a command needs (git, the agents).
 
 pub(crate) mod agent_attach;
@@ -18,6 +18,9 @@ pub(crate) mod note_rm;
 pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
+pub(crate) mod session_ls;
+pub(crate) mod session_new;
+pub(crate) mod session_resume;
 pub(crate) mod turn_blame;
 pub(crate) mod turn_diff;
 pub(crate) mod turn_ls;
@@ -49,10 +52,11 @@ use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
 use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
+use crate::domain::session::{self, Session};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
 use crate::domain::state::{self, AdminDir, BrokenReason, LockStatus, State, WorktreeFile};
 use crate::domain::trust::{self, Consent, Gate, Kind, Subject, Unapproved};
-use crate::domain::turn::{self, Status};
+use crate::domain::turn::{self, Status, StatusRead};
 use crate::domain::worktree::{self, Target};
 
 /// Reads the fleet of the repository containing `dir`, with each worktree's state. Never writes.
@@ -735,6 +739,43 @@ pub(crate) fn read_history(worktree: &Worktree, admin: &AdminDir) -> Result<Hist
         path: worktree.path.clone(),
         turns: history::turns(&records, status.as_ref()),
     })
+}
+
+/// The sessions of the worktree whose admin directory is `admin`, the most recently active first,
+/// from its turn log and its live status (`domain/session.rs`). Only reads, and takes no lock, as
+/// [`read_history`].
+pub(crate) fn read_sessions(admin: &AdminDir) -> Result<Vec<Session>> {
+    let log = fs::read_optional(&admin.turn_log())?.unwrap_or_default();
+    let records = turn::read_log(&log)?;
+    let status = read_status(admin);
+    let turns = history::turns(&records, status.as_ref());
+    Ok(session::sessions(&turns, status.as_ref()))
+}
+
+/// How long a session command waits for a hook of the same worktree to finish.
+const HOOK_LOCK_WAIT: Duration = Duration::from_secs(1);
+
+/// Changes the live status of the worktree `name`, whose admin directory is `admin`, through
+/// `change`: what `session resume` and `session new` do to move its current session (#41), while
+/// no agent runs there. Holds `hook.lock`, as a hook does, from the read to the write (waiting at
+/// most [`HOOK_LOCK_WAIT`]), replaces `status.json` whole, and never writes over a newer schema or
+/// a file it cannot read.
+pub(crate) fn change_status(
+    admin: &AdminDir,
+    name: &str,
+    change: impl FnOnce(Status) -> Status,
+) -> Result<()> {
+    let _lock = fs::lock_file_waiting(&admin.hook_lock(), HOOK_LOCK_WAIT)?.ok_or_else(|| {
+        anyhow!("a hook of worktree {name} is still recording an event; try again once it finishes")
+    })?;
+    let read = turn::read_status(fs::read_optional(&admin.status_file())?.as_deref());
+    turn::check_status_overwrite(&read)?;
+    if let StatusRead::Unreadable(reason) = &read {
+        bail!("status.json of worktree {name} cannot be read ({reason})");
+    }
+    // A missing file is a status with nothing in it yet.
+    let status = read.usable().unwrap_or_default();
+    fs::write_atomically(&admin.status_file(), &turn::status_bytes(&change(status))?)
 }
 
 /// The check of the program `requirement` names, as a shell would find it on `path_dirs`: not

@@ -21,6 +21,7 @@ pub(crate) mod protocol;
 pub(crate) mod review;
 pub(crate) mod sandbox;
 pub(crate) mod seen;
+pub(crate) mod session;
 pub(crate) mod setup;
 pub(crate) mod snapshot;
 pub(crate) mod state;

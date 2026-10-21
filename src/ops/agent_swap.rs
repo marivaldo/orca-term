@@ -37,7 +37,7 @@ pub(crate) fn run(
     let previous = worktree.agent.as_deref().and_then(Agent::from_name);
     let swapping = previous != Some(agent) && worktree.holder.is_alive();
     if swapping {
-        check_not_in_turn(worktree)?;
+        check_not_in_turn(worktree, BusyReason::InTurn)?;
         check_can_launch(agent)?;
         stop_holder(&admin)?;
     }
@@ -55,14 +55,15 @@ pub(crate) fn run(
     })
 }
 
-/// Refuses, as `busy`, a worktree whose agent is in a turn: working, or waiting for the person.
-/// `agent stop` stops it anyway, for a person who means to.
-fn check_not_in_turn(worktree: &Worktree) -> Result<()> {
+/// Refuses, as `busy` for `reason`, a worktree whose agent is in a turn: working, or waiting for
+/// the person. `agent stop` stops it anyway, for a person who means to. The session commands
+/// share it (#41).
+pub(crate) fn check_not_in_turn(worktree: &Worktree, reason: BusyReason) -> Result<()> {
     if matches!(worktree.state, State::Working | State::Waiting) {
         return Err(TypedError::Busy {
             name: worktree.name.clone(),
             path: worktree.path.clone(),
-            reason: BusyReason::InTurn,
+            reason,
         }
         .into());
     }
@@ -70,8 +71,8 @@ fn check_not_in_turn(worktree: &Worktree) -> Result<()> {
 }
 
 /// Refuses, as `agent start` would, an `agent` whose sandbox or program is missing here, before
-/// the running agent is stopped for nothing.
-fn check_can_launch(agent: Agent) -> Result<()> {
+/// the running agent is stopped for nothing. The session commands share it (#41).
+pub(crate) fn check_can_launch(agent: Agent) -> Result<()> {
     let path_dirs = env::path_dirs();
     sandbox::check_available(Platform::current(), agent, &|tool| {
         fs::executable_in(&path_dirs, tool).is_some()

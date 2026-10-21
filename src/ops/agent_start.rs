@@ -400,7 +400,7 @@ fn hook_target(admin: &AdminDir) -> Result<launch::HookTarget> {
 }
 
 /// `worktree` with its state read again from `admin`.
-fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktree> {
+pub(crate) fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktree> {
     let derived = derive_state(admin)?;
     Ok(Worktree {
         name: worktree.name.clone(),

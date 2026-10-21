@@ -25,6 +25,7 @@ use crate::domain::nvim::Address;
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
+use crate::domain::session::{self, Discarded, Resumed, SessionList};
 use crate::domain::setup::{SetupDone, SetupOutcome, SetupReport};
 use crate::domain::trust::{Subject, Unapproved};
 use crate::domain::turn::{Outcome, Phase};
@@ -454,6 +455,119 @@ fn render_agent_swapped(swapped: &Swapped) -> String {
             swapped.started.worktree.name
         ),
         _ => started,
+    }
+}
+
+/// The characters of a session's first prompt `session ls` shows.
+const SESSION_PROMPT_CHARS: usize = 60;
+
+/// Prints a worktree's sessions (#41): as a table like `turn ls`'s, the most recently active
+/// first, the current one marked `*`; or one JSON document.
+pub(crate) fn sessions_listed(list: &SessionList, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_sessions_listed(list)),
+        Format::Json => out(&json::sessions(list)?),
+    }
+    Ok(())
+}
+
+fn render_sessions_listed(list: &SessionList) -> String {
+    if list.sessions.is_empty() {
+        return format!("no sessions in worktree {}", list.worktree.name);
+    }
+    let header = [
+        "",
+        "SESSION",
+        "AGENT",
+        "TURNS",
+        "LAST ACTIVITY",
+        "FIRST PROMPT",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let rows = list.sessions.iter().map(|session| {
+        vec![
+            if session.current { "*" } else { "" }.to_owned(),
+            session.id.clone(),
+            session
+                .agent()
+                .map_or_else(|| session.agent.clone(), |agent| agent.name().to_owned()),
+            session.turns.to_string(),
+            session
+                .last_activity
+                .map_or_else(|| "-".to_owned(), |then| session::age(list.now, then)),
+            session
+                .first_prompt
+                .as_deref()
+                .map_or_else(|| "-".to_owned(), cut_prompt),
+        ]
+    });
+    render_columns(&[header].into_iter().chain(rows).collect::<Vec<_>>())
+}
+
+/// `prompt` on one line, cut to [`SESSION_PROMPT_CHARS`] characters with `...`.
+fn cut_prompt(prompt: &str) -> String {
+    let flat = prompt.replace('\n', " ");
+    if flat.chars().count() <= SESSION_PROMPT_CHARS {
+        return flat;
+    }
+    let kept: String = flat.chars().take(SESSION_PROMPT_CHARS - 3).collect();
+    format!("{kept}...")
+}
+
+/// Prints what `session resume` did (#41): in text, that the session was already current when its
+/// agent was running on it, then what `agent swap` prints.
+pub(crate) fn session_resumed(resumed: &Resumed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => {
+            if let Some(writable) = &resumed.swapped.started.writable {
+                progress(&render_writable(writable), format);
+            }
+            out(&render_session_resumed(resumed));
+        }
+        Format::Json => out(&json::resumed(resumed)?),
+    }
+    Ok(())
+}
+
+fn render_session_resumed(resumed: &Resumed) -> String {
+    let swapped = render_agent_swapped(&resumed.swapped);
+    match resumed.swapped.started.outcome {
+        StartOutcome::AlreadyRunning { .. } => format!(
+            "session {} is already current in worktree {}\n{swapped}",
+            resumed.session, resumed.swapped.started.worktree.name
+        ),
+        StartOutcome::Started { .. } => swapped,
+    }
+}
+
+/// Prints what `session new` did (#41): the session discarded and how to bring it back, then what
+/// starting the agent again on a new session did, or that its next start begins one.
+pub(crate) fn session_discarded(discarded: &Discarded, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => {
+            if let Some(writable) = discarded.started.as_ref().and_then(|s| s.writable.as_ref()) {
+                progress(&render_writable(writable), format);
+            }
+            out(&render_session_discarded(discarded));
+        }
+        Format::Json => out(&json::discarded(discarded)?),
+    }
+    Ok(())
+}
+
+fn render_session_discarded(discarded: &Discarded) -> String {
+    let name = &discarded.worktree.name;
+    let headline = match &discarded.session {
+        Some(id) => format!(
+            "discarded session {id} of worktree {name}; `orca-term session resume {name} {id}` \
+             brings it back"
+        ),
+        None => format!("worktree {name} had no current session"),
+    };
+    match &discarded.started {
+        Some(started) => format!("{headline}\n{}", render_agent_started(started)),
+        None => format!("{headline}\nthe next start of its agent begins a new session"),
     }
 }
 
@@ -1398,6 +1512,107 @@ mod tests {
         assert!(
             render_agent_swapped(&nothing_running)
                 .starts_with("started agent opencode in worktree fix\n")
+        );
+    }
+
+    #[test]
+    fn session_ls_is_a_table_marking_the_current_session() {
+        let minute = 60 * 1000;
+        let session = |id: &str, agent: &str| crate::domain::session::Session {
+            id: id.to_owned(),
+            agent: agent.to_owned(),
+            first_prompt: None,
+            turns: 0,
+            last_activity: None,
+            current: false,
+            transcript: None,
+        };
+        let mut current = session("ses_1", "opencode");
+        current.current = true;
+        current.last_activity = Some(10 * minute);
+        let mut old = session("s-1", "claude");
+        old.turns = 12;
+        old.last_activity = Some(0);
+        old.first_prompt = Some(format!("fix the login\nand {}", "x".repeat(80)));
+        let list = SessionList {
+            worktree: worktree("fix", State::Idle),
+            sessions: vec![current, old, session("a-1", "aider")],
+            now: 15 * minute,
+        };
+        assert_eq!(
+            render_sessions_listed(&list),
+            [
+                "   SESSION  AGENT        TURNS  LAST ACTIVITY  FIRST PROMPT".to_owned(),
+                "*  ses_1    opencode     0      5 min ago      -".to_owned(),
+                format!(
+                    "   s-1      claude-code  12     15 min ago     fix the login and {}...",
+                    "x".repeat(39)
+                ),
+                "   a-1      aider        0      -              -".to_owned(),
+            ]
+            .join("\n")
+        );
+        let empty = SessionList {
+            sessions: Vec::new(),
+            ..list
+        };
+        assert_eq!(
+            render_sessions_listed(&empty),
+            "no sessions in worktree fix"
+        );
+    }
+
+    #[test]
+    fn session_resume_and_new_say_what_they_did() {
+        let started = Started {
+            worktree: worktree("fix", State::Idle),
+            agent: Agent::ClaudeCode,
+            outcome: StartOutcome::AlreadyRunning { pid: Some(7) },
+            writable: None,
+        };
+        let resumed = Resumed {
+            session: "s-1".to_owned(),
+            swapped: Swapped {
+                previous: Some(Agent::ClaudeCode),
+                stopped: false,
+                started: started.clone(),
+            },
+        };
+        assert!(
+            render_session_resumed(&resumed).starts_with(
+                "session s-1 is already current in worktree fix\nagent claude-code is already \
+                 running in worktree fix\n"
+            ),
+            "{}",
+            render_session_resumed(&resumed)
+        );
+        let discarded = Discarded {
+            worktree: worktree("fix", State::Idle),
+            session: Some("s-1".to_owned()),
+            started: None,
+        };
+        assert_eq!(
+            render_session_discarded(&discarded),
+            "discarded session s-1 of worktree fix; `orca-term session resume fix s-1` brings it \
+             back\nthe next start of its agent begins a new session"
+        );
+        let restarted = Discarded {
+            session: None,
+            started: Some(Started {
+                outcome: StartOutcome::Started {
+                    pid: 8,
+                    resumed: None,
+                },
+                ..started
+            }),
+            ..discarded
+        };
+        assert!(
+            render_session_discarded(&restarted).starts_with(
+                "worktree fix had no current session\nstarted agent claude-code in worktree fix\n"
+            ),
+            "{}",
+            render_session_discarded(&restarted)
         );
     }
 

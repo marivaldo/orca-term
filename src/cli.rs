@@ -22,8 +22,9 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
     hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
-    turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
-    worktree_review, worktree_rm, worktree_seen, worktree_setup,
+    session_ls, session_new, session_resume, turn_blame, turn_diff, turn_ls, worktree_detail,
+    worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm, worktree_seen,
+    worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -60,6 +61,11 @@ enum Command {
     Turn {
         #[command(subcommand)]
         command: TurnCommand,
+    },
+    /// Work with a worktree's sessions: list them, make one current again, start a new one.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Check every program orca-term needs (git, claude's sandbox, the agents) and say how to fix
     /// what is missing; installs nothing. Works outside a repository.
@@ -291,6 +297,60 @@ enum TurnCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// List every session a worktree held, the most recently active first, the current one
+    /// marked. Only reads.
+    Ls {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make one of a worktree's sessions its current one and restart its agent on it, swapping
+    /// the worktree's agent when the session is the other agent's (refused while a turn runs).
+    Resume {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The session's id, as `session ls` shows it.
+        id: String,
+        /// The agent's first terminal height, in rows (default: this terminal's, else 24).
+        #[arg(long)]
+        rows: Option<u16>,
+        /// The agent's first terminal width, in columns (default: this terminal's, else 80).
+        #[arg(long)]
+        cols: Option<u16>,
+        /// Approve the sandbox's extra writable paths of a committed orca-term.yaml without being
+        /// asked, then start.
+        #[arg(long)]
+        approve_sandbox: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discard a worktree's current session, so its agent's next start begins a new one; a
+    /// running agent is restarted on a new session at once (refused while a turn runs). The
+    /// discarded session keeps its turns, and `session resume` brings it back.
+    New {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The agent's first terminal height, in rows (default: this terminal's, else 24).
+        #[arg(long)]
+        rows: Option<u16>,
+        /// The agent's first terminal width, in columns (default: this terminal's, else 80).
+        #[arg(long)]
+        cols: Option<u16>,
+        /// Approve the sandbox's extra writable paths of a committed orca-term.yaml without being
+        /// asked, then start.
+        #[arg(long)]
+        approve_sandbox: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Start a worktree's agent, claude-code or opencode, inside its sandbox, held by a detached
     /// process.
@@ -414,6 +474,11 @@ impl Cli {
                 | TurnCommand::Diff { json, .. }
                 | TurnCommand::Blame { json, .. } => *json,
             },
+            Command::Session { command } => match command {
+                SessionCommand::Ls { json, .. }
+                | SessionCommand::Resume { json, .. }
+                | SessionCommand::New { json, .. } => *json,
+            },
             Command::Doctor { json } => *json,
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
@@ -433,6 +498,7 @@ impl Cli {
             Command::Worktree { .. }
             | Command::Note { .. }
             | Command::Turn { .. }
+            | Command::Session { .. }
             | Command::Nvim { .. } => true,
         }
     }
@@ -451,6 +517,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Agent { command } => run_agent(command, cli.format()),
         Command::Note { command } => run_note(command, cli.format()),
         Command::Turn { command } => run_turn(command, cli.format()),
+        Command::Session { command } => run_session(command, cli.format()),
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -747,6 +814,39 @@ fn run_turn(command: &TurnCommand, format: Format) -> Result<ExitCode> {
         }
         TurnCommand::Blame { worktree, path, .. } => {
             output::turn_blame(&turn_blame::run(worktree, path)?, format)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_session(command: &SessionCommand, format: Format) -> Result<ExitCode> {
+    let mut ask = ask_at_terminal;
+    match command {
+        SessionCommand::Ls { worktree, .. } => {
+            output::sessions_listed(&session_ls::run(worktree)?, format)?;
+        }
+        SessionCommand::Resume {
+            worktree,
+            id,
+            rows,
+            cols,
+            approve_sandbox,
+            ..
+        } => {
+            let mut approval = approval(*approve_sandbox, format, &mut ask);
+            let resumed = session_resume::run(worktree, id, *rows, *cols, &mut approval)?;
+            output::session_resumed(&resumed, format)?;
+        }
+        SessionCommand::New {
+            worktree,
+            rows,
+            cols,
+            approve_sandbox,
+            ..
+        } => {
+            let mut approval = approval(*approve_sandbox, format, &mut ask);
+            let discarded = session_new::run(worktree, *rows, *cols, &mut approval)?;
+            output::session_discarded(&discarded, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

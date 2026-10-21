@@ -61,7 +61,8 @@ const STATUS_FILE: &str = "status.json";
 const TURN_LOG_FILE: &str = "turns.jsonl";
 
 /// The lock each hook run takes, waiting briefly, while it changes the status and the turn log.
-/// Commands never take it.
+/// The other commands never take it, but for the session commands, which take it to move the
+/// current session in the status while no agent runs (#41).
 const HOOK_LOCK_FILE: &str = "hook.lock";
 
 /// What went wrong in the hooks, one line each, kept small.
