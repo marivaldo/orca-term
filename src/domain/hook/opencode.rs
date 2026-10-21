@@ -11,6 +11,7 @@
 //! | `question`   | `PermissionRequest` of a question   | waiting, showing the question        |
 //! | `replied`    | `PostToolUse`                       | working again                        |
 //! | `idle`       | `Stop`, with the agent's last words | finished, its end observed           |
+//! | `idle`, cut  | `SessionEnd`                        | interrupted, its end not observed    |
 //! | `error`      | `StopFailure`                       | failed, with the error               |
 //! | `end`        | `SessionEnd`                        | closes a turn left open, interrupted |
 //!
@@ -20,9 +21,17 @@
 //! made for) is reported as claude reports a subagent: under the person's session, with an agent
 //! id, so only its permissions and questions make the turn wait.
 //!
-//! claude has no event for Esc. opencode reports it as the error `MessageAbortedError`, which is
-//! read as `SessionEnd`, the event that closes the open turn as interrupted with its end not
-//! observed. `ContextOverflowError` is ignored: opencode compacts the session and carries on.
+//! claude has no event for Esc; opencode has none either, and how the person's Esc shows depends
+//! on when it comes (measured on 1.18.0 and read in its source). While the agent streams or runs a
+//! tool, opencode reports the error `MessageAbortedError`, read as `SessionEnd`, the event that
+//! closes the open turn as interrupted with its end not observed. While it waits to retry its
+//! provider, or between two steps, it reports no error at all: the session just goes idle, its
+//! latest message ended neither by a finish reason nor by an error (or ended aborted). So an idle
+//! line is a finished turn only when the agent's latest message since the prompt finished on its
+//! own (a `finish` reason, and no `MessageAbortedError`); otherwise it is cut, and read as
+//! `SessionEnd` too. A provider being retried sends nothing, so the turn stays working until one
+//! of these ends it. `ContextOverflowError` is ignored: opencode compacts the session and carries
+//! on.
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -104,13 +113,28 @@ fn session_event(kind: &str, line: &Value, session: &str, parent: Option<&str>) 
             ..base("PermissionRequest")
         }),
         "replied" => Some(base("PostToolUse")),
-        "idle" => Some(Payload {
-            last_message: text("text"),
-            ..base("Stop")
-        }),
+        "idle" if finished_on_its_own(field(line, "finish"), field(line, "error")) => {
+            Some(Payload {
+                last_message: text("text"),
+                ..base("Stop")
+            })
+        }
+        "idle" => Some(base("SessionEnd")),
         "error" => error_event(text("name"), text("message"), base),
         _ => None,
     }
+}
+
+/// Whether the agent's latest message since the prompt finished on its own, as an idle line tells:
+/// it has a `finish` reason and did not end aborted. A message with no finish reason was cut short
+/// by the person (Esc while opencode waited to retry its provider, or before it answered at all).
+fn finished_on_its_own(finish: Option<&str>, error: Option<&str>) -> bool {
+    finish.is_some() && error != Some(ABORTED)
+}
+
+/// The text the field `key` of `line` holds, if it holds text.
+fn field<'a>(line: &'a Value, key: &str) -> Option<&'a str> {
+    line.get(key).and_then(Value::as_str)
 }
 
 /// The payload of an error named `name`, saying `message`: the end of an interrupted turn when
@@ -272,11 +296,26 @@ mod tests {
         );
     }
 
+    /// The idle line of a session whose agent's latest message finished on its own, saying `text`.
+    fn finished(text: &str) -> Value {
+        json!({
+            "type": "idle", "session": "ses_1", "parent": null, "text": text,
+            "finish": "stop", "error": null
+        })
+    }
+
     #[test]
     fn idle_stops_with_the_last_words_and_errors_fail_or_interrupt() {
-        let idle = event(&json!({"type": "idle", "session": "ses_1", "text": "All done."}));
+        let idle = event(&finished("All done."));
         assert_eq!(idle.event, "Stop");
         assert_eq!(idle.last_message.as_deref(), Some("All done."));
+        let after_a_refusal = event(&json!({
+            "type": "idle", "session": "ses_1", "text": null, "finish": "tool-calls", "error": null
+        }));
+        assert_eq!(
+            after_a_refusal.event, "Stop",
+            "the agent stopped on its own"
+        );
         let failed = event(&json!({
             "type": "error", "session": "ses_1", "name": "APIError", "message": "rate limited"
         }));
@@ -296,6 +335,23 @@ mod tests {
             None,
             "an error of no session, such as a plugin that failed to load"
         );
+    }
+
+    #[test]
+    fn an_idle_line_whose_message_did_not_finish_is_cut_short() {
+        for (finish, error) in [
+            (Value::Null, Value::Null),
+            (Value::Null, json!("MessageAbortedError")),
+            (json!("stop"), json!("MessageAbortedError")),
+        ] {
+            let line = json!({
+                "type": "idle", "session": "ses_1", "parent": null, "text": null,
+                "finish": finish, "error": error
+            });
+            assert_eq!(event(&line).event, "SessionEnd", "{line}");
+        }
+        let fields_missing = json!({"type": "idle", "session": "ses_1"});
+        assert_eq!(event(&fields_missing).event, "SessionEnd");
     }
 
     #[test]
@@ -364,7 +420,7 @@ mod tests {
             json!({"type": "prompt", "session": "ses_1", "text": "fix the login"}),
             json!({"type": "question", "session": "ses_1", "question": "Which file?"}),
             json!({"type": "replied", "session": "ses_1"}),
-            json!({"type": "idle", "session": "ses_1", "text": "All done."}),
+            finished("All done."),
             json!({"type": "idle", "session": "ses_1"}),
         ]);
         assert_eq!(status.turn, None);
@@ -375,11 +431,44 @@ mod tests {
     }
 
     #[test]
+    fn esc_while_opencode_waits_to_retry_its_provider_interrupts_the_turn() {
+        // The lines the plugin wrote for opencode 1.18.0, its provider unreachable: the prompt,
+        // nothing while opencode retried it (`session.status` retry, which the plugin does not
+        // report), then Esc twice and the session idle, its message with no finish and no error.
+        let (status, records) = replay(&[
+            json!({"type": "start"}),
+            json!({
+                "type": "prompt", "session": "ses_ea08cf1b5ffeXKYazd5gX3BvI5", "parent": null,
+                "text": "say hi in three words"
+            }),
+            json!({
+                "type": "idle", "session": "ses_ea08cf1b5ffeXKYazd5gX3BvI5", "parent": null,
+                "text": null, "finish": null, "error": null
+            }),
+            json!({"type": "end"}),
+        ]);
+        assert_eq!(records.len(), 2, "one turn, started and ended: {records:?}");
+        assert_eq!(status.turn, None);
+        let latest = status.latest.as_ref().unwrap();
+        assert_eq!(latest.outcome, Outcome::Interrupted);
+        assert!(!latest.end_observed);
+        assert_eq!(latest.prompt, "say hi in three words");
+    }
+
+    #[test]
+    fn a_provider_being_retried_leaves_the_turn_working() {
+        let (status, _) = replay(&[json!({
+            "type": "prompt", "session": "ses_1", "parent": null, "text": "say hi"
+        })]);
+        assert_eq!(status.turn.as_ref().unwrap().phase, Phase::Working);
+    }
+
+    #[test]
     fn a_message_sent_while_a_turn_runs_folds_into_it() {
         let (status, records) = replay(&[
             json!({"type": "prompt", "session": "ses_1", "text": "fix the login"}),
             json!({"type": "prompt", "session": "ses_1", "text": "and the logout"}),
-            json!({"type": "idle", "session": "ses_1", "text": "Both done."}),
+            finished("Both done."),
         ]);
         assert_eq!(records.len(), 2, "one turn, started and ended: {records:?}");
         assert_eq!(status.latest.as_ref().unwrap().outcome, Outcome::Finished);

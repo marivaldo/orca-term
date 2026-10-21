@@ -16,11 +16,17 @@
 //   {"type":"permission","session","parent","permission","input"}
 //   {"type":"question","session","parent","question"}  opencode waits for the person
 //   {"type":"replied","session","parent"}              the person answered
-//   {"type":"idle","session","parent","text"}          the session stopped, with its last words
+//   {"type":"idle","session","parent","text","finish","error"}
+//                                                      the session stopped
 //   {"type":"error","session","parent","name","message"}
 //   {"type":"end"}                                     opencode is shutting down
 //
-// `parent` is the session a subagent's session was made for, null for the person's own.
+// `parent` is the session a subagent's session was made for, null for the person's own. An idle
+// line carries the agent's last words, and how its latest message since the person's prompt
+// ended: its `finish` reason (null when it has none) and its `error`'s name (null when none).
+// opencode says nothing else when the person presses Esc while it waits to retry its provider
+// (measured on 1.18.0: no `session.error`, the message completed with neither), so this is how
+// orca-term tells an interrupted turn from a finished one.
 
 import { writeSync } from "node:fs"
 
@@ -64,6 +70,8 @@ export const OrcaTerm = async () => {
   const parents = new Map()
   /** What the agent said last in each session, by its id. */
   const lastText = new Map()
+  /** How the agent's latest message ended in each session, by its id, since the person's prompt. */
+  const lastEnd = new Map()
   const where = (sessionID) => ({ session: sessionID ?? null, parent: parents.get(sessionID) ?? null })
 
   send({ type: "start" })
@@ -72,6 +80,7 @@ export const OrcaTerm = async () => {
       const parts = Array.isArray(output?.parts) ? output.parts : []
       const typed = parts.filter((part) => part?.type === "text" && !part.synthetic)
       const text = typed.map((part) => part.text).join("\n")
+      lastEnd.delete(input?.sessionID)
       send({ type: "prompt", ...where(input?.sessionID), text: cut(text) ?? "" })
     },
     "tool.execute.before": async (input, output) => {
@@ -89,6 +98,14 @@ export const OrcaTerm = async () => {
         case "session.updated":
           if (properties.info?.parentID) parents.set(properties.info.id, properties.info.parentID)
           break
+        case "message.updated":
+          if (properties.info?.role === "assistant") {
+            lastEnd.set(properties.info.sessionID, {
+              finish: cut(properties.info.finish),
+              error: cut(properties.info.error?.name),
+            })
+          }
+          break
         case "permission.asked":
           send({
             type: "permission",
@@ -105,10 +122,20 @@ export const OrcaTerm = async () => {
         case "question.rejected":
           send({ type: "replied", ...where(properties.sessionID) })
           break
-        case "session.idle":
-          send({ type: "idle", ...where(properties.sessionID), text: lastText.get(properties.sessionID) ?? null })
-          lastText.delete(properties.sessionID)
+        case "session.idle": {
+          const sessionID = properties.sessionID
+          const end = lastEnd.get(sessionID)
+          send({
+            type: "idle",
+            ...where(sessionID),
+            text: lastText.get(sessionID) ?? null,
+            finish: end?.finish ?? null,
+            error: end?.error ?? null,
+          })
+          lastText.delete(sessionID)
+          lastEnd.delete(sessionID)
           break
+        }
         case "session.error":
           send({
             type: "error",

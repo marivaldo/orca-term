@@ -112,8 +112,13 @@ fn prompt(text: &str) -> Value {
     json!({"type": "prompt", "session": "ses_1", "parent": null, "text": text})
 }
 
+/// The plugin's line of the session `ses_1` going idle once the agent finished on its own, its
+/// last words `text`.
 fn idle(text: &str) -> Value {
-    json!({"type": "idle", "session": "ses_1", "parent": null, "text": text})
+    json!({
+        "type": "idle", "session": "ses_1", "parent": null, "text": text,
+        "finish": "stop", "error": null
+    })
 }
 
 /// Checks the fake sandbox tool was given the generated profile (macOS) or arguments (Linux) for
@@ -308,6 +313,37 @@ fn an_error_fails_the_turn_and_esc_interrupts_it() {
             .iter()
             .all(|turn| turn["agent"] == "opencode")
     );
+}
+
+#[test]
+fn esc_while_opencode_retries_its_provider_interrupts_the_turn_as_the_real_lines_say() {
+    let oc = OpenCodeRepo::new();
+    let wt = Started::new(&oc, "demo");
+    let mut driver = oc.driver("demo");
+    // The lines the plugin wrote for the real opencode 1.18.0, its provider unreachable: the
+    // prompt, nothing while opencode retried the provider, then the idle line of Esc twice.
+    let session = "ses_ea08cf1b5ffeXKYazd5gX3BvI5";
+    driver.event(&json!({
+        "type": "prompt", "session": session, "parent": null, "text": "say hi in three words"
+    }));
+    wt.wait_for_state("working", "say hi in three words");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(
+        wt.listed()["state"],
+        "working",
+        "a retried provider stays working"
+    );
+    driver.event(&json!({
+        "type": "idle", "session": session, "parent": null, "text": null, "finish": null,
+        "error": null
+    }));
+    wt.wait_for_state("interrupted", "say hi in three words");
+    driver.detach();
+    let turns = wt.turns();
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert_eq!(turns[1]["outcome"], "interrupted");
+    assert_eq!(turns[1]["end_observed"], false);
+    assert!(turns[1]["end"].is_string(), "it still ends on a snapshot");
 }
 
 #[test]
