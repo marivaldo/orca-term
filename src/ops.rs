@@ -50,6 +50,7 @@ use crate::domain::history::{self, History};
 use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
 use crate::domain::nvim::{self, Address};
+use crate::domain::operation::{self, Operation, RebaseStep};
 use crate::domain::prerequisite::{self, Check, Probe, Requirement};
 use crate::domain::seen::{self, Seen};
 use crate::domain::session::{self, Session};
@@ -77,6 +78,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.unseen = derived.unseen;
         worktree.notes = derived.notes;
         worktree.denials = derived.denials;
+        worktree.operation = derived.operation;
     }
     Ok(fleet)
 }
@@ -97,6 +99,8 @@ pub(crate) struct Derived {
     pub(crate) notes: usize,
     /// How many tool calls its agent was denied in its latest turn (`domain/turn.rs`).
     pub(crate) denials: usize,
+    /// The git operation it is in the middle of (`domain/operation.rs`).
+    pub(crate) operation: Option<Operation>,
 }
 
 impl Derived {
@@ -109,6 +113,7 @@ impl Derived {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         }
     }
 }
@@ -130,14 +135,43 @@ fn read_state(worktree: &Path, prunable: Option<String>) -> Derived {
 }
 
 /// The state of the worktree whose admin directory is `admin`, whether it is unseen, how many
-/// notes are pending on it and how many tool calls its agent was denied in its latest turn. Only
-/// reads.
+/// notes are pending on it, how many tool calls its agent was denied in its latest turn and the
+/// git operation it is in the middle of. Only reads.
 pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     let mut derived = derive_agent_state(admin)?;
     derived.unseen = read_unseen(admin, derived.holder);
     derived.notes = read_note_count(admin);
     derived.denials = read_denial_count(admin);
+    derived.operation = read_operation(admin);
     Ok(derived)
+}
+
+/// The git operation (a merge, a rebase, a cherry-pick or a revert) the worktree whose admin
+/// directory is `admin` is in the middle of, from the markers git leaves in the worktree's git
+/// dir, which holds `admin`. Only looks at which files are there: it runs no git and never fails.
+fn read_operation(admin: &AdminDir) -> Option<Operation> {
+    let git_dir = admin.git_dir()?;
+    operation::detect(|marker| fs::exists(&git_dir.join(marker)))
+}
+
+/// The step the rebase in progress in the worktree whose admin directory is `admin` is at, from
+/// git's step files in `rebase-merge/` (or `rebase-apply/`). `None` when no rebase is in progress
+/// or git records no step. Only reads, and never fails.
+pub(crate) fn read_rebase_step(admin: &AdminDir) -> Option<RebaseStep> {
+    let git_dir = admin.git_dir()?;
+    let (dir, (current, total)) = if fs::is_dir(&git_dir.join(operation::REBASE_MERGE_DIR)) {
+        (
+            git_dir.join(operation::REBASE_MERGE_DIR),
+            operation::REBASE_MERGE_STEP_FILES,
+        )
+    } else {
+        (
+            git_dir.join(operation::REBASE_APPLY_DIR),
+            operation::REBASE_APPLY_STEP_FILES,
+        )
+    };
+    let read = |name: &str| fs::read_text_optional(&dir.join(name)).ok().flatten();
+    RebaseStep::from_texts(&read(current)?, &read(total)?)
 }
 
 /// How many tool calls the agent of the worktree whose admin directory is `admin` was denied in
@@ -186,6 +220,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 unseen: false,
                 notes: 0,
                 denials: 0,
+                operation: None,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -217,6 +252,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         unseen: false,
         notes: 0,
         denials: 0,
+        operation: None,
     })
 }
 
@@ -410,6 +446,7 @@ pub(crate) fn set_up(
             unseen: derived.unseen,
             notes: derived.notes,
             denials: derived.denials,
+            operation: derived.operation,
         });
     };
     if let Some(file) = config::committed_setup_file(&layers) {
@@ -445,6 +482,7 @@ pub(crate) fn set_up(
         unseen: derived.unseen,
         notes: derived.notes,
         denials: derived.denials,
+        operation: derived.operation,
     })
 }
 

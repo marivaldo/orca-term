@@ -205,6 +205,13 @@ impl AdminDir {
         git_dir.file_name()?.to_str()
     }
 
+    /// The worktree's own git dir, which holds this directory: where git leaves the markers of a
+    /// merge or rebase in progress (`domain/operation.rs`). `None` when this directory has no
+    /// parent.
+    pub(crate) fn git_dir(&self) -> Option<&Path> {
+        self.0.parent()
+    }
+
     /// git's `commondir` file beside this directory, in git's per-worktree admin directory
     /// (`<common>/worktrees/<id>`): it names the git common dir.
     pub(crate) fn commondir_file(&self) -> Option<PathBuf> {

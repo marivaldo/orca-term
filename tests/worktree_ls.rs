@@ -160,6 +160,68 @@ fn listing_never_writes_to_the_repository() {
     );
 }
 
+/// The git commands `worktree ls` runs from `repo`'s primary checkout, one line of arguments each,
+/// through a `git` on PATH that logs its arguments to a file in the fixture and runs the real one.
+fn git_runs_of_ls(repo: &Repo) -> Vec<String> {
+    let real = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_owned();
+    let bin = repo.tmp.path().join("logging-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = repo.tmp.path().join("git-runs.log");
+    let _ = std::fs::remove_file(&log);
+    let wrapper = bin.join("git");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{real}' \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&wrapper, permissions).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    repo.orca_term(&repo.root)
+        .args(["worktree", "ls", "--json"])
+        .env("PATH", path)
+        .assert()
+        .success();
+    std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn an_operation_in_progress_is_read_without_running_git_again() {
+    let repo = Repo::new();
+    repo.write("a.txt", "base\n");
+    repo.commit_all("base");
+    let worktree = repo.add_worktree(&repo.tmp.path().join("worktrees/fix"), "fix");
+    let wt = worktree.to_str().unwrap();
+    std::fs::write(worktree.join("a.txt"), "fix\n").unwrap();
+    repo.git(&["-C", wt, "commit", "--quiet", "--all", "-m", "fix a"]);
+    repo.write("a.txt", "main\n");
+    repo.commit_all("main a");
+    let quiet = git_runs_of_ls(&repo);
+
+    repo.git_failing(&["-C", wt, "merge", "--quiet", "main"]);
+    assert_eq!(
+        ls_json(&repo, &repo.root)["worktrees"][0]["operation"],
+        "merge"
+    );
+    assert_eq!(
+        git_runs_of_ls(&repo),
+        quiet,
+        "a merge in progress adds no git run to the listing"
+    );
+}
+
 #[test]
 fn a_worktree_state_of_a_newer_schema_still_lists_and_is_left_untouched() {
     let repo = Repo::new();

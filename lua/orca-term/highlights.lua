@@ -46,6 +46,9 @@ local LINKS = {
   -- The tool calls the agent's permission rules refused: their count `⊘N` at the right of a
   -- worktree's name line, and the `⊘` before each one in the detail float.
   OrcaTermDenied = 'DiagnosticWarn',
+  -- A git operation in progress (a merge, a rebase, a cherry-pick or a revert): the `≠` at the
+  -- right of a worktree's name line, and its line in the detail float.
+  OrcaTermOperation = 'DiagnosticWarn',
   -- The notes drawn in a review: their signs, their text and their count in the file panel.
   OrcaTermNote = 'DiagnosticInfo',
 }

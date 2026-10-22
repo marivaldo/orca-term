@@ -1,8 +1,8 @@
 //! Domain: a worktree's detail (`worktree detail`), everything the client's detail float shows:
 //! the worktree as `worktree ls` shows it, the whole text of why it is in its state, the tool
 //! calls its agent was denied in its latest turn, the end of its setup log, and how far it drifted
-//! from the repository's local default branch. All of it is read on request; nothing is fetched
-//! and nothing is written.
+//! from the repository's local default branch, with the step of a rebase in progress. All of it is
+//! read on request; nothing is fetched and nothing is written.
 
 use std::path::PathBuf;
 
@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::domain::branch::Branch;
 use crate::domain::fleet::Worktree;
+use crate::domain::operation::RebaseStep;
 use crate::domain::setup::{self, Exit, SetupRecord};
 use crate::domain::state::State;
 use crate::domain::turn::{Denial, Status};
@@ -27,6 +28,9 @@ pub(crate) struct Detail {
     pub(crate) setup: Option<SetupDetail>,
     /// How far it is from the local default branch, `None` when that cannot be told.
     pub(crate) drift: Option<Drift>,
+    /// The step of the rebase it is in the middle of, `None` for any other operation, for none, or
+    /// when git records no step.
+    pub(crate) operation_step: Option<RebaseStep>,
 }
 
 /// A worktree's latest setup, as the detail shows it.

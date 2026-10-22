@@ -360,6 +360,36 @@ describe('render', function()
     assert.are.equal(' │ · picked                ⊘12 ✎1 │', rendered.lines[picked])
   end)
 
+  it(
+    'shows ≠ for a git operation in progress, before ⊘N and ✎N, and none without one',
+    function()
+      local rendered = render.fleet(
+        fleet({
+          worktree('all', { operation = 'rebase', denials = 3, notes = 2 }),
+          worktree('merging', { operation = 'merge' }),
+          worktree('none', { denials = 0, notes = 0 }),
+        }),
+        '/src/wt/none'
+      )
+      assert_fits(rendered, render.WIDTH)
+
+      local all = assert(rendered.firsts['/src/wt/all'])
+      assert.are.equal(' · all                      ≠ ⊘3 ✎2', rendered.lines[all])
+      assert.are.same(
+        { 'OrcaTermStateNoAgent', 'OrcaTermOperation', 'OrcaTermDenied', 'OrcaTermBadge' },
+        groups_on(rendered, all)
+      )
+      local mark = rendered.spans[assert(span_index(rendered, all, 'OrcaTermOperation'))]
+      assert.are.equal('≠', rendered.lines[all]:sub(mark.first + 1, mark.last))
+
+      local merging = assert(rendered.firsts['/src/wt/merging'])
+      assert.are.equal(' · merging                        ≠', rendered.lines[merging])
+
+      local none = assert(rendered.firsts['/src/wt/none'])
+      assert.are.equal(' │ · none                         │', rendered.lines[none])
+    end
+  )
+
   it('selects the first worktree shown when the selected one is gone', function()
     local rendered = render.fleet(
       fleet({ worktree('quiet'), worktree('urgent', { state = 'broken' }) }),
@@ -540,6 +570,35 @@ describe("render.detail, a worktree's detail", function()
     for index = 6, 8 do
       assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, index))
     end
+  end)
+
+  it('names a git operation in progress after the branch, with a rebase step', function()
+    local rendered = render.detail(
+      document({
+        drift = { against = 'main', ahead = 1, behind = 1 },
+        operation_step = { current = 2, total = 5 },
+        detail = 'API Error: 400',
+      }, { state = 'failed', operation = 'rebase' }),
+      50
+    )
+    assert.are.same({
+      ' ● failed · claude-code',
+      ' fix  ↑1 ↓1 main',
+      '',
+      ' rebase in progress (2/5)',
+      '',
+      ' API Error: 400',
+    }, rendered.lines)
+    assert.are.same({ 'OrcaTermOperation' }, groups_on(rendered, 4))
+
+    local function operation_line(operation)
+      return render.detail(document({}, { operation = operation }), 50).lines[4]
+    end
+    assert.are.equal(' merge in progress', operation_line('merge'))
+    assert.are.equal(' cherry-pick in progress', operation_line('cherry-pick'))
+    assert.are.equal(' revert in progress', operation_line('revert'))
+    assert.are.equal(' rebase in progress', operation_line('rebase'))
+    assert.are.equal(2, #render.detail(document({}), 50).lines, 'no operation, no line')
   end)
 
   it('reads a setup not approved in words', function()

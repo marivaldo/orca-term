@@ -398,6 +398,7 @@ mod tests {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         };
         check_can_run_agent(&with(State::NoAgent)).unwrap();
         check_can_run_agent(&with(State::Idle)).unwrap();

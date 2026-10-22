@@ -413,5 +413,6 @@ pub(crate) fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktre
         unseen: derived.unseen,
         notes: derived.notes,
         denials: derived.denials,
+        operation: derived.operation,
     })
 }

@@ -17,6 +17,7 @@ use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
+use crate::domain::operation::Operation;
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -54,7 +55,8 @@ struct PrimaryView<'a> {
 /// recorded agent's name or null, `holder` whether a holder is alive, `unseen` whether its latest
 /// turn ended after the person last reviewed it (or the person marked it so), `notes` how many
 /// notes are pending on it, `denials` how many tool calls its agent was denied in its latest turn
-/// (open or ended; never a state).
+/// (open or ended; never a state), `operation` the git operation it is in the middle of (`merge`,
+/// `rebase`, `cherry-pick`, `revert`) or null (never a state).
 #[derive(Debug, Serialize)]
 struct WorktreeView<'a> {
     name: &'a str,
@@ -68,6 +70,7 @@ struct WorktreeView<'a> {
     unseen: bool,
     notes: usize,
     denials: usize,
+    operation: Option<&'static str>,
 }
 
 /// `worktree new --json`: the worktree as `worktree ls` shows it, and what was done to make it.
@@ -219,7 +222,9 @@ struct ReviewedView<'a> {
 /// state, whole (every line: a failed setup's reason, a broken worktree's, or a failed turn's
 /// whole error), else null; `denials`, the tool calls its agent was denied in its latest turn, in
 /// order; `setup`, its latest setup (null when it never ran one); `drift`, how far it is from the
-/// local default branch (null when there is none, or the histories are unrelated).
+/// local default branch (null when there is none, or the histories are unrelated);
+/// `operation_step`, the step of the rebase it is in the middle of (null for any other operation,
+/// for none, or when git records no step).
 #[derive(Debug, Serialize)]
 struct DetailView<'a> {
     worktree: WorktreeView<'a>,
@@ -227,6 +232,14 @@ struct DetailView<'a> {
     denials: Vec<DenialView<'a>>,
     setup: Option<SetupDetailView<'a>>,
     drift: Option<DriftView<'a>>,
+    operation_step: Option<StepView>,
+}
+
+/// A rebase's step: `current` of `total` commits.
+#[derive(Debug, Serialize)]
+struct StepView {
+    current: u64,
+    total: u64,
 }
 
 /// One denied tool call: `tool` (`Bash`) and `text`, the call in one line (`Bash: FOO=bar ls`).
@@ -495,6 +508,7 @@ fn set_up_worktree(
         unseen: setup.unseen,
         notes: setup.notes,
         denials: setup.denials,
+        operation: setup.operation,
     }
 }
 
@@ -655,6 +669,10 @@ pub(crate) fn detail(detail: &Detail) -> serde_json::Result<String> {
             against: drift.against.as_str(),
             ahead: drift.ahead,
             behind: drift.behind,
+        }),
+        operation_step: detail.operation_step.map(|step| StepView {
+            current: step.current,
+            total: step.total,
         }),
     })
 }
@@ -896,6 +914,7 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
         unseen: worktree.unseen,
         notes: worktree.notes,
         denials: worktree.denials,
+        operation: worktree.operation.map(Operation::name),
     }
 }
 
@@ -938,6 +957,7 @@ mod tests {
     use crate::domain::error::{BusyReason, TypedError};
     use crate::domain::fleet::WorktreeEntry;
     use crate::domain::note::{LineRange, NotePath};
+    use crate::domain::operation::RebaseStep;
     use crate::domain::review::Commit;
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
@@ -963,7 +983,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null}}]}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -1014,7 +1034,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}}]}}"#
             )
         );
     }
@@ -1031,6 +1051,7 @@ mod tests {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         }
     }
 
@@ -1053,7 +1074,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -1107,7 +1128,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"previous":"claude-code","stopped":true}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"previous":"claude-code","stopped":true}}"#
             )
         );
     }
@@ -1140,7 +1161,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0}},"sessions":[{{"id":"s-1","agent":"claude-code","first_prompt":"fix the login","turns":2,"last_activity":40,"current":false}},{{"id":"ses_1","agent":"opencode","first_prompt":null,"turns":0,"last_activity":null,"current":true}},{{"id":"a-1","agent":"aider","first_prompt":null,"turns":0,"last_activity":null,"current":false}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"sessions":[{{"id":"s-1","agent":"claude-code","first_prompt":"fix the login","turns":2,"last_activity":40,"current":false}},{{"id":"ses_1","agent":"opencode","first_prompt":null,"turns":0,"last_activity":null,"current":true}},{{"id":"a-1","agent":"aider","first_prompt":null,"turns":0,"last_activity":null,"current":false}}]}}"#
             )
         );
     }
@@ -1232,12 +1253,13 @@ mod tests {
                 unseen: true,
                 notes: 0,
                 denials: 0,
+                operation: None,
             },
         };
         assert_eq!(
             set_up(&done).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true,"notes":0,"denials":0}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":true,"notes":0,"denials":0,"operation":null}},"setup":{{"status":"succeeded","log":"/a/setup.log"}}}}"#
             )
         );
     }
@@ -1274,7 +1296,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null}},"base":"1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b","against":"origin/main"}}"#
             )
         );
     }
@@ -1365,6 +1387,7 @@ mod tests {
                 state: State::Failed,
                 activity: Some("API Error: 400".to_owned()),
                 denials: 1,
+                operation: Some(Operation::Rebase),
                 ..idle_worktree()
             },
             why: Some("API Error: 400\n{}".to_owned()),
@@ -1383,14 +1406,22 @@ mod tests {
                 ahead: 2,
                 behind: 1,
             }),
+            operation_step: Some(RebaseStep {
+                current: 2,
+                total: 5,
+            }),
         })
         .unwrap();
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase"}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
             )
         );
+    }
+
+    #[test]
+    fn a_bare_detail_document_carries_nulls() {
         let bare: serde_json::Value = serde_json::from_str(
             &detail(&Detail {
                 worktree: idle_worktree(),
@@ -1398,6 +1429,7 @@ mod tests {
                 denials: Vec::new(),
                 setup: None,
                 drift: None,
+                operation_step: None,
             })
             .unwrap(),
         )
@@ -1406,6 +1438,8 @@ mod tests {
         assert_eq!(bare["denials"], serde_json::json!([]));
         assert_eq!(bare["setup"], serde_json::Value::Null);
         assert_eq!(bare["drift"], serde_json::Value::Null);
+        assert_eq!(bare["worktree"]["operation"], serde_json::Value::Null);
+        assert_eq!(bare["operation_step"], serde_json::Value::Null);
         for (progress, name) in [
             (SetupProgress::Running, "running"),
             (SetupProgress::Interrupted, "interrupted"),

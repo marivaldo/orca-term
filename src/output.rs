@@ -22,6 +22,7 @@ use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
+use crate::domain::operation::{Operation, RebaseStep};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -179,13 +180,30 @@ fn render_fleet_table(fleet: &Fleet) -> String {
 }
 
 /// The worktree's state as the table shows it, followed by `(unseen)` when its latest turn ended
-/// after the person last reviewed it, or the person marked it so: `finished (unseen)`.
+/// after the person last reviewed it, or the person marked it so, and by the git operation it is
+/// in the middle of: `finished (unseen)`, `idle, rebasing`.
 fn state_cell(worktree: &Worktree) -> String {
-    let label = worktree.state.label();
+    let mut cell = worktree.state.label().to_owned();
     if worktree.unseen {
-        format!("{label} (unseen)")
-    } else {
-        label.to_owned()
+        cell.push_str(" (unseen)");
+    }
+    if let Some(operation) = worktree.operation {
+        let _ = write!(cell, ", {}", operation.verb());
+    }
+    cell
+}
+
+/// The detail's line for a git operation in progress, as the client's float says it too:
+/// `merge in progress`, `rebase in progress (2/5)` when git records the rebase's step.
+fn operation_line(operation: Operation, step: Option<RebaseStep>) -> String {
+    match step {
+        Some(step) => format!(
+            "{} in progress ({}/{})",
+            operation.name(),
+            step.current,
+            step.total
+        ),
+        None => format!("{} in progress", operation.name()),
     }
 }
 
@@ -632,6 +650,9 @@ fn render_worktree_detail(detail: &Detail) -> String {
     for line in detail.why.iter().flat_map(|whole| whole.lines()) {
         let _ = writeln!(text, "  {line}");
     }
+    if let Some(operation) = detail.worktree.operation {
+        let _ = writeln!(text, "{}", operation_line(operation, detail.operation_step));
+    }
     if !detail.denials.is_empty() {
         let count = detail.denials.len();
         let calls = if count == 1 { "call" } else { "calls" };
@@ -1033,6 +1054,7 @@ mod tests {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         }
     }
 
@@ -1048,6 +1070,7 @@ mod tests {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         }
     }
 
@@ -1069,6 +1092,7 @@ mod tests {
             unseen: false,
             notes: 0,
             denials: 0,
+            operation: None,
         }
     }
 
@@ -1285,6 +1309,7 @@ mod tests {
         let full = Detail {
             worktree: Worktree {
                 unseen: true,
+                operation: Some(Operation::Rebase),
                 ..worktree("fix", State::Failed)
             },
             why: Some("API Error: 400\n{\"x\":1}".to_owned()),
@@ -1303,10 +1328,15 @@ mod tests {
                 ahead: 2,
                 behind: 1,
             }),
+            operation_step: Some(RebaseStep {
+                current: 2,
+                total: 5,
+            }),
         };
         assert_eq!(
             render_worktree_detail(&full),
-            "fix: failed (unseen)\n  API Error: 400\n  {\"x\":1}\n\
+            "fix: failed (unseen), rebasing\n  API Error: 400\n  {\"x\":1}\n\
+             rebase in progress (2/5)\n\
              denied 1 tool call in the latest turn:\n  Bash: FOO=bar ls\n\
              setup failed (exit 2) (log /a/setup.log):\n  installing\n  error: boom\n\
              2 ahead of main, 1 behind"
@@ -1321,6 +1351,7 @@ mod tests {
                 tail: Vec::new(),
             }),
             drift: None,
+            operation_step: None,
         };
         assert_eq!(
             render_worktree_detail(&bare),
@@ -1352,6 +1383,54 @@ mod tests {
             "NAME       BRANCH      STATE     PATH          DETAIL\n\
              fix-login  fix-login   no agent  /l/fix-login\n\
              docs       (detached)  broken    /l/docs       directory missing; run orca-term worktree prune"
+        );
+    }
+
+    #[test]
+    fn the_state_column_names_a_git_operation_in_progress() {
+        let table = render_fleet_table(&fleet(vec![
+            Worktree {
+                operation: Some(Operation::Rebase),
+                ..worktree("fix", State::Idle)
+            },
+            Worktree {
+                unseen: true,
+                operation: Some(Operation::CherryPick),
+                ..worktree("docs", State::Finished)
+            },
+            worktree("api", State::NoAgent),
+        ]));
+        assert_eq!(
+            table,
+            "NAME  BRANCH  STATE                              PATH\n\
+             fix   fix     idle, rebasing                     /l/fix\n\
+             docs  docs    finished (unseen), cherry-picking  /l/docs\n\
+             api   api     no agent                           /l/api"
+        );
+    }
+
+    #[test]
+    fn the_operation_line_names_it_with_a_rebases_step() {
+        let step = Some(RebaseStep {
+            current: 2,
+            total: 5,
+        });
+        assert_eq!(
+            operation_line(Operation::Rebase, step),
+            "rebase in progress (2/5)"
+        );
+        assert_eq!(
+            operation_line(Operation::Rebase, None),
+            "rebase in progress"
+        );
+        assert_eq!(operation_line(Operation::Merge, None), "merge in progress");
+        assert_eq!(
+            operation_line(Operation::CherryPick, None),
+            "cherry-pick in progress"
+        );
+        assert_eq!(
+            operation_line(Operation::Revert, None),
+            "revert in progress"
         );
     }
 

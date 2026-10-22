@@ -91,11 +91,14 @@ the adapters, and returns a domain value that `output` prints.
   `{"scope":"file"}`); `note ls` the same with `notes`, in id order; `note rm` the `id` removed;
   `note send` the `prompt` pasted, the ids `sent` and those `kept` (edited while being sent).
   Each worktree also carries `denials`, how many tool calls its agent was denied in its latest
-  turn (open or ended, whatever its outcome). `worktree detail` prints the worktree object,
+  turn (open or ended, whatever its outcome), and `operation`, the git operation it is in the
+  middle of (`merge`, `rebase`, `cherry-pick`, `revert` or null, never a state; the text table
+  adds it to the state, `idle, rebasing`, #86). `worktree detail` prints the worktree object,
   `detail` (why it is in its state, whole, or null), `denials` (`[{"tool", "text"}]`, in order),
   `setup` (`{"status": "running"|"interrupted"|"succeeded"|"failed", "log", "tail"}`, the last 20
-  lines of the log, or null when it never ran one) and `drift` (`{"against", "ahead", "behind"}`,
-  or null). `turn ls` prints the worktree's `name` and `path` and `turns`, each `{"number",
+  lines of the log, or null when it never ran one), `drift` (`{"against", "ahead", "behind"}`,
+  or null) and `operation_step` (`{"current", "total"}` of a rebase in progress, or null; the text
+  detail says `rebase in progress (2/5)` on its own line). `turn ls` prints the worktree's `name` and `path` and `turns`, each `{"number",
   "agent", "session", "prompt", "started_at", "ended_at", "outcome", "phase", "end_observed",
   "begin", "end", "denials"}` (`outcome` null while open, `phase` `working`/`waiting` only while
   open; nulls for what a turn from before the snapshots lacks); `turn diff` the `turn`, its
@@ -330,6 +333,11 @@ the adapters, and returns a domain value that `output` prints.
   `worktree.json`, the lock and the setup log; its admin directory and the files in it; and the
   `worktree.json` schema rules and bytes; and the git common dir and the worktree's path read
   from git's `commondir` and `gitdir` files beside the admin directory.
+- `domain/operation.rs`: the git operation a worktree is in the middle of (#86), told from which
+  of git's markers its own git dir holds (`rebase-merge/`, `rebase-apply/` without `applying`,
+  `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`; a rebase wins), and a rebase's step from the
+  texts of `msgnum`/`end` (or `next`/`last`). `ops::derive_state` checks the markers in the
+  admin dir's parent, with no git run; `worktree detail` reads the step. Never a state.
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
@@ -1104,14 +1112,17 @@ what they print.
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. At the right end of a worktree's name line sit its icons, a space apart: the denials of its
-  latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
+  name. At the right end of a worktree's name line sit its icons, a space apart: `≠`
+  (`render.OPERATION`) in `OrcaTermOperation` while a git operation is in progress, the denials of
+  its latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
   (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; a zero
   count shows nothing. No line reaches past the width. `detail(detail, width)` lays out what `worktree
   detail` printed for the detail float, in the same lines and spans: the state glyph and label (in
   the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
   main`, nothing without a local default branch), then, a blank line before each and only when it
-  has something, the whole detail in the state's colour, `Denied` and one `⊘ <call>` per denial,
+  has something, the git operation in progress in `OrcaTermOperation` (`operation_text`: `merge in
+  progress`, `rebase in progress (2/5)`), the whole detail in the state's colour, `Denied` and one
+  `⊘ <call>` per denial,
   and `Setup (<status>)` (in words: `not approved`) with the end of its log, muted; the detail, the denials and the log wrap
   to the width and are never cut. It also counts the fleet for the status strip: `counts(fleet)` gives the
   worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
