@@ -125,7 +125,11 @@ the adapters, and returns a domain value that `output` prints.
   `last_activity` after `pr`: when its current session was last active, in milliseconds (the
   latest of that session's turn starts and ends and the hooks' last report, as
   `session::current_activity` reads them from the turn log and `status.json`), null when it has
-  no current session or nothing says.
+  no current session or nothing says. After it comes `changed_files` (#92): how many files the
+  worktree changed against its merge base with the start point, committed or not, untracked files
+  git does not ignore included (`fleet::count_changed_files`), null when it cannot be counted or
+  the worktree is broken or setting up. The text `worktree detail` adds `3 files changed` before
+  the drift when there are some; the text `worktree ls` is unchanged.
 
 ### ops
 
@@ -159,7 +163,11 @@ the adapters, and returns a domain value that `output` prints.
   `--approve-setup`, `Ask` at a terminal through the function `cli` hands down, `Unavailable`
   otherwise). Approving records it under `<git common dir>/orca-term/trust.lock`; refusing writes
   `not_approved` to `worktree.json`, notifies, and returns the typed `untrusted`.
-- `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository.
+- `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository, with each worktree's
+  changed files counted (`ops::count_fleet_changes`, #92): the start point found once, then per
+  worktree `git merge-base`, `git diff --name-only` and `git ls-files --others`, three processes,
+  only read. `worktree detail` counts its one worktree the same way (`ops::read_changed_files`).
+  The other commands read the fleet without counting.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
   primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
   (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
@@ -280,7 +288,8 @@ the adapters, and returns a domain value that `output` prints.
 
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
-  drift's `rev-list --left-right --count`), `blob_id` of some content, `diff_files` between two
+  drift's `rev-list --left-right --count`), `changed_paths` and `untracked_files` (the changed
+  files' `diff --name-only` and `ls-files --others --exclude-standard`), `blob_id` of some content, `diff_files` between two
   files, `index_path`, `config_value`, `read_ref`, `refs_under`, `commit_exists`, `has_file`, the
   turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, ...) or change (`worktree_add`,
   `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
@@ -348,7 +357,8 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/branch.rs`: a branch's name, the start point a new branch is created from, and git's
   rules for a valid branch name, mirrored without running git.
 - `domain/fleet.rs`: the fleet derived from git's list: the primary checkout apart, names,
-  gone worktrees, what a prune cleaned.
+  gone worktrees, what a prune cleaned, and how many distinct files a worktree changed from git's
+  two lists of paths (`count_changed_files`, #92).
 - `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`.
 - `domain/config.rs`: `orca-term.yaml` parsing (`base`, `scripts.setup`, `sandbox.writable`),
   the precedence of the config files, which checkout supplies the committed file (the primary
@@ -1180,10 +1190,15 @@ what they print.
   (`agent_label`: `cc` for `claude-code`, `oc` for `opencode`, any other agent's own name) and the
   age of its last activity (`age`: `now`, `9m`, `3h`, `2d`, measured from the `now` passed to
   `fleet`, the clock's by default), both in `OrcaTermAge`; no agent shows neither, and no
-  `last_activity` shows only the label. No line reaches past the width. `detail(detail, width)` lays out what `worktree
+  `last_activity` shows only the label. The second line says how many files the worktree changed
+  (`files_changed`: `1 file changed`, `4 files changed`, #92) when `changed_files` is above 0 and
+  its state is `finished`, `interrupted`, `idle` or `no_agent`; a question, an error, a setup
+  failure, a broken worktree's reason and a working agent's activity keep the line, and the
+  `⎇ branch ·` prefix stays in front. No line reaches past the width. `detail(detail, width)` lays out what `worktree
   detail` printed for the detail float, in the same lines and spans: the state glyph and label (in
   the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
-  main`, nothing without a local default branch), then, a blank line before each and only when it
+  main`, nothing without a local default branch), the changed files under it, muted, when there are
+  some (`3 files changed`), then, a blank line before each and only when it
   has something, the git operation in progress in `OrcaTermOperation` (`operation_text`: `merge in
   progress`, `rebase in progress (2/5)`), the whole detail in the state's colour, `Denied` and one
   `⊘ <call>` per denial,

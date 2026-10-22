@@ -41,6 +41,10 @@ The end of a row's first line names its agent, `cc` for Claude Code or `oc` for 
 long ago its current session was last active: `now`, `9m`, `3h` or `2d` (`cc 9m`), muted in the
 group `OrcaTermAge`, linked by default to `Comment`. Within a section, the most recently active
 worktree comes first, then the rest by name.
+When a worktree has no question, error or setup failure to show and is not working, its row's
+second line says how many files it changed against the default branch: `1 file changed`,
+`4 files changed`. The count covers committed and uncommitted changes and untracked files that are
+not ignored; `K` shows it under the branch too.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
 opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
 `:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
@@ -348,7 +352,10 @@ worktree's `pr`: `null` when it never ran, else `fetched_at` (milliseconds since
 and either the pull request (`number`, `title`, `state`, `url`, `checks`), `"none": true`, or
 `unavailable` and the reason. They also show each worktree's `last_activity`: when its current
 session was last active, in milliseconds since the Unix epoch, or `null` when it has no current
-session.
+session, and `changed_files`: how many files it changed against its merge base with the default
+branch, committed or not, untracked files that are not ignored included, or `null` when it cannot
+be counted (no shared history, a broken worktree, one still setting up). The text
+`worktree detail` adds a line such as `3 files changed` when there are some.
 
 In the sidebar, a worktree whose branch has a pull request shows `PR` at the right of its row,
 after `✎N`: green, yellow or red by its checks while it is open (green with no checks), purple once
