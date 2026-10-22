@@ -109,6 +109,7 @@ mod tests {
             operation: None,
             pr: None,
             last_activity: None,
+            changed_files: None,
         }
     }
 

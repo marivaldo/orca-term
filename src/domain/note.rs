@@ -854,6 +854,7 @@ mod tests {
             operation: None,
             pr: None,
             last_activity: None,
+            changed_files: None,
         };
         let err = check_can_note(&worktree(State::Broken(BrokenReason::DirectoryMissing)));
         assert!(err.unwrap_err().to_string().contains("takes no notes"));

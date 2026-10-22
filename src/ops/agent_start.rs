@@ -416,5 +416,6 @@ pub(crate) fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktre
         operation: derived.operation,
         pr: derived.pr,
         last_activity: derived.last_activity,
+        changed_files: worktree.changed_files,
     })
 }

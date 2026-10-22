@@ -72,6 +72,7 @@ describe('core', function()
         unseen = false,
         notes = 0,
         denials = 0,
+        changed_files = 0,
       },
     }, fleet.worktrees)
   end)

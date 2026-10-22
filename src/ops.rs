@@ -44,9 +44,10 @@ use crate::adapters::fs::{self, FileLock, WorktreeLock};
 use crate::adapters::nvim::Sent;
 use crate::adapters::{self, env, git, program, script};
 use crate::domain::agent::{Agent, HolderStatus};
+use crate::domain::branch::StartPoint;
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
-use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::fleet::{self, Fleet, PrimaryCheckout, Worktree};
 use crate::domain::history::{self, History};
 use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
@@ -85,6 +86,31 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.last_activity = derived.last_activity;
     }
     Ok(fleet)
+}
+
+/// Counts the changed files of every worktree of `fleet` (`Worktree::changed_files`), against
+/// the repository's start point, found once. Only reads, and never fails: a worktree whose count
+/// cannot be read, or every worktree when there is no start point, keeps `None`.
+pub(crate) fn count_fleet_changes(fleet: &mut Fleet) {
+    let start = git::start_point(&fleet.primary).ok();
+    for worktree in &mut fleet.worktrees {
+        worktree.changed_files = start
+            .as_ref()
+            .and_then(|start| read_changed_files(worktree, start));
+    }
+}
+
+/// How many files `worktree` changed against its merge base with `start`
+/// (`fleet::count_changed_files`): `git merge-base`, `git diff --name-only` and `git ls-files`.
+/// `None` when it is broken or setting up, shares no history with `start`, or git fails.
+pub(crate) fn read_changed_files(worktree: &Worktree, start: &StartPoint) -> Option<usize> {
+    if !worktree.counts_changes() {
+        return None;
+    }
+    let base = git::merge_base(&worktree.path, start).ok()??;
+    let changed = git::changed_paths(&worktree.path, &base).ok()?;
+    let untracked = git::untracked_files(&worktree.path).ok()?;
+    Some(fleet::count_changed_files(&changed, &untracked))
 }
 
 /// A worktree's state and the facts beside it, derived on read.

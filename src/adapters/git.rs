@@ -229,6 +229,34 @@ pub(crate) fn has_changes(worktree: &Path) -> Result<bool> {
     Ok(!status.is_empty())
 }
 
+/// The paths that differ between the commit `base` and the files on disk of the worktree at
+/// `worktree`, committed, staged or not, NUL-separated and relative to its root:
+/// `git diff --name-only -z --find-renames <base> --`. A moved file names only its new path.
+/// Untracked files are not in it ([`untracked_files`]). Writes nothing.
+pub(crate) fn changed_paths(worktree: &Path, base: &Commit) -> Result<Vec<u8>> {
+    output(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-ext-diff",
+            "--find-renames",
+            base.as_str(),
+            "--",
+        ],
+    )
+}
+
+/// The untracked files of the worktree at `worktree` that git does not ignore, NUL-separated and
+/// relative to its root: `git ls-files -z --others --exclude-standard`. Writes nothing.
+pub(crate) fn untracked_files(worktree: &Path) -> Result<Vec<u8>> {
+    output(
+        worktree,
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+    )
+}
+
 /// `git worktree remove`, with `--force` when the removal is forced.
 pub(crate) fn worktree_remove(
     primary: &PrimaryCheckout,
