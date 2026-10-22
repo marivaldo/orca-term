@@ -59,8 +59,11 @@ local function refresh_shortly()
   vim.defer_fn(refresh_sidebar, M.EARLY_REFRESH_MS)
 end
 
----The agents `a` offers, in the order shown: claude first, as Orca does, then none.
-M.AGENTS = { 'claude-code', 'No agent' }
+---The answer of `a` that creates a worktree with no agent.
+M.NO_AGENT = 'No agent'
+
+---The agents `a` offers, in the order shown: claude first, as Orca does, then opencode, then none.
+M.AGENTS = { 'claude-code', 'opencode', M.NO_AGENT }
 
 ---The answers offered when a worktree's recorded session can no longer be resumed.
 M.SESSION_GONE = { 'Start a fresh session', 'Cancel' }
@@ -185,6 +188,46 @@ local function offer_sandbox(worktree, err, on_allow)
   end)
 end
 
+---Shows the agent just started in the worktree at `path` in its tab, attached, in terminal mode.
+---Starting takes a moment: a person who has moved to another tab meanwhile is left there, and the
+---terminal opens on their next `<CR>`.
+---@param path string
+---@param primary string the primary checkout's path, where the core runs
+local function show_attached(path, primary)
+  if not tabs.is_current(path) then
+    return
+  end
+  -- Back to the tab's main window, should the person have moved to the sidebar meanwhile.
+  tabs.go_to(path)
+  local attach_err = terminal.open(path, primary)
+  if attach_err then
+    fail(attach_err)
+  end
+end
+
+---Tells the person why the core refused to start the agent of `worktree` (`err`), as `<CR>` does:
+---a session the core can no longer resume asks whether to start a fresh one (unless `fresh`
+---already); extra writable paths not approved yet are shown and asked about (unless `approve`
+---already), and allowing them starts `agent` again with the approval. Any other refusal, such as a
+---worktree not ready or no sandbox, is told with the core's reason.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+---@param fresh boolean
+---@param approve boolean
+---@param err? orca_term.Error
+---@param agent? string the agent asked for, `nil` for the one the worktree recorded
+local function tell_refused_start(worktree, primary, fresh, approve, err, agent)
+  if err and err.kind == 'session_gone' and not fresh then
+    offer_fresh_session(worktree, primary, err)
+  elseif err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
+    offer_sandbox(worktree, err, function()
+      start_and_attach(worktree, primary, fresh, true, agent)
+    end)
+  else
+    fail(err)
+  end
+end
+
 ---Starts the agent of `worktree` through the core, then shows it in the worktree's tab, attached,
 ---in terminal mode. Starting is idempotent: an agent already running is only attached to, and one
 ---whose holder is gone (after a reboot, or after the agent exited) starts again, resuming the
@@ -197,34 +240,17 @@ end
 ---@param primary string the primary checkout's path, where the core runs
 ---@param fresh boolean
 ---@param approve boolean
-function start_and_attach(worktree, primary, fresh, approve)
+---@param agent? string the agent to start, `nil` for the one the worktree recorded
+function start_and_attach(worktree, primary, fresh, approve, agent)
   local path = worktree.path
   core.agent_start(path, terminal.size(), fresh, approve, primary, function(started, err)
     refresh_sidebar()
     if not started then
-      if err and err.kind == 'session_gone' and not fresh then
-        offer_fresh_session(worktree, primary, err)
-      elseif err and err.kind == 'untrusted' and err.what == 'sandbox' and not approve then
-        offer_sandbox(worktree, err, function()
-          start_and_attach(worktree, primary, fresh, true)
-        end)
-      else
-        fail(err)
-      end
+      tell_refused_start(worktree, primary, fresh, approve, err, agent)
       return
     end
-    -- Starting takes a moment. A person who has moved to another tab meanwhile is left there: the
-    -- terminal opens on their next `<CR>`.
-    if not tabs.is_current(path) then
-      return
-    end
-    -- Back to the tab's main window, should the person have moved to the sidebar meanwhile.
-    tabs.go_to(path)
-    local attach_err = terminal.open(path, primary)
-    if attach_err then
-      fail(attach_err)
-    end
-  end)
+    show_attached(path, primary)
+  end, agent)
 end
 
 ---Shows the agent of the worktree at `path` in its tab, in a terminal attached again to its holder,
@@ -308,48 +334,81 @@ end
 
 ---What follows the creation of the worktree `name` once its setup ran (`created`, the document
 ---of `worktree new` or of `worktree setup`): its tab becomes current, even when its setup failed;
----then, when the setup did not fail and `with_agent` is true, its agent starts and shows there.
+---then, when the setup did not fail and `agent` names one, that agent shows there, attached. The
+---core started it already when `created` carries `started`; otherwise (after a setup approved
+---here, since `worktree setup` starts no agent) it is started now.
 ---@param name string
----@param with_agent boolean
+---@param agent? string
 ---@param primary string
 ---@param created orca_term.Created|orca_term.SetUp
-local function land_in_created(name, with_agent, primary, created)
+local function land_in_created(name, agent, primary, created)
   local path = created.worktree.path
   tabs.go_to(path)
   if created.setup.status == 'failed' then
     local detail = created.worktree.detail or 'see its setup log'
     local message = ('created worktree %s, but its setup failed: %s'):format(name, detail)
-    if with_agent then
+    if agent then
       message = message .. '; its agent was not started'
     end
     warn(message)
     return
   end
   info('created worktree ' .. name)
-  if with_agent then
-    start_and_attach(created.worktree, primary, false, false)
+  if created.started then
+    show_attached(path, primary)
+  elseif agent then
+    start_and_attach(created.worktree, primary, false, false, agent)
   end
 end
 
----Creates the worktree `name` through the core, without waiting for its setup, then lands in it
----(`land_in_created`). A setup script from a committed `orca-term.yaml` not approved yet is shown
----first and runs only once the person chooses `Run it`; `Cancel` leaves the worktree not ready.
+---What follows a `worktree new --agent` whose start the core refused (`err`): the worktree named
+---`name` exists, ready, with its agent recorded, so its tab becomes current and the refusal is told
+---as `<CR>` tells it (`tell_refused_start`). When the fleet holds no worktree `name`, nothing was
+---created, and the error is only told.
 ---@param name string
----@param with_agent boolean
 ---@param primary string
-local function create_worktree(name, with_agent, primary)
-  core.worktree_new(name, primary, function(created, err)
+---@param err? orca_term.Error
+local function land_after_refused_start(name, primary, err)
+  core.worktree_ls_async(primary, function(fleet)
+    local found = nil
+    for _, worktree in ipairs(fleet and fleet.worktrees or {}) do
+      if worktree.name == name then
+        found = worktree
+      end
+    end
+    if not found then
+      fail(err)
+      return
+    end
+    tabs.go_to(found.path)
+    info('created worktree ' .. name)
+    tell_refused_start(found, primary, false, false, err)
+  end)
+end
+
+---Creates the worktree `name` through the core with `agent` (`nil` for none), without waiting for
+---its setup, in one call: `worktree new --agent` starts the agent once the setup succeeded. Then
+---it lands in the worktree (`land_in_created`). A setup script from a committed `orca-term.yaml`
+---not approved yet is shown first and runs only once the person chooses `Run it`; `Cancel` leaves
+---the worktree not ready. A start the core refused is told as `<CR>` tells it.
+---@param name string
+---@param agent? string
+---@param primary string
+local function create_worktree(name, agent, primary)
+  core.worktree_new(name, agent, terminal.size(), primary, function(created, err)
     refresh_sidebar()
     if created then
-      land_in_created(name, with_agent, primary, created)
-    elseif err and err.kind == 'untrusted' then
+      land_in_created(name, agent, primary, created)
+    elseif err and err.kind == 'untrusted' and err.what ~= 'sandbox' then
       offer_approval(name, name, primary, err, function(set_up, setup_err)
         if set_up then
-          land_in_created(name, with_agent, primary, set_up)
+          land_in_created(name, agent, primary, set_up)
         else
           fail(setup_err)
         end
       end)
+    elseif agent then
+      land_after_refused_start(name, primary, err)
     else
       fail(err)
     end
@@ -357,8 +416,8 @@ local function create_worktree(name, with_agent, primary)
   refresh_shortly()
 end
 
----Asks for a name, then for the agent (claude-code or none), and creates that worktree through
----the core, without waiting for its setup. Cancelling either question creates nothing.
+---Asks for a name, then for the agent (claude-code, opencode or none), and creates that worktree
+---through the core, without waiting for its setup. Cancelling either question creates nothing.
 ---@param primary string the primary checkout's path, where the core runs
 function M.create(primary)
   vim.ui.input({ prompt = 'New worktree name: ' }, function(input)
@@ -368,7 +427,7 @@ function M.create(primary)
     end
     vim.ui.select(M.AGENTS, { prompt = 'Agent for ' .. name }, function(choice)
       if choice then
-        create_worktree(name, choice == M.AGENTS[1], primary)
+        create_worktree(name, choice ~= M.NO_AGENT and choice or nil, primary)
       end
     end)
   end)

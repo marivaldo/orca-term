@@ -3,6 +3,7 @@
 -- that run what they wrap. `.` then `Swap agent` offers the other agent, swaps through the core
 -- (`agent swap`) and shows the new agent in the worktree's tab, in a terminal attached again; a
 -- swap the core refuses (an agent busy in a turn) is told with its reason and changes nothing.
+-- `a` with `opencode` creates a worktree whose opencode the core starts (#93).
 -- `vim.ui` and `vim.notify` are stubbed; the core never is.
 
 local support = require('support')
@@ -152,5 +153,31 @@ describe('Swap agent', function()
     local listed = support.listed(repo, 'demo')
     assert.are.equal('claude-code', listed.agent)
     assert.are.equal('working', listed.state)
+  end)
+end)
+
+describe('a with opencode', function()
+  after_each(function()
+    support.reset_editor()
+    support.cleanup()
+  end)
+
+  it('creates the worktree with opencode started and lands in its attached terminal', function()
+    local repo = claude_on_demo()
+    local ui = support.stub_ui({ input = 'gamma', select = { 'opencode' } })
+
+    press_on('a', 'demo')
+
+    support.wait_for(function()
+      return #ui.notes > 0
+    end, 'a notification')
+    local gamma = support.worktree_path(repo, 'gamma')
+    local buf = wait_for_terminal_showing(gamma, 'fake opencode ready')
+    assert.are.same({ { 'claude-code', 'opencode', 'No agent' } }, ui.shown)
+    assert.are.equal(buf, vim.api.nvim_get_current_buf(), 'shown in the current window')
+    assert.are.equal(gamma, vim.fn.getcwd(-1, vim.fn.tabpagenr()), "in the worktree's tab")
+    assert.are.equal('orca-term: created worktree gamma', ui.notes[1].message)
+    local listed = support.listed(repo, 'gamma')
+    assert.are.same({ 'opencode', true }, { listed.agent, listed.holder })
   end)
 end)

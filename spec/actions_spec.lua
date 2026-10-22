@@ -131,7 +131,7 @@ describe('the worktree actions', function()
       press_on('a', '· alpha')
 
       assert.are.same({ 'New worktree name: ', 'Agent for gamma' }, ui.prompts)
-      assert.are.same({ { 'claude-code', 'No agent' } }, ui.shown)
+      assert.are.same({ { 'claude-code', 'opencode', 'No agent' } }, ui.shown)
       assert.are.same({
         message = 'orca-term: created worktree gamma',
         level = vim.log.levels.INFO,
