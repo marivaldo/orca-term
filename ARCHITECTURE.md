@@ -120,7 +120,12 @@ the adapters, and returns a domain value that `output` prints.
   of three shapes, the others' keys absent: the pull request (`number`, `title`, `state`: `open`,
   `draft`, `merged` or `closed`, `url`, `checks`: `passing`, `failing`, `pending` or `none`),
   `"none": true`, or `unavailable` with gh's reason (`ListedWorktreeView`, the worktree object
-  flattened beside `pr`). `pr refresh` prints `worktrees`, each `{"name", "path", "pr"}`.
+  flattened beside `pr`). `pr refresh` prints `worktrees`, each `{"name", "path", "pr"}`. In
+  `worktree ls` and `worktree detail` only (#91), each worktree object also carries
+  `last_activity` after `pr`: when its current session was last active, in milliseconds (the
+  latest of that session's turn starts and ends and the hooks' last report, as
+  `session::current_activity` reads them from the turn log and `status.json`), null when it has
+  no current session or nothing says.
 
 ### ops
 
@@ -1157,8 +1162,8 @@ what they print.
   buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
   prefix; closing the terminal detaches).
 - `lua/orca-term/fleet.lua`: the attention order, pure: each worktree's rank (1 waiting to 8 no
-  agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank then
-  name (recency joins when the core prints it).
+  agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank, then
+  by `last_activity` (newest first, none last, #91), then name, then path.
 - `lua/orca-term/render.lua`: the sidebar's look, pure: turns the fleet (or an error), the
   selected worktree's path and a width (36) into lines, highlight spans and the worktree each line
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
@@ -1168,7 +1173,11 @@ what they print.
   (`render.OPERATION`) in `OrcaTermOperation` while a git operation is in progress, the denials of
   its latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
   (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; a zero
-  count shows nothing. No line reaches past the width. `detail(detail, width)` lays out what `worktree
+  count shows nothing. After the icons, at the very end of the line (#91), come the agent's label
+  (`agent_label`: `cc` for `claude-code`, `oc` for `opencode`, any other agent's own name) and the
+  age of its last activity (`age`: `now`, `9m`, `3h`, `2d`, measured from the `now` passed to
+  `fleet`, the clock's by default), both in `OrcaTermAge`; no agent shows neither, and no
+  `last_activity` shows only the label. No line reaches past the width. `detail(detail, width)` lays out what `worktree
   detail` printed for the detail float, in the same lines and spans: the state glyph and label (in
   the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
   main`, nothing without a local default branch), then, a blank line before each and only when it

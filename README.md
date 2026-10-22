@@ -37,6 +37,10 @@ waiting to be sent.
 A row shows `≠` while its worktree is in the middle of a git merge, rebase, cherry-pick or revert,
 and the float names it (`rebase in progress (2/5)`); `worktree ls` adds it to the state
 (`idle, rebasing`). It is read from git's own files and is never a state.
+The end of a row's first line names its agent, `cc` for Claude Code or `oc` for opencode, and how
+long ago its current session was last active: `now`, `9m`, `3h` or `2d` (`cc 9m`), muted in the
+group `OrcaTermAge`, linked by default to `Comment`. Within a section, the most recently active
+worktree comes first, then the rest by name.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
 opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
 `:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
@@ -335,7 +339,9 @@ runs it at all.
 `worktree ls --json` and `worktree detail --json` show what the last refresh found as each
 worktree's `pr`: `null` when it never ran, else `fetched_at` (milliseconds since the Unix epoch)
 and either the pull request (`number`, `title`, `state`, `url`, `checks`), `"none": true`, or
-`unavailable` and the reason.
+`unavailable` and the reason. They also show each worktree's `last_activity`: when its current
+session was last active, in milliseconds since the Unix epoch, or `null` when it has no current
+session.
 
 In the sidebar, a worktree whose branch has a pull request shows `PR` at the right of its row,
 after `✎N`: green, yellow or red by its checks while it is open (green with no checks), purple once
