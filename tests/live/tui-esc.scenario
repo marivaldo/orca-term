@@ -7,6 +7,7 @@ timeout 180
 expect interrupted finished
 
 sleep 5
+press down
 press enter
 wait-for SessionStart
 sleep 2

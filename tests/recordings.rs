@@ -221,9 +221,12 @@ fn a_recording_belongs_to_its_scenario_by_name_and_version_only() {
         .iter()
         .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
         .collect();
-    assert_eq!(
-        names,
-        ["tui-esc-2.1.300.log"],
-        "not tui-esctool's, though its name starts the same"
+    assert!(
+        names.contains(&"tui-esc-2.1.300.log".to_owned()),
+        "{names:?}"
+    );
+    assert!(
+        names.iter().all(|name| !name.starts_with("tui-esctool")),
+        "not tui-esctool's, though its name starts the same: {names:?}"
     );
 }

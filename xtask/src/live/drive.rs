@@ -81,10 +81,12 @@ fn record_in(place: &Place, orca_term: &Path, scenario: &Scenario) -> Result<Str
         bail!("the agent sent nothing to orca-term's hooks");
     }
     let transcripts = recording::transcripts_dir(&tapped).unwrap_or_default();
+    let tasks = recording::tasks_dir(&tapped).unwrap_or_default();
     let placeholders = recording::placeholders(&[
         (worktree, "{{worktree}}"),
         (denied, "{{denied}}"),
         (&transcripts, "{{transcripts}}"),
+        (&tasks, "{{tasks}}"),
     ]);
     Ok(recording::normalise(&tapped, &placeholders))
 }

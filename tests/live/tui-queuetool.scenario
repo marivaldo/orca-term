@@ -6,6 +6,7 @@ timeout 180
 expect finished
 
 sleep 5
+press down
 press enter
 wait-for SessionStart
 sleep 2

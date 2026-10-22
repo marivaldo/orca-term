@@ -31,7 +31,7 @@ use fixture::AgentRepo;
 use serde_json::{Value, json};
 
 /// The tested claude, as `domain/prerequisite.rs` names it.
-const TESTED: &str = "2.1.303";
+const TESTED: &str = "2.1.306";
 
 fn stdout(out: &Output) -> String {
     String::from_utf8(out.stdout.clone()).unwrap()
@@ -117,7 +117,7 @@ fn a_newer_claude_and_an_old_opencode_are_warnings_never_refusals() {
             "status": "warn",
             "found": "2.1.310",
             "need": "2.1.295",
-            "message": "claude 2.1.310: newer than the tested 2.1.303; it may still work",
+            "message": "claude 2.1.310: newer than the tested 2.1.306; it may still work",
         })
     );
     assert_eq!(

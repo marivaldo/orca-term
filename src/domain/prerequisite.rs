@@ -17,9 +17,9 @@ use crate::domain::error::TypedError;
 pub(crate) const CLAUDE_FLOOR: &str = "2.1.295";
 
 /// The newest claude orca-term was tested with: the version of the newest recordings of claude's
-/// hooks in `tests/fixtures/claude-hooks/` (`*-2.1.303.log`). A newer claude is warned about,
+/// hooks in `tests/fixtures/claude-hooks/` (`*-2.1.306.log`). A newer claude is warned about,
 /// never refused. Raise it when new recordings land.
-pub(crate) const CLAUDE_TESTED: &str = "2.1.303";
+pub(crate) const CLAUDE_TESTED: &str = "2.1.306";
 
 /// The oldest opencode orca-term runs: the version whose plugin API and events the plugin was
 /// written against (#35).
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn claude_newer_than_the_tested_version_is_a_warning_never_a_refusal() {
-        let tested = check_program(&CLAUDE, &printed("2.1.303 (Claude Code)"));
+        let tested = check_program(&CLAUDE, &printed("2.1.306 (Claude Code)"));
         assert_eq!(tested.status, Status::Ok);
         let floor = check_program(&CLAUDE, &printed("2.1.295 (Claude Code)"));
         assert_eq!(floor.status, Status::Ok);
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(newer.status, Status::Warn);
         assert_eq!(
             newer.message,
-            "claude 2.1.310: newer than the tested 2.1.303; it may still work"
+            "claude 2.1.310: newer than the tested 2.1.306; it may still work"
         );
         let old = check_program(&CLAUDE, &printed("2.1.294 (Claude Code)"));
         assert_eq!(old.status, Status::TooOld);
