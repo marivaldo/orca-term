@@ -258,6 +258,38 @@ describe('the worktree actions', function()
       assert.are.same({}, ui.notes)
     end)
 
+    it('says a running agent will be stopped, and Remove stops it and removes (#94)', function()
+      support.load_client()
+      local repo = support.agent_repo()
+      support.run({ support.binary, 'worktree', 'new', 'demo' }, repo.root)
+      support.run({ support.binary, 'agent', 'start', 'demo' }, repo.root)
+      support.cd(repo.root)
+      vim.cmd('OrcaTerm sidebar')
+      local demo = support.worktree_path(repo, 'demo')
+      assert.is_true(support.listed(repo, 'demo').holder)
+      local ui = support.stub_ui({ select = { 'Remove worktree', 'Cancel' } })
+
+      press_on('.', ' demo')
+      vim.wait(200)
+
+      assert.are.equal(
+        'Remove worktree demo? Its branch is deleted only if merged. Its agent is running and '
+          .. 'will be stopped.',
+        ui.prompts[2]
+      )
+      assert(support.listed(repo, 'demo').holder == true, 'Cancel leaves the agent running')
+
+      ui = support.stub_ui({ select = { 'Remove worktree', 'Remove' } })
+      press_on('.', ' demo')
+
+      assert.are.equal(
+        'orca-term: removed worktree demo and its branch demo (merged into main)',
+        next_note(ui).message
+      )
+      assert.is_false(listed(repo, 'demo'))
+      assert.are.equal(0, vim.fn.isdirectory(demo))
+    end)
+
     it('removes the worktree on Remove, closing its tabs', function()
       local repo = repo_with({ 'alpha', 'beta' })
       local alpha = support.worktree_path(repo, 'alpha')

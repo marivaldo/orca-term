@@ -345,7 +345,8 @@ fn render_setup(name: &str, setup: &SetupReport) -> String {
     }
 }
 
-/// Prints what `worktree rm` removed and what happened to the worktree's branch.
+/// Prints what `worktree rm` removed and what happened to the worktree's branch, after saying it
+/// stopped the worktree's agent when it did.
 pub(crate) fn worktree_removed(removed: &Removed, format: Format) -> anyhow::Result<()> {
     match format {
         Format::Text => out(&render_worktree_removed(removed)),
@@ -363,8 +364,13 @@ fn render_worktree_removed(removed: &Removed) -> String {
         BranchOutcome::Kept { branch, reason } => format!("kept branch {branch}: {reason}"),
         BranchOutcome::Detached => "no branch to delete: the worktree was detached".to_owned(),
     };
+    let stopped = if removed.stopped_agent {
+        format!("stopped the agent of worktree {}\n", removed.name)
+    } else {
+        String::new()
+    };
     format!(
-        "removed worktree {}\n\
+        "{stopped}removed worktree {}\n\
          path:   {}\n\
          {branch}",
         removed.name,
@@ -1841,6 +1847,7 @@ mod tests {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/repo/fix"),
             branch,
+            stopped_agent: false,
         };
         assert_eq!(
             render_worktree_removed(&removed(BranchOutcome::Kept {
@@ -1857,6 +1864,21 @@ mod tests {
                 into: StartPoint::Local(Branch::new("main")),
             })),
             "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
+        );
+    }
+
+    #[test]
+    fn worktree_rm_says_it_stopped_the_agent_before_the_removal() {
+        let removed = Removed {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/repo/fix"),
+            branch: BranchOutcome::Detached,
+            stopped_agent: true,
+        };
+        assert_eq!(
+            render_worktree_removed(&removed),
+            "stopped the agent of worktree fix\nremoved worktree fix\npath:   /l/repo/fix\n\
+             no branch to delete: the worktree was detached"
         );
     }
 

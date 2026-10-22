@@ -37,12 +37,14 @@ pub(crate) enum TypedError {
         hint: String,
     },
     /// The worktree has modified or untracked files, so `worktree rm` keeps it unless forced.
-    #[error(
-        "worktree {name} at {} has modified or untracked files; pass --force to remove it \
-         anyway, discarding its changes",
-        path.display()
-    )]
-    Dirty { name: String, path: PathBuf },
+    /// `stopped_agent` says its agent was stopped before the files were found: they appeared
+    /// while it stopped, and it stays stopped (#94).
+    #[error("{}", dirty_message(name, path, *stopped_agent))]
+    Dirty {
+        name: String,
+        path: PathBuf,
+        stopped_agent: bool,
+    },
     /// The worktree's current session cannot be resumed on a cold start, for `reason`;
     /// `session` is the id `status.json` recorded, as written there. Nothing was launched.
     #[error("{}", session_gone_message(name, session, reason))]
@@ -124,6 +126,9 @@ pub(crate) enum BusyReason {
     /// Its agent is in a turn, working or waiting for the person, so its session is not changed
     /// under it (`session resume`, `session new`, #41).
     SessionInTurn,
+    /// Its agent was asked to stop so the worktree could be removed, but did not (#94): nothing
+    /// was removed.
+    AgentDidNotStop,
 }
 
 fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
@@ -152,7 +157,25 @@ fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
              you; change its session once the turn ends, or stop it first with `orca-term agent \
              stop {name}`"
         ),
+        BusyReason::AgentDidNotStop => format!(
+            "worktree {name} at {path} is busy: its agent did not stop, so nothing was removed; \
+             try again, or stop it with `orca-term agent stop {name}`"
+        ),
     }
+}
+
+/// The message of [`TypedError::Dirty`], saying the agent was stopped when it was.
+fn dirty_message(name: &str, path: &Path, stopped_agent: bool) -> String {
+    let path = path.display();
+    let stopped = if stopped_agent {
+        "; its agent was stopped, but the worktree was kept"
+    } else {
+        ""
+    };
+    format!(
+        "worktree {name} at {path} has modified or untracked files{stopped}; pass --force to \
+         remove it anyway, discarding its changes"
+    )
 }
 
 /// The message of [`TypedError::SessionGone`]. The id is shown cut to one short line, since an
@@ -345,6 +368,7 @@ mod tests {
         let err = anyhow::Error::new(TypedError::Dirty {
             name: "wip".to_owned(),
             path: PathBuf::from("/w/repo/wip"),
+            stopped_agent: false,
         });
         assert_eq!(kind(&err), "dirty");
         assert_eq!(exit_code(&err), 6);
@@ -352,6 +376,34 @@ mod tests {
             err.to_string(),
             "worktree wip at /w/repo/wip has modified or untracked files; pass --force to remove \
              it anyway, discarding its changes"
+        );
+    }
+
+    #[test]
+    fn a_dirty_refusal_after_stopping_the_agent_says_it_stays_stopped() {
+        let err = anyhow::Error::new(TypedError::Dirty {
+            name: "wip".to_owned(),
+            path: PathBuf::from("/w/repo/wip"),
+            stopped_agent: true,
+        });
+        assert_eq!(kind(&err), "dirty");
+        assert_eq!(exit_code(&err), 6);
+        assert_eq!(
+            err.to_string(),
+            "worktree wip at /w/repo/wip has modified or untracked files; its agent was stopped, \
+             but the worktree was kept; pass --force to remove it anyway, discarding its changes"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_does_not_stop_for_a_removal_is_busy_and_nothing_is_removed() {
+        let err = anyhow::Error::new(busy(BusyReason::AgentDidNotStop));
+        assert_eq!(kind(&err), "busy");
+        assert_eq!(exit_code(&err), 3);
+        assert_eq!(
+            err.to_string(),
+            "worktree fix at /w/repo/fix is busy: its agent did not stop, so nothing was removed; \
+             try again, or stop it with `orca-term agent stop fix`"
         );
     }
 

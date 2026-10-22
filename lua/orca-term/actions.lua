@@ -555,11 +555,15 @@ local function run_removal(worktree, primary, force)
 end
 
 ---Asks for confirmation, then removes `worktree` through the core and closes its tabs, its review
----tabs included. The last tab is kept, pointed at the primary checkout.
+---tabs included. The last tab is kept, pointed at the primary checkout. When its agent is running,
+---the question says the core stops it first (#94).
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 function M.remove(worktree, primary)
   local prompt = ('Remove worktree %s? Its branch is deleted only if merged.'):format(worktree.name)
+  if worktree.holder then
+    prompt = prompt .. ' Its agent is running and will be stopped.'
+  end
   vim.ui.select({ 'Remove', 'Cancel' }, { prompt = prompt }, function(choice)
     if choice == 'Remove' then
       run_removal(worktree, primary, false)

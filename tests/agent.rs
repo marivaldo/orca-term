@@ -550,28 +550,22 @@ fn a_socket_path_longer_than_a_socket_address_holds_still_works() {
 }
 
 #[test]
-fn rm_and_setup_are_busy_while_the_agent_runs_and_the_recorded_agent_survives_setup() {
+fn setup_is_busy_while_the_agent_runs_and_the_recorded_agent_survives_setup() {
     let fx = AgentRepo::new();
     let worktree = fx.new_worktree("fix");
     let admin = fx.admin_dir(&worktree);
     fx.ok(&["agent", "start", "fix"]);
     fx.wait_for_output("fix", "fake claude ready");
 
-    for args in [
-        vec!["worktree", "rm", "fix"],
-        vec!["worktree", "rm", "fix", "--force"],
-        vec!["worktree", "setup", "fix"],
-    ] {
-        let out = fx.run(&args);
-        assert_eq!(out.status.code(), Some(3), "{args:?}: {}", stderr(&out));
-        assert!(
-            stderr(&out).contains(
-                "is busy: its agent is running; stop it first with `orca-term agent stop fix`"
-            ),
-            "{args:?}: {}",
-            stderr(&out)
-        );
-    }
+    let out = fx.run(&["worktree", "setup", "fix"]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "is busy: its agent is running; stop it first with `orca-term agent stop fix`"
+        ),
+        "{}",
+        stderr(&out)
+    );
     let doc = json(&fx.run(&["worktree", "setup", "fix", "--json"]));
     assert_eq!(doc["error"]["kind"], "busy");
     assert!(worktree.is_dir(), "the worktree stays");

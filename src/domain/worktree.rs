@@ -135,6 +135,8 @@ pub(crate) struct Removed {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
     pub(crate) branch: BranchOutcome,
+    /// Whether its agent was running and was stopped first (#94).
+    pub(crate) stopped_agent: bool,
 }
 
 /// What `worktree rm` did with the worktree's branch.
