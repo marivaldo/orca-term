@@ -68,6 +68,9 @@
 ---What `pr refresh` last found about its pull request; `nil` when it never ran for the worktree
 ---(only `worktree ls` and `worktree detail` print it)
 ---@field pr? orca_term.Pr
+---When its current session was last active, in milliseconds since the Unix epoch; `nil` when it
+---has no current session or nothing says (only `worktree ls` and `worktree detail` print it)
+---@field last_activity? integer
 
 ---What `pr refresh` last found about a worktree's pull request, as `worktree ls --json` prints it:
 ---the pull request (`number` set), `none` when its branch has none, or `unavailable`, why the

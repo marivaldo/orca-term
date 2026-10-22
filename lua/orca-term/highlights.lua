@@ -49,6 +49,9 @@ local LINKS = {
   -- A git operation in progress (a merge, a rebase, a cherry-pick or a revert): the `≠` at the
   -- right of a worktree's name line, and its line in the detail float.
   OrcaTermOperation = 'DiagnosticWarn',
+  -- The agent's label and the age of its last activity at the right end of a worktree's name
+  -- line, `cc 9m`: muted.
+  OrcaTermAge = 'Comment',
   -- The notes drawn in a review: their signs, their text and their count in the file panel.
   OrcaTermNote = 'DiagnosticInfo',
   -- A worktree's pull request, `PR` at the right of its name line and its line in the detail

@@ -63,7 +63,8 @@ function M.section_index(rank)
   return 3
 end
 
----Whether `a` comes before `b`: by rank, then by name, then by path (two worktrees may share a
+---Whether `a` comes before `b`: by rank, then by recency (the newest last activity first, a
+---worktree with none after those with one), then by name, then by path (two worktrees may share a
 ---name).
 ---@param a orca_term.RankedWorktree
 ---@param b orca_term.RankedWorktree
@@ -73,7 +74,12 @@ local function comes_first(a, b)
   if rank_a ~= rank_b then
     return rank_a < rank_b
   end
-  -- The spec sorts by recency before the name; the core prints no activity time yet.
+  if a.last_activity ~= b.last_activity then
+    if a.last_activity == nil or b.last_activity == nil then
+      return b.last_activity == nil
+    end
+    return a.last_activity > b.last_activity
+  end
   if a.name ~= b.name then
     return a.name < b.name
   end

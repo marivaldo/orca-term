@@ -29,12 +29,13 @@ local function bare(index)
   return text
 end
 
----The index of the line holding the name of the worktree `name`: its glyph, a space, its name.
+---The index of the line holding the name of the worktree `name`: its glyph, a space, its name,
+---then what sits at its right (the agent and the age).
 ---@param name string
 ---@return integer
 local function name_line(name)
   for index = 1, #lines() do
-    if vim.fn.strcharpart(bare(index), 2) == name then
+    if vim.fn.strcharpart(bare(index), 2):match('^%S+') == name then
       return index
     end
   end

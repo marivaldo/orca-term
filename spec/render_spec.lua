@@ -390,6 +390,98 @@ describe('render', function()
     end
   )
 
+  it('labels claude-code cc, opencode oc and any other agent by its own name', function()
+    assert.are.equal('cc', render.agent_label('claude-code'))
+    assert.are.equal('oc', render.agent_label('opencode'))
+    assert.are.equal('aider', render.agent_label('aider'))
+  end)
+
+  it('says an age as now under a minute, then minutes, hours and days', function()
+    local minute = 60 * 1000
+    local cases = {
+      { 0, 0, 'now' },
+      { 59 * 1000, 0, 'now' },
+      { 0, 5000, 'now' }, -- a clock behind is now
+      { minute, 0, '1m' },
+      { 59 * minute, 0, '59m' },
+      { 60 * minute, 0, '1h' },
+      { 23 * 60 * minute + 59 * minute, 0, '23h' },
+      { 24 * 60 * minute, 0, '1d' },
+      { 9 * 24 * 60 * minute, 0, '9d' },
+    }
+    for _, case in ipairs(cases) do
+      assert.are.equal(case[3], render.age(case[2], case[1]))
+    end
+  end)
+
+  it(
+    'ends the name line with the agent and the age of its last activity, muted, after the icons',
+    function()
+      local now = 1700000000000
+      local rendered = render.fleet(
+        fleet({
+          worktree('aaa'),
+          worktree('docs-adr', { agent = 'claude-code', last_activity = now - 9 * 60 * 1000 }),
+          worktree('ts', { agent = 'opencode', last_activity = now - 3 * 3600 * 1000, notes = 2 }),
+          worktree('fresh', { agent = 'claude-code' }),
+          worktree('mine', { agent = 'aider', last_activity = now }),
+        }),
+        '/src/wt/aaa',
+        nil,
+        0,
+        now
+      )
+      local docs = assert(rendered.firsts['/src/wt/docs-adr'])
+      assert.are.equal(' · docs-adr                   cc 9m', rendered.lines[docs])
+      assert.are.same(
+        { 'OrcaTermStateNoAgent', 'OrcaTermAge', 'OrcaTermAge' },
+        groups_on(rendered, docs)
+      )
+      local ts = assert(rendered.firsts['/src/wt/ts'])
+      assert.are.equal(' · ts                      ✎2 oc 3h', rendered.lines[ts])
+      local fresh = assert(rendered.firsts['/src/wt/fresh'])
+      assert.are.equal(' · fresh                         cc', rendered.lines[fresh], 'no age')
+      local mine = assert(rendered.firsts['/src/wt/mine'])
+      assert.are.equal(' · mine                   aider now', rendered.lines[mine])
+      local none = assert(rendered.firsts['/src/wt/aaa'])
+      assert.are.equal(' │ · aaa                          │', rendered.lines[none], 'no agent')
+    end
+  )
+
+  it(
+    'cuts the name first, keeping the agent and the age in their place, within the width',
+    function()
+      local now = 1700000000000
+      local long = string.rep('very-long-', 6)
+      for _, width in ipairs({ 16, 24, 30, 36, 50 }) do
+        local rendered = render.fleet(
+          fleet({
+            worktree('aaa'),
+            worktree(long, {
+              agent = 'claude-code',
+              last_activity = now - 2 * 86400 * 1000,
+              operation = 'merge',
+              denials = 3,
+              notes = 1,
+            }),
+          }),
+          '/src/wt/' .. long,
+          width,
+          0,
+          now
+        )
+        assert_fits(rendered, width)
+        -- At 16 cells there is no room even for the icons, the agent and the age: the row is
+        -- cut, and never grows wider.
+        if width >= 24 then
+          local line = rendered.lines[assert(rendered.firsts['/src/wt/' .. long])]
+          assert(line:find('…', 1, true), line)
+          assert(vim.endswith(line, 'cc 2d │'), line)
+        end
+      end
+    end
+  )
+
   it('selects the first worktree shown when the selected one is gone', function()
     local rendered = render.fleet(
       fleet({ worktree('quiet'), worktree('urgent', { state = 'broken' }) }),
