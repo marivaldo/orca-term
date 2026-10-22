@@ -149,7 +149,8 @@ the adapters, and returns a domain value that `output` prints.
 - `ops/doctor.rs`: `doctor`: check git, claude's sandbox tools, each agent and the contract, in
   that order. It only looks, needs no repository and never fails.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
-  lock it, copy the copy list, run the setup.
+  lock it, copy the copy list, run the setup. With `--agent` (#93), `start_agent` then records the
+  agent and starts it through `agent_start::run`, only when the setup did not fail.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
   the setup again.
 - Both run the setup through `ops::set_up`, which, for a script from a committed
@@ -1152,6 +1153,8 @@ what they print.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
   `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`.
+  `worktree_new(name, agent, size, cwd, on_done)` passes `--agent <agent> --rows R --cols C` when
+  given an agent (#93), and `agent_start` takes an optional last `agent` for `--agent`.
   `agent_swap(path, agent, size, approve, cwd, on_done)` runs `agent swap` the same way (#35),
   typed as `orca_term.Swapped` (the start document, `previous`, `stopped`).
   `session_ls(target, cwd, on_done)` (10 s at most), `session_resume(path, id, size, approve, cwd,
@@ -1394,7 +1397,10 @@ what they print.
   terminal) or `Cancel` (nothing starts); an `untrusted` refusal for the sandbox asks
   `sandbox_prompt` (the worktree, the source, the paths) with `Allow` (`agent start
   --approve-sandbox`, then the terminal) or `Cancel` (`APPROVE_SANDBOX`; nothing starts); any other
-  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name),
+  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name:
+  `claude-code`, `opencode` or `No agent` (`AGENTS`), then one `worktree new`, with `--agent`
+  unless `No agent`, #93; a start the core refused lands in the worktree's tab and is told as for
+  `<CR>`),
   `toggle_unseen` (`u`: `worktree seen` when the fleet last read
   says unseen, `worktree unseen` otherwise, then the sidebar is read again; a refusal is told),
   `review` (`d`: without diffview.nvim it only says it is needed, naming its URL, and runs
