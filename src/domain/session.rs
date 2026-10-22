@@ -88,6 +88,16 @@ pub(crate) fn sessions(turns: &[LoggedTurn], status: Option<&Status>) -> Vec<Ses
     sessions
 }
 
+/// When the worktree's current session was last active, in Unix milliseconds (#91): the latest of
+/// its turns' starts and ends, from `sessions` (as [`sessions`] lists them), and the live status's
+/// last update (`status`). `None` when the worktree has no current session, or nothing says when.
+pub(crate) fn current_activity(sessions: &[Session], status: Option<&Status>) -> Option<u64> {
+    let status = status?;
+    let current = sessions.iter().find(|session| session.current)?;
+    let updated = (status.updated_at > 0).then_some(status.updated_at);
+    [current.last_activity, updated].into_iter().flatten().max()
+}
+
 /// The session of `sessions` that `agent` names `id`, added with nothing in it when there is none.
 fn find_or_add<'a>(sessions: &'a mut Vec<Session>, id: &str, agent: &str) -> &'a mut Session {
     let known = sessions
@@ -337,6 +347,37 @@ mod tests {
         let unknown_time = super::sessions(&[], Some(&status("s-3", "claude", 0)));
         assert_eq!(summary(&unknown_time), [("s-3", "claude", 0, None, true)]);
         assert!(super::sessions(&[], None).is_empty());
+    }
+
+    #[test]
+    fn the_current_activity_is_the_latest_of_its_turns_and_the_live_status() {
+        let turns = [
+            turn(1, Some("claude"), "s-1", 10),
+            turn(2, Some("claude"), "s-2", 90),
+        ];
+        let current = status("s-1", "claude", 50);
+        let listed = sessions(&turns, Some(&current));
+        assert_eq!(
+            current_activity(&listed, Some(&current)),
+            Some(50),
+            "the live status is newer than the current session's turns; the other session's \
+             turn does not count"
+        );
+        let older = status("s-2", "claude", 20);
+        let listed = sessions(&turns, Some(&older));
+        assert_eq!(current_activity(&listed, Some(&older)), Some(95));
+        let unknown = status("s-3", "claude", 0);
+        let listed = sessions(&[], Some(&unknown));
+        assert_eq!(current_activity(&listed, Some(&unknown)), None);
+        let mut cleared = status("s-1", "claude", 50);
+        cleared.session = None;
+        let listed = sessions(&turns, Some(&cleared));
+        assert_eq!(
+            current_activity(&listed, Some(&cleared)),
+            None,
+            "no current session"
+        );
+        assert_eq!(current_activity(&sessions(&turns, None), None), None);
     }
 
     #[test]

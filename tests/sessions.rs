@@ -199,6 +199,50 @@ fn session_ls_lists_every_session_the_most_recent_first_the_current_marked() {
     );
 }
 
+/// Now, in Unix milliseconds.
+fn now_ms() -> u64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    u64::try_from(since.as_millis()).unwrap()
+}
+
+/// `last_activity` of `demo` in `worktree ls --json` and `worktree detail --json`, which must
+/// agree.
+fn worktree_activity(fx: &AgentRepo) -> Value {
+    let listed = fx.listed("demo")["last_activity"].clone();
+    let detail = json(&fx.run(&["worktree", "detail", "demo", "--json"]));
+    assert_eq!(detail["worktree"]["last_activity"], listed);
+    listed
+}
+
+#[test]
+fn a_worktrees_last_activity_is_its_current_sessions_in_both_documents() {
+    let fx = AgentRepo::new();
+    let before = now_ms();
+    let wt = Snapped::new(&fx, "demo");
+    assert_eq!(worktree_activity(&fx), Value::Null, "no session yet");
+
+    wt.fire(&session_start(&fx, FIRST));
+    turn(&wt, FIRST, "p1", "fix the login");
+    let after = now_ms();
+    let activity = worktree_activity(&fx).as_u64().unwrap();
+    assert!(before <= activity && activity <= after, "{activity}");
+    let doc = json(&fx.run(&["session", "ls", "demo", "--json"]));
+    let session = doc["sessions"][0]["last_activity"].as_u64().unwrap();
+    assert!(
+        activity >= session,
+        "the latest of the session's turns and the hooks' last report"
+    );
+
+    fx.ok(&["session", "new", "demo"]);
+    assert_eq!(
+        worktree_activity(&fx),
+        Value::Null,
+        "no current session once it is discarded"
+    );
+}
+
 #[test]
 fn session_ls_prints_a_table_like_turn_ls_or_says_there_is_none() {
     let fx = AgentRepo::new();

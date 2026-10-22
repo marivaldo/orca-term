@@ -70,6 +70,10 @@ pub(crate) struct Worktree {
     /// What `pr refresh` last found about its pull request (`domain/pr.rs`), or `None` when it
     /// never ran for the worktree.
     pub(crate) pr: Option<PrFacts>,
+    /// When its current session was last active, in Unix milliseconds: the latest of that
+    /// session's turn starts and ends and the hooks' last report (`domain/session.rs`), or `None`
+    /// when it has no current session or nothing says.
+    pub(crate) last_activity: Option<u64>,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -101,6 +105,7 @@ impl Fleet {
                 denials: 0,
                 operation: None,
                 pr: None,
+                last_activity: None,
             })
             .collect();
         Ok(Self {

@@ -415,5 +415,6 @@ pub(crate) fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktre
         denials: derived.denials,
         operation: derived.operation,
         pr: derived.pr,
+        last_activity: derived.last_activity,
     })
 }
