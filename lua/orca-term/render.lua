@@ -23,17 +23,17 @@
 --   │ ? pick-colour     ⊘3 ✎1 cc now │
 --   │   Which colour?                │
 --   ╰────────────────────────────────╯
---  •● slow-job                  cc now
+--  •● slow-job                   cc 9m
 --     SLOW please
---  •● api-call                  cc now
+--  •● api-call                   cc 3h
 --     API Error: 400 fake bad request
 --   △ fix-login
 --     setup failed (exit 1): npm ERR!…
 --   ! old-spike
 --     directory missing; run orca-ter…
---  •● greet                     cc now
+--  •○ nudged                     cc 5m
+--  •● greet                      cc 2d
 --     ok
---  •○ nudged                        cc
 --
 --   RUNNING 2
 --   ◐ run-tests                 cc now
@@ -41,7 +41,7 @@
 --   ◌ install-deps
 --
 --   QUIET 4
---   ● reviewed                  cc now
+--   ● reviewed                   cc 1d
 --     ok
 --   ○ standby                       cc
 --   · docs                        ≠ ✎2
@@ -566,6 +566,13 @@ local function finish(built, order, selected)
   return rendered
 end
 
+---The time the sidebar measures ages from when it is given none, in milliseconds since the Unix
+---epoch: the clock's. The golden spec replaces it, so the golden never depends on the clock.
+---@return integer
+function M.clock()
+  return os.time() * 1000
+end
+
 ---The sidebar for `fleet`, with the worktree at path `selected` in the card. When no worktree
 ---has that path (it is `nil`, or the worktree is gone), the first worktree shown is selected.
 ---A working worktree's glyph is the spinner's frame `frame`. The age of each worktree's last
@@ -579,7 +586,7 @@ end
 function M.fleet(fleet, selected, width, frame, now)
   width = width or M.WIDTH
   frame = frame or 0
-  now = now or os.time() * 1000
+  now = now or M.clock()
   local sections = fleet_order.sections(fleet.worktrees)
 
   local order = {}

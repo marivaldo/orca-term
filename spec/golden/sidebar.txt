@@ -5,17 +5,17 @@
  │ ? pick-colour     ⊘3 ✎1 cc now │
  │   Which colour?                │
  ╰────────────────────────────────╯
-•● slow-job                  cc now
+•● slow-job                   cc 9m
    SLOW please
-•● api-call                  cc now
+•● api-call                   cc 3h
    API Error: 400 fake bad request
  △ fix-login
    setup failed (exit 1): npm ERR!…
  ! old-spike
    directory missing; run orca-ter…
-•● greet                     cc now
+•○ nudged                     cc 5m
+•● greet                      cc 2d
    ok
-•○ nudged                        cc
 
  RUNNING 2
  ◐ run-tests                 cc now
@@ -23,7 +23,7 @@
  ◌ install-deps
 
  QUIET 4
- ● reviewed                  cc now
+ ● reviewed                   cc 1d
    ok
  ○ standby                       cc
  · docs                        ≠ ✎2
@@ -50,29 +50,30 @@
 8:0-3 OrcaTermUnseen
 8:3-6 OrcaTermStateInterrupted
 8:7-15 OrcaTermUnseenName
-8:33-35 OrcaTermAge
-8:36-39 OrcaTermAge
+8:34-36 OrcaTermAge
+8:37-39 OrcaTermAge
 9:3-14 OrcaTermStateInterrupted
 10:0-3 OrcaTermUnseen
 10:3-6 OrcaTermStateFailed
 10:7-15 OrcaTermUnseenName
-10:33-35 OrcaTermAge
-10:36-39 OrcaTermAge
+10:34-36 OrcaTermAge
+10:37-39 OrcaTermAge
 11:3-34 OrcaTermStateFailed
 12:1-4 OrcaTermStateNotReady
 13:3-37 OrcaTermStateNotReady
 14:1-2 OrcaTermStateBroken
 15:3-37 OrcaTermStateBroken
 16:0-3 OrcaTermUnseen
-16:3-6 OrcaTermStateFinished
-16:7-12 OrcaTermUnseenName
-16:33-35 OrcaTermAge
-16:36-39 OrcaTermAge
-17:3-5 OrcaTermStateFinished
-18:0-3 OrcaTermUnseen
-18:3-6 OrcaTermStateIdle
-18:7-13 OrcaTermUnseenName
-18:37-39 OrcaTermAge
+16:3-6 OrcaTermStateIdle
+16:7-13 OrcaTermUnseenName
+16:34-36 OrcaTermAge
+16:37-39 OrcaTermAge
+17:0-3 OrcaTermUnseen
+17:3-6 OrcaTermStateFinished
+17:7-12 OrcaTermUnseenName
+17:34-36 OrcaTermAge
+17:37-39 OrcaTermAge
+18:3-5 OrcaTermStateFinished
 20:1-10 OrcaTermMuted
 21:1-4 OrcaTermStateWorking
 21:31-33 OrcaTermAge
@@ -81,8 +82,8 @@
 23:1-4 OrcaTermStateSettingUp
 25:1-8 OrcaTermMuted
 26:1-4 OrcaTermStateFinished
-26:31-33 OrcaTermAge
-26:34-37 OrcaTermAge
+26:32-34 OrcaTermAge
+26:35-37 OrcaTermAge
 27:3-5 OrcaTermMuted
 28:1-4 OrcaTermStateIdle
 28:35-37 OrcaTermAge
