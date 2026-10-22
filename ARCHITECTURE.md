@@ -80,7 +80,7 @@ the adapters, and returns a domain value that `output` prints.
   open, checks pending` (`no checks` when there are none), `<name>: no PR` or `<name>: PR
   unavailable: <reason>`.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
-  `worktree rm`, `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
+  `worktree rm` (with `stopped_agent`, whether its agent was stopped first, #94), `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
   null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
   and `version` envelope. Each worktree carries `agent` (`"claude-code"`, `"opencode"` or null) and `holder`
   (whether a holder is alive) and `unseen` (whether it carries the unseen mark); `worktree seen`
@@ -186,7 +186,12 @@ the adapters, and returns a domain value that `output` prints.
   --count`. A worktree whose directory is gone gives only its state and reason. Only reads.
 - `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
   `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
-  the branch's fate, remove, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
+  the branch's fate; only then stop a running agent under the lock as `agent stop` does (#94:
+  `agent stop` takes no worktree lock, so no deadlock; an agent that does not stop is `busy`,
+  `AgentDidNotStop`, and nothing is removed), go back to the primary checkout (talking to the
+  holder enters the admin directory, which git will not delete while it is the current one),
+  check the dirty rule again (files written while stopping refuse as `dirty`, the agent left
+  stopped), remove, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
   id learnt before git removes the admin directory), delete or keep the branch.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
@@ -617,8 +622,10 @@ validate"):
   behind the local default branch.
 - `TypedError` (`domain/error.rs`): the failures a client tells apart: `Busy` (with a
   `BusyReason`: the lock is held, or the agent is running, or another agent runs where one is
-  started, or the agent is in a turn where one is swapped or its session changed), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
-  `worktree rm` keeps because it has modified or untracked files), `SessionGone` and `NoHolder`
+  started, or the agent is in a turn where one is swapped or its session changed, or the agent
+  did not stop for a removal), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
+  `worktree rm` keeps because it has modified or untracked files, saying when its agent was
+  stopped before they were found), `SessionGone` and `NoHolder`
   (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
   doctor's lines say) and `Untrusted` (a setup script or writable list from a committed
@@ -682,8 +689,9 @@ validate"):
   `agent.json` (its pid and socket) and `agent.sock` are believed only while that lock is held,
   so a holder killed outright leaves files behind but no false liveness. `agent start` under the
   worktree's lock reports a live holder instead of starting a second one, and the holder itself
-  refuses to run when another holds `agent.lock`. `worktree rm` and `worktree setup` fail as
-  `busy` while a holder is alive, naming `agent stop`. `agent start` refuses a worktree that is
+  refuses to run when another holds `agent.lock`. `worktree setup` fails as `busy` while a
+  holder is alive, naming `agent stop`; `worktree rm` stops the holder first, once its own checks
+  pass (#94). `agent start` refuses a worktree that is
   not ready, and the primary checkout.
 - **The agent is launched only through `domain/launch.rs`.** The command line is
   `claude --settings <admin>/claude-settings.json --permission-mode acceptEdits [--resume <id>]`,
@@ -1454,7 +1462,8 @@ what they print.
   `vim.ui.select` (`approval_prompt`: the worktree, the source and the script's lines) asks
   `Run it` or `Cancel` (`APPROVE_SETUP`); `Run it` runs `worktree setup --approve-setup` (by name
   after `a`, by path after `.`) and goes on as the command would have, `Cancel` runs nothing and
-  says the worktree is not ready. `remove` always asks first; a
+  says the worktree is not ready. `remove` always asks first, adding `Its agent is running and
+  will be stopped.` when the worktree's holder is alive (#94); a
   `dirty` refusal asks once more before `--force`; `busy` is only reported; a removed worktree's
   tabs close, its review tabs included. It touches no window or buffer.
 
