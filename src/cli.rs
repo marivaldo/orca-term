@@ -149,6 +149,18 @@ enum WorktreeCommand {
         // here, before anything runs.
         #[arg(allow_hyphen_values = true)]
         name: WorktreeName,
+        /// The agent to start once the setup succeeded: claude-code or opencode. It is recorded
+        /// as the worktree's agent and started as `agent start --agent` does, with the same
+        /// refusals; a failed setup starts nothing (default: no agent).
+        // Parsed by clap through `Agent`'s `FromStr`: an unknown agent is refused here.
+        #[arg(long)]
+        agent: Option<Agent>,
+        /// The agent's first terminal height, in rows (default: this terminal's, else 24).
+        #[arg(long, requires = "agent")]
+        rows: Option<u16>,
+        /// The agent's first terminal width, in columns (default: this terminal's, else 80).
+        #[arg(long, requires = "agent")]
+        cols: Option<u16>,
         /// Approve the setup script of a committed orca-term.yaml without being asked, then run
         /// it.
         #[arg(long)]
@@ -605,9 +617,12 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
     match command {
         WorktreeCommand::New {
             name,
+            agent,
+            rows,
+            cols,
             approve_setup,
             ..
-        } => run_worktree_new(name, *approve_setup, format),
+        } => run_worktree_new(name, *agent, (*rows, *cols), *approve_setup, format),
         WorktreeCommand::Setup {
             worktree,
             approve_setup,
@@ -655,13 +670,37 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
     }
 }
 
-/// Runs `worktree new`: says what it creates, creates it and prints what it made.
-fn run_worktree_new(name: &WorktreeName, approve_setup: bool, format: Format) -> Result<ExitCode> {
+/// Runs `worktree new`: says what it creates, creates it and prints what it made. With `agent`
+/// (`--agent`), the agent then starts once the setup succeeded, with its first terminal `size`
+/// (rows, columns) where given. As text, what was made is printed before the start, so it shows
+/// even when the start is refused; as JSON, one document carries both, and a refused start prints
+/// only its error.
+fn run_worktree_new(
+    name: &WorktreeName,
+    agent: Option<Agent>,
+    size: (Option<u16>, Option<u16>),
+    approve_setup: bool,
+    format: Format,
+) -> Result<ExitCode> {
     output::creating_worktree(name, format);
     let mut ask = ask_at_terminal;
-    let mut approval = approval(approve_setup, format, &mut ask);
-    let created = worktree_new::run(name, &mut approval, &mut *output::live_echo(format))?;
-    output::worktree_created(&created, format)?;
+    let mut setup_approval = approval(approve_setup, format, &mut ask);
+    let created = worktree_new::run(name, &mut setup_approval, &mut *output::live_echo(format))?;
+    let Some(agent) = agent else {
+        output::worktree_created(&created, None, format)?;
+        return Ok(exit_code(&created.setup));
+    };
+    if format == Format::Text {
+        output::worktree_created(&created, None, format)?;
+    }
+    let mut ask = ask_at_terminal;
+    let mut sandbox_approval = approval(false, format, &mut ask);
+    let started = worktree_new::start_agent(&created, agent, size, &mut sandbox_approval)?;
+    match (&started, format) {
+        (Some(started), Format::Text) => output::agent_started(started, format)?,
+        (_, Format::Json) => output::worktree_created(&created, started.as_ref(), format)?,
+        (None, Format::Text) => {}
+    }
     Ok(exit_code(&created.setup))
 }
 

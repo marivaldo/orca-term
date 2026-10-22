@@ -261,10 +261,14 @@ fn render_columns(lines: &[Vec<String>]) -> String {
 
 /// Prints what `worktree new` made, with the `base` it used and where that came from, and what
 /// its setup did.
-pub(crate) fn worktree_created(created: &Created, format: Format) -> anyhow::Result<()> {
+pub(crate) fn worktree_created(
+    created: &Created,
+    started: Option<&Started>,
+    format: Format,
+) -> anyhow::Result<()> {
     match format {
         Format::Text => out(&render_worktree_created(created)),
-        Format::Json => out(&json::created(created)?),
+        Format::Json => out(&json::created(created, started)?),
     }
     Ok(())
 }

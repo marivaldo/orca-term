@@ -138,6 +138,10 @@ struct CreatedView<'a> {
     copied: usize,
     base: &'a Path,
     setup: SetupView<'a>,
+    /// With `--agent`, the document of `agent start` for the agent started once the setup
+    /// succeeded; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started: Option<StartedView<'a>>,
 }
 
 /// `worktree setup --json`: the worktree as `worktree ls` shows it, and what its setup did.
@@ -536,7 +540,7 @@ pub(crate) fn refreshed(refreshed: &Refreshed) -> serde_json::Result<String> {
 }
 
 /// What `worktree new` made, as one JSON document.
-pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
+pub(crate) fn created(created: &Created, started: Option<&Started>) -> serde_json::Result<String> {
     let worktree = set_up_worktree(
         created.name.as_str(),
         &created.path,
@@ -549,6 +553,7 @@ pub(crate) fn created(created: &Created) -> serde_json::Result<String> {
         copied: created.copied,
         base: &created.base.value,
         setup: setup_view(&created.setup),
+        started: started.map(started_view),
     })
 }
 
