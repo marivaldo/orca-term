@@ -15,7 +15,7 @@
    directory missing; run orca-ter…
 •○ nudged                     cc 5m
 •● greet                      cc 2d
-   ok
+   1 file changed
 
  RUNNING 2
  ◐ run-tests                 cc now
@@ -28,7 +28,7 @@
  ○ standby                       cc
  · docs                        ≠ ✎2
  · spike
-   ⎇ other-branch
+   ⎇ other-branch · 2 files changed
 
 # highlights: <line>:<first>-<last> <group>
 1:1-4 OrcaTermMuted
@@ -73,7 +73,7 @@
 17:7-12 OrcaTermUnseenName
 17:34-36 OrcaTermAge
 17:37-39 OrcaTermAge
-18:3-5 OrcaTermStateFinished
+18:3-17 OrcaTermStateFinished
 20:1-10 OrcaTermMuted
 21:1-4 OrcaTermStateWorking
 21:31-33 OrcaTermAge
@@ -91,4 +91,4 @@
 29:32-35 OrcaTermOperation
 29:36-40 OrcaTermBadge
 30:1-3 OrcaTermStateNoAgent
-31:3-19 OrcaTermMuted
+31:3-38 OrcaTermMuted

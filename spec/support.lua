@@ -652,6 +652,13 @@ function M.every_state_repo()
   M.run({ M.binary, 'worktree', 'unseen', 'nudged' }, repo.root)
   M.run({ 'git', 'switch', '--quiet', '-c', 'other-branch' }, M.worktree_path(repo, 'spike'))
 
+  -- Changed files (#92), as untracked files: one in `greet` and two in `spike`, which show their
+  -- count on the second line, and one in `pick-colour`, whose question still wins.
+  vim.fn.writefile({ 'hello' }, M.worktree_path(repo, 'greet') .. '/hello.txt')
+  vim.fn.writefile({ 'one' }, M.worktree_path(repo, 'spike') .. '/one.txt')
+  vim.fn.writefile({ 'two' }, M.worktree_path(repo, 'spike') .. '/two.txt')
+  vim.fn.writefile({ 'red' }, M.worktree_path(repo, 'pick-colour') .. '/colour.txt')
+
   -- Denials: the three Write calls claude's permission settings refused in a recording of its own,
   -- played into the turn `pick-colour` waits in (the selected worktree, in the card). A batch never
   -- changes the turn's state nor its activity.

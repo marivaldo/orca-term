@@ -13,7 +13,8 @@
 -- The repository's directory is named `repo` and no path is shown, so the file is the same on
 -- every machine. The ages and the order by recency never depend on the clock either: the spec
 -- fixes the time the sidebar measures ages from (`render.clock`) and each worktree's
--- `last_activity` (`LAST_ACTIVITY`), in the fleet the core returns.
+-- `last_activity` (`LAST_ACTIVITY`), in the fleet the core returns. Each worktree's
+-- `changed_files` is the real one: the fixture writes its untracked files, so it never varies.
 
 local support = require('support')
 local core = require('orca-term.core')
