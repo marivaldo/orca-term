@@ -51,6 +51,17 @@ local LINKS = {
   OrcaTermOperation = 'DiagnosticWarn',
   -- The notes drawn in a review: their signs, their text and their count in the file panel.
   OrcaTermNote = 'DiagnosticInfo',
+  -- A worktree's pull request, `PR` at the right of its name line and its line in the detail
+  -- float: an open one with no checks reads green, a merged one purple (`Constant` is the group
+  -- the bundled colorschemes most often draw purple or magenta), a closed one or a draft muted.
+  OrcaTermPrOpen = 'DiagnosticOk',
+  OrcaTermPrMerged = 'Constant',
+  OrcaTermPrClosed = 'Comment',
+  OrcaTermPrDraft = 'Comment',
+  -- An open pull request takes the colour of its checks.
+  OrcaTermPrPassing = 'DiagnosticOk',
+  OrcaTermPrFailing = 'DiagnosticError',
+  OrcaTermPrPending = 'DiagnosticWarn',
 }
 
 ---Each group drawn with attributes of its own rather than a link.

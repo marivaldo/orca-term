@@ -100,9 +100,9 @@ lua-rocks:
 deny:
     cargo deny check
 
-# Spelling, workflows, vocabulary, layers, the client boundary, the launch guard, commit messages
-# and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard (commit-lint range) guard-test
+# Spelling, workflows, vocabulary, layers, the client boundary, the launch guard, the gh guard,
+# commit messages and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard gh-guard (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree; files the config excludes stay excluded when named.
 typos *files:
@@ -128,6 +128,11 @@ client-boundary:
 # run-time guard, src/domain/launch.rs.
 launch-guard:
     cargo xtask launch-guard
+
+# The GitHub CLI runs only from `pr refresh`: only src/ops/pr_refresh.rs names gh, and the Neovim
+# client never does.
+gh-guard:
+    cargo xtask gh-guard
 
 # Lints every commit in the range; skipped when its base does not exist (no remote yet).
 commit-lint range="origin/main..HEAD":

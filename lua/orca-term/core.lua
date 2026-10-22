@@ -5,8 +5,8 @@
 -- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
--- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls` and the session commands (`session ls`,
--- `resume`, `new`) are not waited for, and hand their
+-- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
+-- `resume`, `new`) and `pr refresh` are not waited for, and hand their
 -- result to a callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
@@ -65,6 +65,22 @@
 ---The git operation it is in the middle of, `merge`, `rebase`, `cherry-pick` or `revert`; `nil`
 ---when there is none. Never a state.
 ---@field operation? string
+---What `pr refresh` last found about its pull request; `nil` when it never ran for the worktree
+---(only `worktree ls` and `worktree detail` print it)
+---@field pr? orca_term.Pr
+
+---What `pr refresh` last found about a worktree's pull request, as `worktree ls --json` prints it:
+---the pull request (`number` set), `none` when its branch has none, or `unavailable`, why the
+---GitHub CLI could not say. Only the fields of one of the three are set.
+---@class orca_term.Pr
+---@field fetched_at integer when it was found, in milliseconds since the Unix epoch
+---@field number? integer
+---@field title? string
+---@field state? string `open`, `draft`, `merged` or `closed`
+---@field url? string
+---@field checks? string `passing`, `failing`, `pending` or `none`
+---@field none? boolean `true` when the branch has no pull request
+---@field unavailable? string why nothing is known, such as `GitHub CLI is unavailable`
 
 ---The fleet, as `worktree ls --json` prints it.
 ---@class orca_term.Fleet
@@ -514,6 +530,33 @@ end
 ---@param on_done fun(detail: orca_term.Detail?, err: orca_term.Error?)
 function M.worktree_detail(target, cwd, on_done)
   run_async({ 'worktree', 'detail', target }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---One worktree `pr refresh --json` asked about.
+---@class orca_term.RefreshedPr
+---@field name string
+---@field path string
+---@field pr orca_term.Pr
+
+---What `pr refresh --json` prints: each worktree it asked about.
+---@class orca_term.PrRefreshed
+---@field contract integer
+---@field version string
+---@field worktrees orca_term.RefreshedPr[]
+
+---How long `pr refresh` may take: the core gives the GitHub CLI 10 seconds a worktree, every
+---worktree at once.
+local PR_REFRESH_TIMEOUT_SECONDS = 30
+
+---Asks the core to refresh the pull request of each worktree of `targets` (paths or names), or of
+---every worktree when it is empty, without waiting: `orca-term pr refresh [<target>...] --json`.
+---The core runs the GitHub CLI; the client never does.
+---@param targets string[]
+---@param cwd string
+---@param on_done fun(refreshed: orca_term.PrRefreshed?, err: orca_term.Error?)
+function M.pr_refresh(targets, cwd, on_done)
+  local args = vim.list_extend({ 'pr', 'refresh' }, targets)
+  run_async(args, cwd, on_done, PR_REFRESH_TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a

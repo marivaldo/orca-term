@@ -13,13 +13,14 @@ use anyhow::{Context, Result, bail};
 
 mod client_boundary;
 mod commit;
+mod gh_guard;
 mod launch_guard;
 mod layers;
 mod live;
 mod pr_title;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard | gh-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,6 +70,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
         ["layers"] => layers::lint_repository(Path::new(".")),
         ["client-boundary"] => client_boundary::lint_repository(Path::new(".")),
         ["launch-guard"] => launch_guard::lint_repository(Path::new(".")),
+        ["gh-guard"] => gh_guard::lint_repository(Path::new(".")),
         _ => bail!(USAGE),
     }
 }

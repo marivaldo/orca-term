@@ -23,6 +23,7 @@ use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
 use crate::domain::operation::{Operation, RebaseStep};
+use crate::domain::pr::{Checks, Found, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -620,6 +621,47 @@ fn render_worktree_marked(marked: &Marked) -> String {
     format!("{}: {mark}", marked.name)
 }
 
+/// Prints what `pr refresh` found, one line per worktree:
+///
+/// ```text
+/// fix: PR #12 open, checks pending
+/// docs: no PR
+/// spike: PR unavailable: GitHub CLI is unavailable
+/// ```
+pub(crate) fn prs_refreshed(refreshed: &Refreshed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text if refreshed.worktrees.is_empty() => {}
+        Format::Text => out(&render_prs_refreshed(refreshed)),
+        Format::Json => out(&json::refreshed(refreshed)?),
+    }
+    Ok(())
+}
+
+fn render_prs_refreshed(refreshed: &Refreshed) -> String {
+    let lines: Vec<String> = refreshed
+        .worktrees
+        .iter()
+        .map(|worktree| format!("{}: {}", worktree.name, pr_text(&worktree.facts.found)))
+        .collect();
+    lines.join("\n")
+}
+
+/// What was found about a pull request, in a few words: `PR #12 open, checks passing`, `no PR`
+/// or `PR unavailable: <reason>`.
+fn pr_text(found: &Found) -> String {
+    match found {
+        Found::Pr(pr) => {
+            let checks = match pr.checks {
+                Checks::None => "no checks".to_owned(),
+                checks => format!("checks {}", checks.name()),
+            };
+            format!("PR #{} {}, {checks}", pr.number, pr.state.name())
+        }
+        Found::NoPr => "no PR".to_owned(),
+        Found::Unavailable(reason) => format!("PR unavailable: {reason}"),
+    }
+}
+
 /// Prints what `worktree detail` found, as a block of lines: the worktree and its state, then
 /// the whole detail indented, the denials of the latest turn, the setup with the end of its log,
 /// and the drift, each part only when it has something to say:
@@ -1071,7 +1113,46 @@ mod tests {
             notes: 0,
             denials: 0,
             operation: None,
+            pr: None,
         }
+    }
+
+    #[test]
+    fn a_refresh_says_what_it_found_for_each_worktree_on_its_own_line() {
+        use crate::domain::pr::{PrFacts, PrState, PullRequest, RefreshedWorktree};
+        let refreshed = |name: &str, found: Found| RefreshedWorktree {
+            name: name.to_owned(),
+            path: PathBuf::from(format!("/l/{name}")),
+            facts: PrFacts {
+                fetched_at: 1,
+                found,
+            },
+        };
+        let pr = |state, checks| {
+            Found::Pr(PullRequest {
+                number: 12,
+                title: "Fix".to_owned(),
+                state,
+                url: "https://github.com/o/r/pull/12".to_owned(),
+                checks,
+            })
+        };
+        let all = Refreshed {
+            worktrees: vec![
+                refreshed("fix", pr(PrState::Open, Checks::Pending)),
+                refreshed("old", pr(PrState::Merged, Checks::None)),
+                refreshed("docs", Found::NoPr),
+                refreshed(
+                    "spike",
+                    Found::Unavailable("GitHub CLI is unavailable".to_owned()),
+                ),
+            ],
+        };
+        assert_eq!(
+            render_prs_refreshed(&all),
+            "fix: PR #12 open, checks pending\nold: PR #12 merged, no checks\ndocs: no PR\n\
+             spike: PR unavailable: GitHub CLI is unavailable"
+        );
     }
 
     fn failed_setup() -> SetupReport {

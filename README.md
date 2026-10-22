@@ -312,6 +312,43 @@ Limits:
 - In a turn review, `gf` from the right-hand side (the turn's end) lands on the same line number in
   the file on disk, which later edits may have moved.
 
+## Pull requests
+
+`orca-term pr refresh [<worktree>...]` asks the GitHub CLI about the pull request of each
+worktree's branch (every worktree when you name none) and its checks, and keeps the answer for the
+sidebar. It prints one line per worktree:
+
+```text
+demo: PR #12 open, checks pending
+docs: no PR
+spike: PR unavailable: GitHub CLI is unavailable
+```
+
+A pull request is `open`, `draft`, `merged` or `closed`, and its checks are `failing` when any
+check failed, errored, was cancelled or timed out, else `pending` while any is queued or running,
+else `passing` when any succeeded, else `none`. It runs `gh pr view <branch>` in every worktree at
+once and gives each 10 seconds. When gh is not installed, not logged in or the repository is not
+on GitHub (`not a GitHub remote`), the worktree's pull request is unavailable, with the reason;
+the command still succeeds. orca-term never runs gh anywhere else, and the Neovim client never
+runs it at all.
+
+`worktree ls --json` and `worktree detail --json` show what the last refresh found as each
+worktree's `pr`: `null` when it never ran, else `fetched_at` (milliseconds since the Unix epoch)
+and either the pull request (`number`, `title`, `state`, `url`, `checks`), `"none": true`, or
+`unavailable` and the reason.
+
+In the sidebar, a worktree whose branch has a pull request shows `PR` at the right of its row,
+after `✎N`: green, yellow or red by its checks while it is open (green with no checks), purple once
+merged, muted when closed or a draft. `K` adds its line to the detail float, such as `PR #12 open,
+checks passing (2 min ago)`, with its address. `R` refreshes the worktree under the cursor, and
+`:OrcaTerm pr-refresh` (`<Plug>(OrcaTermPrRefresh)`) every worktree. The client also refreshes on
+its own, through the core and without blocking: when the sidebar opens or Neovim gains focus with
+it open (each worktree at most once a minute), after a worktree's turn ends, and every minute while
+the sidebar is open and some checks are pending. The colours are the groups `OrcaTermPrOpen`,
+`OrcaTermPrMerged`, `OrcaTermPrClosed`, `OrcaTermPrDraft`, `OrcaTermPrPassing`, `OrcaTermPrFailing`
+and `OrcaTermPrPending`, linked by default to `DiagnosticOk`, `Constant`, `Comment` and
+`Diagnostic*`.
+
 ## Status strip
 
 The status strip shows the fleet's health while the sidebar is closed: how many worktrees are in

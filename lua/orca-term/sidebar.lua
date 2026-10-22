@@ -7,9 +7,9 @@
 -- `k`), open a worktree (`<CR>`: its tab, and its agent's terminal when it has an agent), create a
 -- worktree (`a`), open the menu of the worktree under the cursor (`.`), toggle its unseen mark
 -- (`u`), open its review (`d`) and list its sessions to resume one (`s`), all six through
--- `actions.lua`, and show its detail in a float
--- (`K`, through `detail.lua`). The selection follows the current tab when it is a worktree's. The
--- sidebar is never shown in a review tab (`review.lua`), where diffview lays out the whole tab.
+-- `actions.lua`, show its detail in a float
+-- (`K`, through `detail.lua`) and refresh its pull request (`R`, through `pr.lua`). The selection
+-- follows the current tab when it is a worktree's. The sidebar is never shown in a review tab (`review.lua`), where diffview lays out the whole tab.
 --
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains
@@ -17,7 +17,9 @@
 -- Neovim with the core through `live.lua`; closing it unsubscribes and unregisters nothing. While a
 -- listed worktree is working, one timer turns its glyph through `render.SPINNER` by drawing the
 -- fleet already read again, never reading it; the timer stops once no worktree is working or the
--- sidebar closes.
+-- sidebar closes. The pull requests are refreshed through `pr.lua` as it rules (#87): when the
+-- sidebar opens or is focused (each at most once a minute), after a worktree's turn ends, and every
+-- minute while some checks are pending and the sidebar is open.
 -- Opening never moves the cursor out of the person's window and never resizes their windows beyond
 -- the split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
 -- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
@@ -26,6 +28,7 @@ local actions = require('orca-term.actions')
 local detail = require('orca-term.detail')
 local highlights = require('orca-term.highlights')
 local live = require('orca-term.live')
+local pr = require('orca-term.pr')
 local render = require('orca-term.render')
 local review = require('orca-term.review')
 local tabs = require('orca-term.tabs')
@@ -228,6 +231,7 @@ local function on_fleet(fleet, err)
   end
   state.fleet, state.error = fleet, err
   redraw()
+  pr.follow(fleet, state.fleet and state.fleet.primary.path or vim.fn.getcwd())
 end
 
 ---Reads the fleet again and redraws, when the sidebar is open; does nothing otherwise. The read
@@ -321,6 +325,25 @@ local function list_sessions()
   end
 end
 
+---`R`: refreshes the pull request of the worktree under the cursor through the core; the row
+---shows what was found once the fleet is read again. A refusal is told.
+local function refresh_pr()
+  local worktree = worktree_under_cursor()
+  if not worktree then
+    return
+  end
+  pr.refresh({ worktree.path }, primary_path(), function(_, err)
+    if err then
+      vim.notify(err.message, vim.log.levels.ERROR)
+    end
+  end)
+end
+
+---Opening or focusing the sidebar: refreshes the pull requests due for it (`pr.refresh_due`).
+local function refresh_due_prs()
+  pr.refresh_due(state.fleet, primary_path())
+end
+
 ---`K`: shows the detail of the worktree under the cursor in a float next to the sidebar, or closes
 ---it (`detail.lua`).
 local function toggle_detail()
@@ -394,6 +417,7 @@ local function ensure_buffer()
   map('d', open_review, 'open the review of the worktree under the cursor in diffview')
   map('s', list_sessions, 'list the sessions of the worktree under the cursor, to resume one')
   map('K', toggle_detail, 'show the detail of the worktree under the cursor, or hide it')
+  map('R', refresh_pr, 'refresh the pull request of the worktree under the cursor')
 
   state.buf = buf
   return buf
@@ -534,6 +558,7 @@ function M.open()
   end
   -- After the read, so this Neovim registers from the primary checkout of the fleet just read.
   live.subscribe(SUBSCRIBER, on_fleet)
+  refresh_due_prs()
 
   local group = vim.api.nvim_create_augroup('orca-term-sidebar', { clear = true })
   state.group = group
@@ -573,6 +598,17 @@ function M.open()
     desc = 'orca-term: never show the sidebar in a review tab',
     callback = leave_review_tab,
   })
+  vim.api.nvim_create_autocmd('FocusGained', {
+    group = group,
+    desc = 'orca-term: refresh the pull requests not refreshed for a minute',
+    callback = refresh_due_prs,
+  })
+  vim.api.nvim_create_autocmd('BufEnter', {
+    group = group,
+    buffer = state.buf,
+    desc = 'orca-term: refresh the pull requests not refreshed for a minute',
+    callback = refresh_due_prs,
+  })
   vim.api.nvim_create_autocmd('ColorScheme', {
     group = group,
     desc = "orca-term: define the sidebar's colours again",
@@ -584,6 +620,7 @@ end
 function M.close()
   state.open = false
   stop_spinning()
+  pr.stop()
   detail.close()
   -- A read the live fleet still owes is no longer for the sidebar.
   live.unsubscribe(SUBSCRIBER)

@@ -53,7 +53,8 @@ the adapters, and returns a domain value that `output` prints.
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
   `doctor [--json]` needs no repository; every other command but the hidden `hook` and `agent
   holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
-  git as the typed `prerequisite` before anything else runs.
+  git as the typed `prerequisite` before anything else runs. `pr refresh [<worktree>...]` (#87)
+  asks the GitHub CLI about each worktree's pull request.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -75,7 +76,9 @@ the adapters, and returns a domain value that `output` prints.
   handed by `cli` to the ops module. `doctor`'s report is one line per check, its status padded
   to 8 columns (`ok`, `warn`, `missing`, `too old`, `info`) then its message; when a check is
   missing or too old, the whole report comes first, then the `prerequisite` error as any command
-  prints it, and its exit code.
+  prints it, and its exit code. `pr refresh` prints one line per worktree (#87): `<name>: PR #12
+  open, checks pending` (`no checks` when there are none), `<name>: no PR` or `<name>: PR
+  unavailable: <reason>`.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm`, `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
   null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
@@ -111,7 +114,13 @@ the adapters, and returns a domain value that `output` prints.
   `{"id", "agent", "first_prompt", "turns", "last_activity", "current"}`, the most recently active
   first; `session resume` the `agent swap` document and the `session` now current; `session new`
   the `worktree` object, the session `discarded` (or null) and `started`, the `agent start`
-  document of the agent restarted on a new session (or null when it was not running).
+  document of the agent restarted on a new session (or null when it was not running). In
+  `worktree ls` and `worktree detail` only (#87), each worktree object also carries `pr`, what
+  `pr refresh` last found: null when it never ran for it, else `fetched_at` (milliseconds) and one
+  of three shapes, the others' keys absent: the pull request (`number`, `title`, `state`: `open`,
+  `draft`, `merged` or `closed`, `url`, `checks`: `passing`, `failing`, `pending` or `none`),
+  `"none": true`, or `unavailable` with gh's reason (`ListedWorktreeView`, the worktree object
+  flattened beside `pr`). `pr refresh` prints `worktrees`, each `{"name", "path", "pr"}`.
 
 ### ops
 
@@ -252,6 +261,14 @@ the adapters, and returns a domain value that `output` prints.
   registry (idempotent; creating the file is the only write, so no lock).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
   one not recorded is not an error.
+- `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
+  none is named; a named one whose directory is gone, the primary checkout or an unknown one is
+  refused), find gh on PATH, run `gh pr view <branch> --json
+  number,title,state,isDraft,url,statusCheckRollup` in every worktree at once (one thread each,
+  `program::run_within`, 10 s each), turn each answer into a finding (`domain/pr.rs`), then write
+  each `pr.json` whole with no lock (never over a newer schema) and notify only for a worktree whose
+  finding changed. A worktree on no branch has no pull request and runs no gh. The only file that
+  names gh.
 
 ### adapters
 
@@ -274,7 +291,9 @@ the adapters, and returns a domain value that `output` prints.
   four XDG base directories, `TMPDIR`); and the recording tap's file (`record_file`:
   `ORCA_TERM_RECORD`, `None` when unset or empty, #44).
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
-  sessions (`listed_by`, #41), with an empty stdin; both only read.
+  sessions (`listed_by`, #41), with an empty stdin; both only read. `run_within` (#87) runs a
+  program with an empty stdin and a time limit, reading its stdout and stderr on threads of their
+  own, and kills it past the limit (`Finished::TimedOut`); `pr refresh` runs gh through it.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
   the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
@@ -474,6 +493,15 @@ the adapters, and returns a domain value that `output` prints.
 - `domain/include.rs`: the copy list: which paths `.worktreeinclude` makes copyable, and the
   rule that a path never escapes the worktree.
 - `domain/contract.rs`: the `contract` and `version` integers every `--json` output carries.
+- `domain/pr.rs`: a worktree's pull request (#87): gh's arguments (`view_args`) and its time
+  limit, what a run of gh means (`found`: the pull request, `NoPr` when gh says `no pull requests
+  found`, or `Unavailable` with gh missing, `not a GitHub remote`, gh's first line on stderr, a
+  time out or output it cannot read), the state (`OPEN` with `isDraft` is `draft`) and the checks in one word (each
+  `statusCheckRollup` entry in the buckets of gh's own `gh pr checks`: any failure is `failing`,
+  else anything pending `pending`, else any success `passing`, else `none`), and `pr.json`
+  (`{"schema": 1, "fetched_at", "pr": {...} | null, "unavailable": null | "<reason>"}`, read from
+  any schema, never written over a newer one, an unusable one read as never fetched), and whether
+  a finding `changed`.
 
 ### Domain types
 
@@ -510,6 +538,10 @@ validate"):
   and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
   contents kept for notes on lines), and `snapshot.index`, the throwaway index a snapshot is taken
   through. `worktree_id` is the name of git's admin directory it sits in, which names the chain.
+  Since #87 it also holds `pr.json`, what `pr refresh` last found.
+- `PrState`, `Checks`, `PullRequest`, `Found`, `PrFacts`, `GhRun`, `PrRead`, `Refreshed`
+  (`domain/pr.rs`): a pull request's state and checks, the pull request, what asking gh found and
+  when, what running gh did, what reading `pr.json` found, and what `pr refresh` reports.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -748,6 +780,14 @@ validate"):
   reads or answers cannot hold the command up (it misses that change); notifying never fails the
   write before it. A Neovim that is gone has its file pruned; any other failure
   is skipped and the file kept. `worktree ls` sends nothing.
+- **gh runs only from `pr refresh`, and its answer is a cache** (#87). Only `ops/pr_refresh.rs`
+  names the GitHub CLI (`cargo xtask gh-guard`); the Neovim client never runs it, only asks the
+  core. gh runs with an empty stdin, in the worktree, at most 10 s; gh missing, not logged in or
+  not pointed at GitHub is recorded as `unavailable`, never a failure of the command. `pr.json` is
+  written only by `pr refresh`, whole and with no lock, the last write winning, never over a newer
+  schema; `worktree ls` and `worktree detail` only read it. `pr refresh` tells the running Neovims
+  only about a worktree whose finding changed (`fetched_at` aside), so a refresh that changes
+  nothing makes no one read the fleet.
 - **Notes are the person's, kept until sent.** Only the note commands write `notes.json`, each
   under `notes.lock` (waiting at most 2 s for another), replacing it whole; reading takes no lock.
   Ids are never reused and every edit bumps `rev`. A note on lines keeps a copy of its file's
@@ -930,6 +970,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   (opencode's) and
   `bypassPermissions`, as whole tokens outside comments, in every file under `src/`, `lua/` and
   `plugin/` but `src/domain/launch.rs`, where the run-time guard lists them.
+- `cargo xtask gh-guard` (`xtask/src/gh_guard.rs`, #87) rejects the string literal `"gh"`, outside
+  comments, in every file under `src/` but `src/ops/pr_refresh.rs`, and `"gh"` or `'gh'` anywhere
+  in `lua/`, `plugin/` and `build.lua`.
 - Clippy `print_stdout` and `print_stderr` keep printing in `output`.
 - The compiler keeps writes to a worktree's state under its lock: `ops::write_state` and
   `ops::write_agent` take a `&WorktreeLock`, which only taking the lock can make.
@@ -982,7 +1025,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   (`tests/live/*.scenario`, recordings in `tests/fixtures/claude-hooks/` and
   `tests/fixtures/opencode-events/`) through the real `orca-term hook` and checks the outcome of
   each turn against the scenario's `expect`; `tests/record.rs` checks the recording tap with the
-  fake agents.
+  fake agents. `tests/pr.rs` (#87) runs `pr refresh` with a fake `gh` on the agent fixture's PATH
+  (it records where it ran and its arguments, and answers per branch from files beside it), and
+  without one, then reads `pr.json`, `worktree ls --json` and `worktree detail --json`.
 - **Live checks, against the real agents** (#44): `cargo xtask check-live` (`just check-live`),
   never run by CI, in `xtask/src/live.rs`: it checks the agents with `orca-term doctor --json`,
   runs each scenario of `tests/live/` (`live/scenario.rs` reads them) in a throwaway repository
@@ -1024,7 +1069,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   wrap. `spec/sessions_spec.lua` (#41) lists and resumes sessions with `s`, across agents too
   (opencode's lines recorded by running `orca-term hook opencode` itself), and starts a new one
   from the `.` menu. `support.isolate()` sets the XDG base directories inside the fixture's `HOME`. See
-  "Neovim client" below.
+  "Neovim client" below. Every fixture puts a fake `gh` first on PATH (#87), so opening the sidebar,
+  which refreshes the pull requests, never runs the real GitHub CLI; `spec/pr_spec.lua` makes it
+  answer pull requests (`support.gh_answer`) and checks the `PR` icon and its colours, `R`, `K`,
+  `:OrcaTerm pr-refresh`, the refresh on opening, after a turn ends and on the timer.
 - **Lints** have their own unit tests in `xtask/src/`.
 
 ## Neovim client
@@ -1038,7 +1086,8 @@ what they print.
   `review`, `notes`, `turns`, `install-cli`, `worktree N`), with completion of the subcommands,
   and the `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
   `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`, `<Plug>(OrcaTermInstallCli)` and
-  `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and nothing else.
+  `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and nothing else. Since #87 also
+  `pr-refresh` and `<Plug>(OrcaTermPrRefresh)` (`pr.refresh_all`).
 - `build.lua`: the build hook, at the root where lazy.nvim finds it and runs it by itself (other
   managers run `nvim -l build.lua`). It loads `install.lua` by its path, since the plugin is not on
   the runtimepath yet, runs `install.build`, yielding to lazy.nvim's coroutine while it waits, and
@@ -1086,7 +1135,10 @@ what they print.
   error. `turn_ls(target, cwd, on_done)` runs `turn ls` without waiting (10 s at most), typed as
   `orca_term.TurnList`: the worktree's `name` and `path` and its `turns` (`orca_term.Turn`:
   `number`, `outcome` or, while open, `phase`, `prompt`, `end_observed`, the `begin` and `end`
-  snapshots, ...), oldest first; it is the turn review's only source.
+  snapshots, ...), oldest first; it is the turn review's only source. `pr_refresh(targets, cwd,
+  on_done)` (#87) runs `pr refresh [<target>...]` without waiting (30 s at most), typed as
+  `orca_term.PrRefreshed`; each worktree of `worktree ls` and `worktree detail` carries `pr`
+  (`orca_term.Pr`, `nil` when never fetched).
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1130,7 +1182,13 @@ what they print.
   then a state the client does not know yet, by name), leaving out the states no worktree is in,
   and how many are unseen; `strip(fleet)` turns them into items `{ text, group }` such as
   `{ text = '?1', group = 'OrcaTermStateWaiting' }`, the unseen count last as `•N` in
-  `OrcaTermUnseen`. The working glyph does not spin there.
+  `OrcaTermUnseen`. The working glyph does not spin there. A worktree whose branch has a pull
+  request (#87) gets `PR` (`render.PR`) after `✎N`, in the group `pr_group` gives it: an open one by
+  its checks (`OrcaTermPrPassing`, `OrcaTermPrFailing`, `OrcaTermPrPending`, `OrcaTermPrOpen` with
+  none), else `OrcaTermPrMerged`, `OrcaTermPrClosed` or `OrcaTermPrDraft`; no pull request, one gh
+  could not tell and one never fetched show nothing. `detail` adds, after the branch, `PR #12 open,
+  checks passing (2 min ago)` (`pr_text`, the age by `ago` from `now`) in that group and the address,
+  muted, only for a pull request.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
   `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
   `OrcaTermBadge` for a row's icons, `OrcaTermDenied` for the denials and `OrcaTermNote` for the
@@ -1139,7 +1197,23 @@ what they print.
   `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
   person's own definition wins; `OrcaTermUnseenName`, the unseen worktree's name, is a default of
   its own, only bold. The sidebar, while open, the status strip, once started, and the notes, once a
-  review opened, define them again after every `:colorscheme`.
+  review opened, define them again after every `:colorscheme`. The pull request's groups (#87):
+  `OrcaTermPrOpen` and `OrcaTermPrPassing` to `DiagnosticOk`, `OrcaTermPrFailing` to
+  `DiagnosticError`, `OrcaTermPrPending` to `DiagnosticWarn`, `OrcaTermPrMerged` to `Constant` (the
+  group the bundled colorschemes most often draw purple or magenta), `OrcaTermPrClosed` and
+  `OrcaTermPrDraft` to `Comment`.
+- `lua/orca-term/pr.lua`: when the client asks the core to refresh the pull requests (#87, the
+  policy of #22), touching no window or buffer and starting no process: `refresh(paths, cwd,
+  on_done)` runs `core.pr_refresh` and, when what it found changes what the sidebar shows (`shown`:
+  a pull request's number, state and checks), reads the live fleet again (`live.read_soon()`);
+  `refresh_due(fleet, cwd)`, on opening the sidebar and on `FocusGained` or entering it while open,
+  refreshes each worktree whose last answer (`fetched_at`) and last request are a minute old
+  (`MIN_AGE_MS`); `follow(fleet, cwd)`, on every fleet the open sidebar gets, refreshes each
+  worktree whose turn ended (`turn_ended`: it left working or waiting, or reached finished, failed or
+  interrupted) and runs one timer every `POLL_MS` (60 s) refreshing the worktrees whose checks are
+  pending, stopped once none is or the sidebar closes (`stop()`); `refresh_all()` is `:OrcaTerm
+  pr-refresh`, every worktree of the current directory's repository, then `refreshed the pull
+  request of N worktrees` or the error. A broken worktree is never asked about.
 - `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
   no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
   that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
@@ -1189,7 +1263,9 @@ what they print.
   creates a worktree, `u` toggles the unseen mark of the worktree under the cursor, `d` opens its
   review, `s` lists its sessions (#41) and `.` opens the menu of the worktree under the cursor (through
   `actions.lua`), and `K` shows or hides its detail float (through `detail.lua`, which closing the
-  sidebar closes too). It is never shown in a review tab (`review.lua`): `show_in` skips one, also
+  sidebar closes too), and `R` refreshes its pull request (through `pr.lua`, #87, which the sidebar
+  also hands every fleet and its opening and focus). It is never shown in a review tab
+  (`review.lua`): `show_in` skips one, also
   while a review opens, and on `User DiffviewViewOpened` (a diffview the person opened by hand,
   where the sidebar showed itself before diffview registered its view) it closes the sidebar's
   window there; diffview split its diff windows from that window, so those get back a text window's

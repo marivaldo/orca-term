@@ -18,6 +18,7 @@ use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::operation::Operation;
+use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -41,7 +42,59 @@ struct Envelope<'a, T: Serialize> {
 #[derive(Debug, Serialize)]
 struct FleetView<'a> {
     primary: PrimaryView<'a>,
-    worktrees: Vec<WorktreeView<'a>>,
+    worktrees: Vec<ListedWorktreeView<'a>>,
+}
+
+/// A worktree as `worktree ls` and `worktree detail` print it: the worktree object, then `pr`,
+/// what `pr refresh` last found about its pull request (null when it never ran for it).
+#[derive(Debug, Serialize)]
+struct ListedWorktreeView<'a> {
+    #[serde(flatten)]
+    worktree: WorktreeView<'a>,
+    pr: Option<PrView<'a>>,
+}
+
+/// What `pr refresh` found, and when (`fetched_at`, milliseconds since the Unix epoch), in one of
+/// three shapes: the pull request (`number`, `title`, `state`: `open`, `draft`, `merged` or
+/// `closed`, `url`, `checks`: `passing`, `failing`, `pending` or `none`); `"none": true` when the
+/// branch has none; or `unavailable`, why gh could not say. Keys of the other shapes are absent.
+#[derive(Debug, Serialize)]
+struct PrView<'a> {
+    fetched_at: u64,
+    #[serde(flatten)]
+    found: FoundView<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum FoundView<'a> {
+    Pr {
+        number: u64,
+        title: &'a str,
+        state: &'static str,
+        url: &'a str,
+        checks: &'static str,
+    },
+    None {
+        none: bool,
+    },
+    Unavailable {
+        unavailable: &'a str,
+    },
+}
+
+/// `pr refresh --json`: each worktree asked about, by `name` and `path`, and its `pr` as
+/// `worktree ls` prints it.
+#[derive(Debug, Serialize)]
+struct RefreshedView<'a> {
+    worktrees: Vec<RefreshedWorktreeView<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct RefreshedWorktreeView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    pr: PrView<'a>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,16 +271,16 @@ struct ReviewedView<'a> {
     against: String,
 }
 
-/// `worktree detail --json`: the worktree as `worktree ls` shows it; `detail`, why it is in its
-/// state, whole (every line: a failed setup's reason, a broken worktree's, or a failed turn's
-/// whole error), else null; `denials`, the tool calls its agent was denied in its latest turn, in
-/// order; `setup`, its latest setup (null when it never ran one); `drift`, how far it is from the
-/// local default branch (null when there is none, or the histories are unrelated);
+/// `worktree detail --json`: the worktree as `worktree ls` shows it, its `pr` included; `detail`,
+/// why it is in its state, whole (every line: a failed setup's reason, a broken worktree's, or a
+/// failed turn's whole error), else null; `denials`, the tool calls its agent was denied in its
+/// latest turn, in order; `setup`, its latest setup (null when it never ran one); `drift`, how far
+/// it is from the local default branch (null when there is none, or the histories are unrelated);
 /// `operation_step`, the step of the rebase it is in the middle of (null for any other operation,
 /// for none, or when git records no step).
 #[derive(Debug, Serialize)]
 struct DetailView<'a> {
-    worktree: WorktreeView<'a>,
+    worktree: ListedWorktreeView<'a>,
     detail: Option<&'a str>,
     denials: Vec<DenialView<'a>>,
     setup: Option<SetupDetailView<'a>>,
@@ -459,7 +512,22 @@ fn document<T: Serialize>(body: T) -> serde_json::Result<String> {
 pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
     document(FleetView {
         primary: primary_view(&fleet.primary),
-        worktrees: fleet.worktrees.iter().map(worktree_view).collect(),
+        worktrees: fleet.worktrees.iter().map(listed_worktree_view).collect(),
+    })
+}
+
+/// What `pr refresh` found, as one JSON document.
+pub(crate) fn refreshed(refreshed: &Refreshed) -> serde_json::Result<String> {
+    document(RefreshedView {
+        worktrees: refreshed
+            .worktrees
+            .iter()
+            .map(|worktree| RefreshedWorktreeView {
+                name: &worktree.name,
+                path: &worktree.path,
+                pr: pr_view(&worktree.facts),
+            })
+            .collect(),
     })
 }
 
@@ -509,6 +577,8 @@ fn set_up_worktree(
         notes: setup.notes,
         denials: setup.denials,
         operation: setup.operation,
+        // Not printed: only `worktree ls` and `worktree detail` carry the pull request.
+        pr: None,
     }
 }
 
@@ -650,7 +720,7 @@ pub(crate) fn reviewed(reviewed: &Reviewed) -> serde_json::Result<String> {
 /// What `worktree detail` found, as one JSON document.
 pub(crate) fn detail(detail: &Detail) -> serde_json::Result<String> {
     document(DetailView {
-        worktree: worktree_view(&detail.worktree),
+        worktree: listed_worktree_view(&detail.worktree),
         detail: detail.why.as_deref(),
         denials: detail
             .denials
@@ -918,6 +988,32 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
     }
 }
 
+fn listed_worktree_view(worktree: &Worktree) -> ListedWorktreeView<'_> {
+    ListedWorktreeView {
+        worktree: worktree_view(worktree),
+        pr: worktree.pr.as_ref().map(pr_view),
+    }
+}
+
+fn pr_view(facts: &PrFacts) -> PrView<'_> {
+    PrView {
+        fetched_at: facts.fetched_at,
+        found: match &facts.found {
+            Found::Pr(pr) => FoundView::Pr {
+                number: pr.number,
+                title: &pr.title,
+                state: pr.state.name(),
+                url: &pr.url,
+                checks: pr.checks.name(),
+            },
+            Found::NoPr => FoundView::None { none: true },
+            Found::Unavailable(reason) => FoundView::Unavailable {
+                unavailable: reason,
+            },
+        },
+    }
+}
+
 /// How the contract names a state.
 fn state_name(state: &State) -> &'static str {
     match state {
@@ -983,12 +1079,72 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null}}]}}"#
             )
         );
         listed.worktrees[0].unseen = true;
         let doc: serde_json::Value = serde_json::from_str(&fleet(&listed).unwrap()).unwrap();
         assert_eq!(doc["worktrees"][0]["unseen"], true);
+    }
+
+    #[test]
+    fn a_pull_request_takes_one_of_three_shapes_in_the_fleet_and_the_refresh() {
+        use crate::domain::pr::{Checks, PrState, PullRequest, RefreshedWorktree};
+        let facts = |found| PrFacts {
+            fetched_at: 1_700_000_000_000,
+            found,
+        };
+        let open = facts(Found::Pr(PullRequest {
+            number: 12,
+            title: "Fix the login".to_owned(),
+            state: PrState::Open,
+            url: "https://github.com/o/r/pull/12".to_owned(),
+            checks: Checks::Pending,
+        }));
+        let shapes = [
+            (
+                open,
+                r#"{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"open","url":"https://github.com/o/r/pull/12","checks":"pending"}"#,
+            ),
+            (
+                facts(Found::NoPr),
+                r#"{"fetched_at":1700000000000,"none":true}"#,
+            ),
+            (
+                facts(Found::Unavailable("GitHub CLI is unavailable".to_owned())),
+                r#"{"fetched_at":1700000000000,"unavailable":"GitHub CLI is unavailable"}"#,
+            ),
+        ];
+        for (facts, shape) in shapes {
+            let mut listed = idle_worktree();
+            listed.pr = Some(facts.clone());
+            let fleet_doc = fleet(&Fleet {
+                primary: PrimaryCheckout {
+                    path: PathBuf::from("/repo"),
+                    branch: None,
+                },
+                worktrees: vec![listed],
+            })
+            .unwrap();
+            assert!(
+                fleet_doc.contains(&format!(r#""denials":0,"operation":null,"pr":{shape}}}]"#)),
+                "{fleet_doc}"
+            );
+            let refreshed_doc = refreshed(&Refreshed {
+                worktrees: vec![RefreshedWorktree {
+                    name: "fix".to_owned(),
+                    path: PathBuf::from("/l/fix"),
+                    facts,
+                }],
+            })
+            .unwrap();
+            assert_eq!(
+                refreshed_doc,
+                format!(
+                    r#"{{"contract":1,"version":"{VERSION}","worktrees":[{{"name":"fix","path":"/l/fix","pr":{shape}}}]}}"#
+                )
+            );
+        }
     }
 
     #[test]
@@ -1034,7 +1190,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null}}]}}"#
             )
         );
     }
@@ -1052,6 +1208,7 @@ mod tests {
             notes: 0,
             denials: 0,
             operation: None,
+            pr: None,
         }
     }
 
@@ -1415,7 +1572,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase"}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase","pr":null}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
             )
         );
     }
