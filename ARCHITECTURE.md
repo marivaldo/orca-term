@@ -165,9 +165,10 @@ the adapters, and returns a domain value that `output` prints.
   `not_approved` to `worktree.json`, notifies, and returns the typed `untrusted`.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository, with each worktree's
   changed files counted (`ops::count_fleet_changes`, #92): the start point found once, then per
-  worktree `git merge-base`, `git diff --name-only` and `git ls-files --others`, three processes,
-  only read. `worktree detail` counts its one worktree the same way (`ops::read_changed_files`).
-  The other commands read the fleet without counting.
+  worktree `git diff --name-only --merge-base <start point>` and `git ls-files --others`, two
+  processes, only read, every worktree on a scoped thread of its own so that they run at once.
+  `worktree detail` counts its one worktree the same way (`ops::read_changed_files`). The other
+  commands read the fleet without counting.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
   primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
   (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
@@ -289,7 +290,7 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
   drift's `rev-list --left-right --count`), `changed_paths` and `untracked_files` (the changed
-  files' `diff --name-only` and `ls-files --others --exclude-standard`), `blob_id` of some content, `diff_files` between two
+  files' `diff --name-only --merge-base` and `ls-files --others --exclude-standard`), `blob_id` of some content, `diff_files` between two
   files, `index_path`, `config_value`, `read_ref`, `refs_under`, `commit_exists`, `has_file`, the
   turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, ...) or change (`worktree_add`,
   `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
