@@ -41,20 +41,20 @@ local LINKS = {
   OrcaTermStateFailed = 'DiagnosticError',
   OrcaTermStateInterrupted = 'DiagnosticUnnecessary',
   OrcaTermUnseen = 'DiagnosticWarn',
-  -- The icons at the right of a worktree's name line, such as its pending notes `✎N`.
+  -- The icons at the right of a worktree's second line, such as its pending notes `✎N`.
   OrcaTermBadge = 'DiagnosticHint',
   -- The tool calls the agent's permission rules refused: their count `⊘N` at the right of a
-  -- worktree's name line, and the `⊘` before each one in the detail float.
+  -- worktree's second line, and the `⊘` before each one in the detail float.
   OrcaTermDenied = 'DiagnosticWarn',
   -- A git operation in progress (a merge, a rebase, a cherry-pick or a revert): the `≠` at the
-  -- right of a worktree's name line, and its line in the detail float.
+  -- right of a worktree's second line, and its line in the detail float.
   OrcaTermOperation = 'DiagnosticWarn',
   -- The agent's label and the age of its last activity at the right end of a worktree's name
   -- line, `cc 9m`: muted.
   OrcaTermAge = 'Comment',
   -- The notes drawn in a review: their signs, their text and their count in the file panel.
   OrcaTermNote = 'DiagnosticInfo',
-  -- A worktree's pull request, `PR` at the right of its name line and its line in the detail
+  -- A worktree's pull request, `PR` at the right of its second line and its line in the detail
   -- float: an open one with no checks reads green, a merged one purple (`Constant` is the group
   -- the bundled colorschemes most often draw purple or magenta), a closed one or a draft muted.
   OrcaTermPrOpen = 'DiagnosticOk',

@@ -166,10 +166,10 @@ describe('the detail float', function()
       assert.are.equal(math.min(#lines, half), config.height)
       assert.are.equal('wipe', vim.bo[vim.api.nvim_win_get_buf(float)].bufhidden)
 
-      -- The sidebar's row counts the denials.
-      local row =
-        vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), cursor[1] - 1, cursor[1], false)[1]
-      assert.is_truthy(row:find('⊘3', 1, true))
+      -- The second line of the sidebar's row counts the denials.
+      local second =
+        vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), cursor[1], cursor[1] + 1, false)[1]
+      assert.is_truthy(second:find('⊘3', 1, true))
     end
   )
 
@@ -208,9 +208,10 @@ describe('the detail float', function()
       vim.tbl_contains(highlighted(float), 'OrcaTermOperation rebase in progress (1/2)')
     )
     local cursor = vim.api.nvim_win_get_cursor(sidebar_window())
-    local row =
-      vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), cursor[1] - 1, cursor[1], false)[1]
-    assert.is_truthy(row:find(' fix%s+≠ │$'))
+    -- `≠` ends the row's second line, after what it says, cut to leave it room.
+    local second =
+      vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), cursor[1], cursor[1] + 1, false)[1]
+    assert(second:find('⎇ detached · .*… ≠ │$'), second)
   end)
 
   it('shows a failed setup whole: its error and the end of its log', function()

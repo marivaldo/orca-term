@@ -84,14 +84,15 @@ describe('render, a pull request', function()
     for _, case in ipairs(cases) do
       local rendered =
         render.fleet(fleet({ worktree('aaa'), worktree('fix', case[1]) }), '/src/wt/aaa')
-      local line = assert(rendered.firsts['/src/wt/fix'])
+      -- `PR` ends the row's second line.
+      local line = assert(rendered.firsts['/src/wt/fix']) + 1
       assert(vim.endswith(rendered.lines[line], ' PR'), rendered.lines[line])
       assert.are.equal(case[2], group_of(rendered, line, 'PR'), vim.inspect(case[1]))
     end
 
     local busy = worktree('fix', pull('open', 'passing'), { denials = 1, notes = 2 })
     local rendered = render.fleet(fleet({ worktree('aaa'), busy }), '/src/wt/aaa')
-    local line = rendered.lines[rendered.firsts['/src/wt/fix']]
+    local line = rendered.lines[rendered.firsts['/src/wt/fix'] + 1]
     assert(vim.endswith(line, '⊘1 ✎2 PR'), line)
     assert(vim.fn.strdisplaywidth(line) <= render.WIDTH - 1, line)
   end)
@@ -197,8 +198,8 @@ end
 local RUNNING = { { __typename = 'CheckRun', status = 'IN_PROGRESS', conclusion = '' } }
 local PASSED = { { __typename = 'CheckRun', status = 'COMPLETED', conclusion = 'SUCCESS' } }
 
----The sidebar's line of the worktree `name`, its number and the group `PR` is drawn in there
----(`nil` when there is no `PR`).
+---The sidebar's name line of the worktree `name`, its number, and the group `PR` is drawn in at
+---the end of its second line (`nil` when there is no `PR`).
 ---@param name string
 ---@return string? line
 ---@return integer? row 1-based
@@ -208,16 +209,17 @@ local function row_of(name)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   for index, line in ipairs(lines) do
     if line:find(' ' .. name .. ' ', 1, true) or vim.endswith(line, ' ' .. name) then
+      local second = lines[index + 1] or ''
       local marks = vim.api.nvim_buf_get_extmarks(
         buf,
         sidebar.NAMESPACE,
-        { index - 1, 0 },
-        { index - 1, -1 },
+        { index, 0 },
+        { index, -1 },
         { details = true }
       )
       for _, mark in ipairs(marks) do
         local details = mark[4] or {}
-        if line:sub(mark[3] + 1, details.end_col) == 'PR' then
+        if second:sub(mark[3] + 1, details.end_col) == 'PR' then
           return line, index, details.hl_group
         end
       end
