@@ -6,7 +6,8 @@
 //! starting records it. Starting an agent that already runs is not an error: the report says so.
 //! With no holder alive, the agent continues the current session `status.json` records when that
 //! agent recorded it, unless the person asks for a fresh one. With `sandbox.agent_socket` on, the
-//! agent may also reach the person's signing agent through its socket, and only that (#105).
+//! agent may also reach the person's signing agent through its socket, and only that (#105); the
+//! report says which kinds of socket it reaches, or that none was found (#108).
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,7 @@ use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::launch::{self, SessionId, opencode};
 use crate::domain::sandbox::policy::{self, Policy};
+use crate::domain::sandbox::signing::{SigningReach, SocketKind};
 use crate::domain::sandbox::{self, Platform, signing};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
 use crate::domain::trust::{self, Subject, Unapproved};
@@ -97,17 +99,13 @@ pub(crate) fn start(
     let admin_dirs = prepare_admin_dirs(&common)?;
     let admin = AdminDir::new(fs::canonicalize(admin.path())?);
     let worktree_path = fs::canonicalize(&worktree.path)?;
-    let unix_sockets = if agent_socket.value {
-        signing_sockets(&worktree_path, &path_dirs)?
-    } else {
-        Vec::new()
-    };
+    let signing = signing_sockets(agent_socket.value, &worktree_path, &common, &path_dirs)?;
     let plan = Plan {
         program: &program,
         common: &common,
         admin_dirs: &admin_dirs,
         writable: &writable.value,
-        unix_sockets: &unix_sockets,
+        unix_sockets: &signing.paths,
         admin: &admin,
         worktree: &worktree_path,
         path_dirs: &path_dirs,
@@ -136,6 +134,7 @@ pub(crate) fn start(
         agent,
         outcome: StartOutcome::Started { pid, resumed },
         writable: Some(writable),
+        signing: signing.reach,
     })
 }
 
@@ -277,23 +276,57 @@ fn opencode_policy(plan: &Plan<'_>) -> Result<Policy> {
 /// gpgconf found on `path_dirs`) when git signs with openpgp in `worktree`. Each by its real path
 /// (on macOS a path under `/var` is `/private/var`, and the sandbox compares real paths), and only
 /// when a socket is there: an unset `SSH_AUTH_SOCK`, a missing gpgconf or a path that is no socket
-/// allows nothing.
-fn signing_sockets(worktree: &Path, path_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut candidates: Vec<PathBuf> = env::ssh_auth_sock().into_iter().collect();
-    let format = git::config_value(worktree, signing::FORMAT_KEY)?;
-    if signing::signs_with_openpgp(format.as_deref()) {
-        candidates.extend(gpg_agent_socket(worktree, path_dirs));
+/// allows nothing. A socket inside the git common dir `common` (resolved), where the holders'
+/// sockets live, is never allowed (#108). Returns the sockets' paths and their kinds, for the
+/// report; with the setting off (`on` false), none and nothing to report.
+fn signing_sockets(
+    on: bool,
+    worktree: &Path,
+    common: &Path,
+    path_dirs: &[PathBuf],
+) -> Result<SigningSockets> {
+    if !on {
+        return Ok(SigningSockets {
+            paths: Vec::new(),
+            reach: None,
+        });
     }
-    let mut sockets = Vec::new();
-    for candidate in candidates {
+    let mut candidates: Vec<(SocketKind, PathBuf)> = env::ssh_auth_sock()
+        .into_iter()
+        .map(|path| (SocketKind::SshAgent, path))
+        .collect();
+    let format = git::config_value(worktree, signing::FORMAT_KEY)?;
+    let looked_for_gpg = signing::signs_with_openpgp(format.as_deref());
+    if looked_for_gpg {
+        candidates
+            .extend(gpg_agent_socket(worktree, path_dirs).map(|path| (SocketKind::GpgAgent, path)));
+    }
+    let mut paths = Vec::new();
+    let mut kinds = Vec::new();
+    for (kind, candidate) in candidates {
         if let Ok(real) = fs::canonicalize(&candidate)
             && fs::is_socket(&real)
-            && !sockets.contains(&real)
+            && !signing::is_inside_git_dir(&real, common)
+            && !paths.contains(&real)
         {
-            sockets.push(real);
+            paths.push(real);
+            kinds.push(kind);
         }
     }
-    Ok(sockets)
+    Ok(SigningSockets {
+        paths,
+        reach: Some(SigningReach {
+            kinds,
+            looked_for_gpg,
+        }),
+    })
+}
+
+/// The sockets of the person's signing agent the sandbox may reach, by their real paths, and what
+/// `agent start` reports of them (their kinds, never their paths): `None` with the setting off.
+struct SigningSockets {
+    paths: Vec<PathBuf>,
+    reach: Option<SigningReach>,
 }
 
 /// gpg-agent's socket as gpgconf on `path_dirs` names it, run in `worktree`; `None` when gpgconf
@@ -402,6 +435,7 @@ fn already_running(worktree: &Worktree, admin: &AdminDir, agent: Agent) -> Resul
         agent,
         outcome: StartOutcome::AlreadyRunning { pid },
         writable: None,
+        signing: None,
     }))
 }
 
