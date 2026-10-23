@@ -52,8 +52,8 @@ not ignored; `K` shows it under the branch too.
 `:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
 opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
 `:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
-`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`, `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`
-and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
+`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`, `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`,
+`<Plug>(OrcaTermSessions)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
 key.
 
 ## Install
@@ -212,7 +212,9 @@ its turns, and `session ls` still lists it, for `session resume` to bring back. 
 In Neovim, `s` on a worktree in the sidebar lists its sessions, each as its agent, its turns, how
 long ago it was last active and its first prompt, the current one marked `*`; choosing another one
 resumes it and shows its agent's terminal in the worktree's tab. `.` then `New session` asks
-first, then starts a new session.
+first, then starts a new session. `:OrcaTerm sessions` (or `<Plug>(OrcaTermSessions)`) opens the
+same list for the worktree under the cursor in the sidebar, or for the worktree whose tab (or
+review) you are in.
 
 Limits:
 

@@ -645,4 +645,15 @@ function M.toggle()
   end
 end
 
+---`:OrcaTerm sessions` in the sidebar: `s`, on the worktree under the cursor. `false`, doing nothing,
+---when the current buffer is not the sidebar's.
+---@return boolean
+function M.list_sessions_here()
+  if vim.api.nvim_get_current_buf() ~= M.buffer() then
+    return false
+  end
+  list_sessions()
+  return true
+end
+
 return M
