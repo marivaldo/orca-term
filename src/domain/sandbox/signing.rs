@@ -4,7 +4,8 @@
 //! sandboxes deny. `sandbox.agent_socket: true` allows exactly that socket: the one
 //! `SSH_AUTH_SOCK` names at launch, and gpg-agent's when git signs with openpgp. The adapters find
 //! the sockets and the files; this module reads what git's config and gpgconf say, and what
-//! `orca-term doctor` says about a key only an agent holds.
+//! `orca-term doctor` says about a key only an agent holds, and what `agent start` says it
+//! allowed (#108).
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +33,71 @@ pub(crate) fn gpg_socket(printed: &[u8]) -> Option<PathBuf> {
     let line = text.lines().next()?.trim();
     let path = Path::new(line);
     (path.is_absolute() && !line.contains('%')).then(|| path.to_owned())
+}
+
+/// Which signing agent a socket belongs to: the ssh agent `SSH_AUTH_SOCK` names, or gpg-agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SocketKind {
+    SshAgent,
+    GpgAgent,
+}
+
+impl SocketKind {
+    /// The kind's name in `--json`: `ssh-agent` or `gpg-agent`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::SshAgent => "ssh-agent",
+            Self::GpgAgent => "gpg-agent",
+        }
+    }
+
+    /// The line `agent start` prints when the sandbox reaches a socket of this kind. Never the
+    /// socket's path, which is the value of `SSH_AUTH_SOCK`.
+    pub(crate) fn reached_line(self) -> &'static str {
+        match self {
+            Self::SshAgent => "signing: the sandbox reaches your ssh agent",
+            Self::GpgAgent => "signing: the sandbox reaches gpg-agent",
+        }
+    }
+}
+
+/// What `agent start` did with `sandbox.agent_socket` on (#108): the kinds of socket the sandbox
+/// reaches, in the order they were found, and whether gpg-agent's was looked for (git signs with
+/// openpgp).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SigningReach {
+    pub(crate) kinds: Vec<SocketKind>,
+    pub(crate) looked_for_gpg: bool,
+}
+
+impl SigningReach {
+    /// The lines `agent start` prints: one per kind reached, or, when none was, one warning that
+    /// names what was looked for. The gpgconf part appears only when gpg-agent was looked for.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        if !self.kinds.is_empty() {
+            return self
+                .kinds
+                .iter()
+                .map(|kind| kind.reached_line().to_owned())
+                .collect();
+        }
+        let gpg = if self.looked_for_gpg {
+            "; gpgconf names no gpg-agent socket"
+        } else {
+            ""
+        };
+        vec![format!(
+            "signing: sandbox.agent_socket is on, but no signing agent socket was found \
+             (SSH_AUTH_SOCK is unset or not a socket{gpg})"
+        )]
+    }
+}
+
+/// Whether the socket at `path` lies inside the repository's git common dir `common`, where
+/// orca-term's own sockets (the holders') live: such a socket is never allowed, or one worktree's
+/// agent could talk to another worktree's holder. Both paths already resolved to their real paths.
+pub(crate) fn is_inside_git_dir(path: &Path, common: &Path) -> bool {
+    path.starts_with(common)
 }
 
 /// The ssh key git signs with, as its config names it.
@@ -156,6 +222,65 @@ mod tests {
             SshSigningKey::NotJudged,
             "no HOME to expand against"
         );
+    }
+
+    #[test]
+    fn socket_kinds_have_their_json_names() {
+        assert_eq!(SocketKind::SshAgent.name(), "ssh-agent");
+        assert_eq!(SocketKind::GpgAgent.name(), "gpg-agent");
+    }
+
+    #[test]
+    fn agent_start_says_one_line_per_kind_reached() {
+        let reach = SigningReach {
+            kinds: vec![SocketKind::SshAgent, SocketKind::GpgAgent],
+            looked_for_gpg: true,
+        };
+        assert_eq!(
+            reach.lines(),
+            [
+                "signing: the sandbox reaches your ssh agent",
+                "signing: the sandbox reaches gpg-agent",
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_start_warns_when_no_socket_was_found_naming_gpgconf_only_for_openpgp() {
+        let mut reach = SigningReach {
+            kinds: Vec::new(),
+            looked_for_gpg: true,
+        };
+        assert_eq!(
+            reach.lines(),
+            [
+                "signing: sandbox.agent_socket is on, but no signing agent socket was found \
+                 (SSH_AUTH_SOCK is unset or not a socket; gpgconf names no gpg-agent socket)"
+            ]
+        );
+        reach.looked_for_gpg = false;
+        assert_eq!(
+            reach.lines(),
+            [
+                "signing: sandbox.agent_socket is on, but no signing agent socket was found \
+                 (SSH_AUTH_SOCK is unset or not a socket)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_socket_is_inside_the_git_common_dir_only_when_under_it() {
+        let common = Path::new("/r/.git");
+        assert!(is_inside_git_dir(
+            Path::new("/r/.git/orca-term/h.sock"),
+            common
+        ));
+        assert!(is_inside_git_dir(
+            Path::new("/r/.git/worktrees/fix/orca-term/holder.sock"),
+            common
+        ));
+        assert!(!is_inside_git_dir(Path::new("/r/.gitx/agent.sock"), common));
+        assert!(!is_inside_git_dir(Path::new("/tmp/agent.sock"), common));
     }
 
     #[test]

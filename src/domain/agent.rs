@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::config::Setting;
 use crate::domain::fleet::Worktree;
 use crate::domain::launch::SessionId;
+use crate::domain::sandbox::signing::SigningReach;
 use crate::domain::state::LockStatus;
 
 /// The agents a worktree can run. `worktree.json` records one under its glossary name.
@@ -186,6 +187,9 @@ pub(crate) struct Started {
     /// The extra writable paths the sandbox got, and the config file they came from. `None` when
     /// nothing was launched.
     pub(crate) writable: Option<Setting<Vec<PathBuf>>>,
+    /// Which sockets of the person's signing agent the sandbox reaches (#108). `None` when
+    /// `sandbox.agent_socket` is off, or when nothing was launched.
+    pub(crate) signing: Option<SigningReach>,
 }
 
 /// What `agent swap` reports: the agent started, and the one the worktree had before.
