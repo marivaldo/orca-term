@@ -1,6 +1,6 @@
 //! Adapter: the process environment, meaning the current directory, the variables the
-//! configuration depends on, the directories of PATH, the running binary's path, the clock and the
-//! live checks' recording tap.
+//! configuration depends on, the directories of PATH, the running binary's path, the clock, the
+//! live checks' recording tap and the socket of the person's ssh agent.
 #![expect(
     clippy::disallowed_methods,
     reason = "this adapter is the one place that reads the process environment"
@@ -72,6 +72,14 @@ pub(crate) fn config_env() -> Env {
         home: var("HOME"),
         xdg_config_home: var("XDG_CONFIG_HOME"),
     }
+}
+
+/// The socket of the person's ssh agent, as `SSH_AUTH_SOCK` names it, or `None` when it is unset
+/// or empty: the one `sandbox.agent_socket` lets the agent reach (#105). Never printed.
+pub(crate) fn ssh_auth_sock() -> Option<PathBuf> {
+    std::env::var_os("SSH_AUTH_SOCK")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// The file the live checks' recording tap appends to (`ORCA_TERM_RECORD`), or `None`, the tap

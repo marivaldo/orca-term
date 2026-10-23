@@ -14,9 +14,11 @@
 //! macOS also denies renaming the directories above the denied ones (the common dir, its
 //! `worktrees` and `refs`, each `worktrees/<id>`), so the state cannot be moved out from under its
 //! rule; it denies connecting to any unix socket but the system's name resolver, so a command
-//! cannot reach a holder's `agent.sock` or a Neovim. On Linux the denied places are mounted
+//! cannot reach a holder's `agent.sock` or a Neovim; with `sandbox.agent_socket` on, it also allows
+//! the person's signing agent's socket, that exact path and nothing else (#105). On Linux the denied places are mounted
 //! read-only over the writable ones, which also keeps them from being renamed, and opencode runs
-//! in a user namespace of its own, which the holders check (`protocol::admit`).
+//! in a user namespace of its own, which the holders check (`protocol::admit`); it reaches pathname
+//! sockets, the signing agent's among them, without any rule.
 
 use std::path::{Path, PathBuf};
 
@@ -51,11 +53,15 @@ pub(crate) struct Policy {
     /// The git common dir, under which every worktree's admin directory is denied, also the ones
     /// made after the launch (macOS).
     pub(crate) common: PathBuf,
+    /// The unix sockets the agent may connect to besides the name resolver's (macOS): the person's
+    /// signing agent's, when `sandbox.agent_socket` is on (#105); empty otherwise.
+    pub(crate) unix_sockets: Vec<PathBuf>,
 }
 
 /// The macOS profile, for `sandbox-exec -f`: everything allowed, then writes denied, then allowed
 /// to the writable places and the devices, then denied again to the denied places and the
-/// directories above them; a later rule wins. Unix sockets are denied but the resolver's. Refuses
+/// directories above them; a later rule wins. Unix sockets are denied but the resolver's and the
+/// policy's `unix_sockets`, each by its exact path (`path-literal`, never a pattern). Refuses
 /// a path the profile cannot hold: one with a double quote, a backslash or a control character
 /// (measured: `sandbox-exec` reads no escaped quote in a string).
 pub(crate) fn seatbelt_profile(policy: &Policy) -> Result<String> {
@@ -64,6 +70,7 @@ pub(crate) fn seatbelt_profile(policy: &Policy) -> Result<String> {
         .iter()
         .chain(&policy.denied)
         .chain(&policy.denied_missing)
+        .chain(&policy.unix_sockets)
         .chain(std::iter::once(&policy.common))
     {
         let text = path.display().to_string();
@@ -106,6 +113,23 @@ fn profile_text(policy: &Policy) -> String {
     denied.push(format!(r#"(regex #"^{}/[^/]+$")"#, regex(&worktrees)));
     denied.push(format!("(literal {})", string(&format!("{common}/refs"))));
 
+    let mut sockets = vec![RESOLVER_SOCKET.to_owned()];
+    sockets.extend(
+        policy
+            .unix_sockets
+            .iter()
+            .map(|path| path.display().to_string()),
+    );
+    let socket_rules: Vec<String> = sockets
+        .iter()
+        .map(|socket| {
+            format!(
+                "(allow network-outbound (remote unix-socket (path-literal {})))",
+                string(socket)
+            )
+        })
+        .collect();
+
     format!(
         "(version 1)\n\
          (allow default)\n\
@@ -113,10 +137,10 @@ fn profile_text(policy: &Policy) -> String {
          (allow file-write*\n    {})\n\
          (deny file-write*\n    {})\n\
          (deny network-outbound (remote unix-socket))\n\
-         (allow network-outbound (remote unix-socket (path-literal {})))\n",
+         {}\n",
         allowed.join("\n    "),
         denied.join("\n    "),
-        string(RESOLVER_SOCKET),
+        socket_rules.join("\n"),
     )
 }
 
@@ -199,6 +223,7 @@ mod tests {
             ],
             denied_missing: vec![PathBuf::from("/r/.git/orca-term.yaml")],
             common: PathBuf::from("/r/.git"),
+            unix_sockets: Vec::new(),
         }
     }
 
@@ -235,6 +260,53 @@ mod tests {
 (allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
 "#
         );
+    }
+
+    #[test]
+    fn the_signing_agents_socket_is_allowed_by_its_exact_path_only_when_given() {
+        let without = seatbelt_profile(&policy()).unwrap();
+        assert_eq!(
+            without.matches("remote unix-socket (path-literal").count(),
+            1,
+            "only the resolver's: {without}"
+        );
+        let mut with = policy();
+        with.unix_sockets = vec![PathBuf::from("/private/var/folders/x/T/agent.sock")];
+        let profile = seatbelt_profile(&with).unwrap();
+        assert!(
+            profile.ends_with(
+                "(deny network-outbound (remote unix-socket))\n\
+                 (allow network-outbound (remote unix-socket (path-literal \
+                 \"/private/var/run/mDNSResponder\")))\n\
+                 (allow network-outbound (remote unix-socket (path-literal \
+                 \"/private/var/folders/x/T/agent.sock\")))\n"
+            ),
+            "{profile}"
+        );
+        assert_eq!(
+            profile.replace(
+                "(allow network-outbound (remote unix-socket (path-literal \
+                 \"/private/var/folders/x/T/agent.sock\")))\n",
+                ""
+            ),
+            without,
+            "nothing else changes"
+        );
+        assert!(!profile.contains("subpath \"/private/var/folders"));
+        assert!(!profile.contains("(remote unix-socket (regex"));
+        assert_eq!(
+            bwrap_args(&with),
+            bwrap_args(&policy()),
+            "Linux needs no rule"
+        );
+    }
+
+    #[test]
+    fn a_socket_path_the_profile_cannot_hold_is_refused() {
+        let mut odd = policy();
+        odd.unix_sockets = vec![PathBuf::from(r#"/t/a"b.sock"#)];
+        let err = seatbelt_profile(&odd).unwrap_err().to_string();
+        assert!(err.contains("cannot sandbox opencode"), "{err}");
     }
 
     #[test]

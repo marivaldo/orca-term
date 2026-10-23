@@ -11,7 +11,8 @@
 //! `scripts.setup` and `sandbox.writable` come from the worktree itself, from the revision
 //! checked out there. A setup script or a writable list from a committed file is used only once
 //! the person approved it (`domain/trust.rs`); one from the override or the global file is the
-//! person's own.
+//! person's own. `sandbox.agent_socket`, which hands the agent the person's signing agent, is read
+//! only from the override or the global file: a committed file that sets it is refused (#105).
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -119,12 +120,14 @@ struct Scripts {
     setup: Option<String>,
 }
 
-/// The `sandbox` mapping: the only configurable part of the sandbox policy (ADR 0007), the extra
-/// paths the agent may write to, such as package-manager caches.
+/// The `sandbox` mapping: the configurable parts of the sandbox policy (ADR 0007), the extra
+/// paths the agent may write to, such as package-manager caches, and whether the agent may reach
+/// the person's signing agent through its socket (#105).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sandbox {
     writable: Option<Vec<String>>,
+    agent_socket: Option<bool>,
 }
 
 /// Every config file of the repository whose primary checkout is `primary` and whose git common
@@ -277,6 +280,45 @@ pub(crate) fn resolve_writable(layers: &[Layer], env: &Env) -> Result<Setting<Ve
     })
 }
 
+/// Whether the agent may reach the person's signing agent (ssh-agent, gpg-agent) through its
+/// socket: `sandbox.agent_socket` resolved from `layers`, highest precedence first, off by default
+/// (#105). It is read only from the uncommitted override and the global config file: a committed
+/// `orca-term.yaml` that sets it, to any value, is refused, never approved, since it would hand
+/// the agent's keys to whoever wrote the repository.
+pub(crate) fn resolve_agent_socket(layers: &[Layer]) -> Result<Setting<bool>> {
+    if let Some(committed) = layers
+        .iter()
+        .find(|l| l.committed && agent_socket_of(l).is_some())
+    {
+        bail!(
+            "{} sets `sandbox.agent_socket`, which orca-term reads only from your global config \
+             file or .git/orca-term.yaml, never from a committed orca-term.yaml: it would hand \
+             your signing agent's keys to whoever wrote the repository; remove it from that file",
+            committed.path.display()
+        );
+    }
+    let mut setters = layers
+        .iter()
+        .filter_map(|l| agent_socket_of(l).map(|on| (l, on)));
+    Ok(match setters.next() {
+        Some((winner, on)) => Setting {
+            value: on,
+            source: Some(winner.label.clone()),
+            overridden: setters.map(|(l, _)| l.label.clone()).collect(),
+        },
+        None => Setting {
+            value: false,
+            source: None,
+            overridden: Vec::new(),
+        },
+    })
+}
+
+/// The `sandbox.agent_socket` the layer `layer` sets, if it sets it.
+fn agent_socket_of(layer: &Layer) -> Option<bool> {
+    layer.raw.sandbox.as_ref()?.agent_socket
+}
+
 fn parse(text: &str) -> Result<Raw> {
     let value: Value = serde_norway::from_str(text).context("not valid YAML")?;
     let map = match value {
@@ -379,6 +421,24 @@ mod tests {
                 scripts: None,
                 sandbox: Some(Sandbox {
                     writable: Some(writable.iter().map(|p| (*p).to_owned()).collect()),
+                    agent_socket: None,
+                }),
+            },
+        }
+    }
+
+    fn agent_socket_layer(label: &str, on: bool) -> Layer {
+        Layer {
+            path: PathBuf::from("/repo").join(label),
+            label: label.to_owned(),
+            anchor: PathBuf::from("/repo"),
+            committed: label == FILE_NAME,
+            raw: Raw {
+                base: None,
+                scripts: None,
+                sandbox: Some(Sandbox {
+                    writable: None,
+                    agent_socket: Some(on),
                 }),
             },
         }
@@ -708,6 +768,60 @@ mod tests {
         assert!(
             format!("{err:#}").starts_with("orca-term.yaml: invalid `sandbox.writable`"),
             "{err:#}"
+        );
+    }
+
+    #[test]
+    fn the_agent_socket_is_parsed_from_the_sandbox_mapping() {
+        let raw = parse("sandbox:\n  agent_socket: true\n").unwrap();
+        assert_eq!(raw.sandbox.unwrap().agent_socket, Some(true));
+        assert!(parse("sandbox:\n  agent_socket: yes please\n").is_err());
+        assert!(parse("sandbox:\n  agent_socket: [a]\n").is_err());
+    }
+
+    #[test]
+    fn the_agent_socket_is_off_unless_the_override_or_the_global_file_turns_it_on() {
+        let off = resolve_agent_socket(&[layer("orca-term.yaml", "/r", None)]).unwrap();
+        assert!(!off.value);
+        assert_eq!(off.origin(), "built-in default");
+        let on = resolve_agent_socket(&[
+            agent_socket_layer(".git/orca-term.yaml", true),
+            agent_socket_layer("/g/config.yaml", false),
+        ])
+        .unwrap();
+        assert!(on.value);
+        assert_eq!(
+            on.origin(),
+            "from .git/orca-term.yaml, overriding /g/config.yaml"
+        );
+        let global = resolve_agent_socket(&[
+            layer("orca-term.yaml", "/r", None),
+            agent_socket_layer("/g/config.yaml", true),
+        ])
+        .unwrap();
+        assert!(global.value);
+    }
+
+    #[test]
+    fn a_committed_agent_socket_is_refused_whatever_its_value_and_never_approved() {
+        for on in [true, false] {
+            let err = resolve_agent_socket(&[
+                agent_socket_layer(".git/orca-term.yaml", on),
+                agent_socket_layer("orca-term.yaml", on),
+            ])
+            .unwrap_err();
+            assert_eq!(
+                format!("{err:#}"),
+                "/repo/orca-term.yaml sets `sandbox.agent_socket`, which orca-term reads only \
+                 from your global config file or .git/orca-term.yaml, never from a committed \
+                 orca-term.yaml: it would hand your signing agent's keys to whoever wrote the \
+                 repository; remove it from that file"
+            );
+        }
+        assert_eq!(
+            committed_writable(&[agent_socket_layer("orca-term.yaml", true)]),
+            None,
+            "it is no writable list to approve"
         );
     }
 

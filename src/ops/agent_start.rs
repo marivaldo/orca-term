@@ -5,7 +5,8 @@
 //! The agent is the one asked for, else the one the worktree recorded, else claude-code, and
 //! starting records it. Starting an agent that already runs is not an error: the report says so.
 //! With no holder alive, the agent continues the current session `status.json` records when that
-//! agent recorded it, unless the person asks for a fresh one.
+//! agent recorded it, unless the person asks for a fresh one. With `sandbox.agent_socket` on, the
+//! agent may also reach the person's signing agent through its socket, and only that (#105).
 
 use std::path::{Path, PathBuf};
 
@@ -14,14 +15,14 @@ use serde_json::Value;
 
 use crate::adapters::fs::{self, WorktreeLock};
 use crate::adapters::holder::{self, HolderArgs};
-use crate::adapters::{env, git, terminal};
+use crate::adapters::{env, git, program, terminal};
 use crate::domain::agent::{Agent, HolderRecord, Size, StartMode, StartOutcome, Started};
 use crate::domain::config::{self, Layer};
 use crate::domain::error::{BusyReason, TypedError};
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::launch::{self, SessionId, opencode};
 use crate::domain::sandbox::policy::{self, Policy};
-use crate::domain::sandbox::{self, Platform};
+use crate::domain::sandbox::{self, Platform, signing};
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir, LockStatus};
 use crate::domain::trust::{self, Subject, Unapproved};
 use crate::domain::turn;
@@ -49,7 +50,9 @@ pub(crate) struct Wanted {
 /// agent runs there, as `no_sandbox` when the agent's sandbox cannot run here, as `prerequisite`
 /// when the agent is not on PATH or older than orca-term needs, and as `session_gone` when the
 /// recorded session can no longer be resumed. Extra writable paths from a committed
-/// `orca-term.yaml` not approved through `approval` start nothing: the typed error `untrusted`.
+/// `orca-term.yaml` not approved through `approval` start nothing: the typed error `untrusted`;
+/// a committed `orca-term.yaml` that sets `sandbox.agent_socket` starts nothing either, and
+/// cannot be approved.
 pub(crate) fn run(
     target: &Target,
     wanted: &Wanted,
@@ -88,16 +91,23 @@ pub(crate) fn start(
     let config_env = env::config_env();
     let layers = config_layers(&fleet.primary, &worktree.path, &config_env)?;
     let writable = config::resolve_writable(&layers, &config_env)?;
+    let agent_socket = config::resolve_agent_socket(&layers)?;
     check_writable_approved(&fleet.primary, worktree, &layers, approval)?;
     let common = fs::canonicalize(&git::common_dir(&fleet.primary)?)?;
     let admin_dirs = prepare_admin_dirs(&common)?;
     let admin = AdminDir::new(fs::canonicalize(admin.path())?);
     let worktree_path = fs::canonicalize(&worktree.path)?;
+    let unix_sockets = if agent_socket.value {
+        signing_sockets(&worktree_path, &path_dirs)?
+    } else {
+        Vec::new()
+    };
     let plan = Plan {
         program: &program,
         common: &common,
         admin_dirs: &admin_dirs,
         writable: &writable.value,
+        unix_sockets: &unix_sockets,
         admin: &admin,
         worktree: &worktree_path,
         path_dirs: &path_dirs,
@@ -152,6 +162,9 @@ struct Plan<'a> {
     admin_dirs: &'a [PathBuf],
     /// The extra writable paths the config allows, approved.
     writable: &'a [PathBuf],
+    /// The sockets of the person's signing agent the agent may connect to, by their real paths:
+    /// empty unless `sandbox.agent_socket` is on (#105).
+    unix_sockets: &'a [PathBuf],
     admin: &'a AdminDir,
     /// The worktree, resolved.
     worktree: &'a Path,
@@ -172,7 +185,13 @@ struct Launched {
 /// `claude-settings.json` once the guard passed the command line.
 fn claude_launch(plan: &Plan<'_>) -> Result<Launched> {
     let hooks = hook_target(plan.admin)?;
-    let settings = launch::claude_settings(plan.common, plan.admin_dirs, plan.writable, &hooks);
+    let settings = launch::claude_settings(
+        plan.common,
+        plan.admin_dirs,
+        plan.writable,
+        plan.unix_sockets,
+        &hooks,
+    );
     let argv = launch::claude_argv(
         &plan.program.display().to_string(),
         &plan.admin.claude_settings(),
@@ -249,7 +268,40 @@ fn opencode_policy(plan: &Plan<'_>) -> Result<Policy> {
         denied,
         denied_missing,
         common: common.to_owned(),
+        unix_sockets: plan.unix_sockets.to_vec(),
     })
+}
+
+/// The sockets of the person's signing agent that `sandbox.agent_socket` lets the agent reach
+/// (#105): the one `SSH_AUTH_SOCK` names, and gpg-agent's (`gpgconf --list-dirs agent-socket`,
+/// gpgconf found on `path_dirs`) when git signs with openpgp in `worktree`. Each by its real path
+/// (on macOS a path under `/var` is `/private/var`, and the sandbox compares real paths), and only
+/// when a socket is there: an unset `SSH_AUTH_SOCK`, a missing gpgconf or a path that is no socket
+/// allows nothing.
+fn signing_sockets(worktree: &Path, path_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut candidates: Vec<PathBuf> = env::ssh_auth_sock().into_iter().collect();
+    let format = git::config_value(worktree, signing::FORMAT_KEY)?;
+    if signing::signs_with_openpgp(format.as_deref()) {
+        candidates.extend(gpg_agent_socket(worktree, path_dirs));
+    }
+    let mut sockets = Vec::new();
+    for candidate in candidates {
+        if let Ok(real) = fs::canonicalize(&candidate)
+            && fs::is_socket(&real)
+            && !sockets.contains(&real)
+        {
+            sockets.push(real);
+        }
+    }
+    Ok(sockets)
+}
+
+/// gpg-agent's socket as gpgconf on `path_dirs` names it, run in `worktree`; `None` when gpgconf
+/// is not there, fails or names none.
+fn gpg_agent_socket(worktree: &Path, path_dirs: &[PathBuf]) -> Option<PathBuf> {
+    let gpgconf = fs::executable_in(path_dirs, signing::GPGCONF)?;
+    let printed = program::listed_by(&gpgconf, signing::GPG_SOCKET_ARGS, worktree).ok()?;
+    signing::gpg_socket(&printed)
 }
 
 /// What runs opencode inside `policy`, before its own command line: `sandbox-exec -f <profile>`

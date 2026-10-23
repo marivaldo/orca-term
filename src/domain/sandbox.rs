@@ -6,6 +6,7 @@
 //! says so, in the same words.
 
 pub(crate) mod policy;
+pub(crate) mod signing;
 
 use anyhow::Result;
 
