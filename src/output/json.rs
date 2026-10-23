@@ -168,6 +168,8 @@ struct RemovedView<'a> {
     name: &'a str,
     path: &'a Path,
     branch: RemovedBranchView<'a>,
+    /// Whether its agent was running and was stopped first (#94).
+    stopped_agent: bool,
 }
 
 /// `status` is `deleted`, `kept` or `none` (the worktree was detached, so it had no branch);
@@ -603,6 +605,7 @@ pub(crate) fn removed(removed: &Removed) -> serde_json::Result<String> {
         name: &removed.name,
         path: &removed.path,
         branch: removed_branch_view(&removed.branch),
+        stopped_agent: removed.stopped_agent,
     })
 }
 
@@ -1660,12 +1663,13 @@ mod tests {
                 branch: Branch::new("fix"),
                 reason: KeptReason::DefaultBranch,
             },
+            stopped_agent: false,
         })
         .unwrap();
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","branch":{{"name":"fix","status":"kept","reason":"it is the default branch"}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","branch":{{"name":"fix","status":"kept","reason":"it is the default branch"}},"stopped_agent":false}}"#
             )
         );
         let detached: serde_json::Value = serde_json::from_str(
@@ -1673,6 +1677,7 @@ mod tests {
                 name: "spike".to_owned(),
                 path: PathBuf::from("/l/spike"),
                 branch: BranchOutcome::Detached,
+                stopped_agent: true,
             })
             .unwrap(),
         )
@@ -1681,6 +1686,7 @@ mod tests {
             detached["branch"],
             serde_json::json!({"name": null, "status": "none", "reason": null})
         );
+        assert_eq!(detached["stopped_agent"], true);
         let outcome = BranchOutcome::DeletedForced {
             branch: Branch::new("fix"),
         };

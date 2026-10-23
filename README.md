@@ -23,10 +23,14 @@ add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and 
 agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
 turns, show what one turn changed and say which turn wrote each line of a file. `orca-term doctor`
 checks what orca-term needs on the machine.
+`orca-term worktree rm <worktree>` keeps the worktree's branch unless it is merged, and refuses
+modified or untracked files unless `--force`; an agent running there is stopped first (`stopped
+the agent of worktree <name>`), once those checks pass, so a refused removal leaves it running.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
-its setup again, copies its path or removes it (always asking first), `u` toggles its unseen
+its setup again, copies its path or removes it (always asking first, and saying when its running
+agent will be stopped), `u` toggles its unseen
 mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
 its detail in a float beside the sidebar: its state and agent, its branch and how far it is ahead
 of and behind the local default branch (`↑2 ↓1 main`, never fetched), the whole error when it has

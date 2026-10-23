@@ -161,6 +161,10 @@ fn with_json_the_removal_says_what_happened_to_the_branch() {
         doc["branch"],
         serde_json::json!({"name": "docs", "status": "deleted", "reason": "merged into main"})
     );
+    assert_eq!(
+        doc["stopped_agent"], false,
+        "no agent ran, so none was stopped"
+    );
 
     let out = rm(&repo, &["fix", "--json"]).success();
     let doc: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();

@@ -6,7 +6,7 @@
     reason = "this adapter is the one place that reads the process environment"
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -18,6 +18,11 @@ use crate::domain::launch::opencode::DirsEnv;
 /// The directory the core was started in.
 pub(crate) fn current_dir() -> Result<PathBuf> {
     std::env::current_dir().context("could not read the current directory")
+}
+
+/// Makes `dir` the process's current directory.
+pub(crate) fn enter_dir(dir: &Path) -> Result<()> {
+    std::env::set_current_dir(dir).with_context(|| format!("could not enter {}", dir.display()))
 }
 
 /// The absolute path of the running orca-term, for the hooks to call it back.
