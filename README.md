@@ -36,8 +36,10 @@ its detail in a float beside the sidebar: its state and agent, its branch and ho
 of and behind the local default branch (`↑2 ↓1 main`, never fetched), the whole error when it has
 one, the tool calls claude's permission rules denied in its latest turn, and the end of its setup's
 log. The float closes when the cursor moves, on `K` again, or on `q` once you enter it. At the
-right of a row, `⊘N` counts the tool calls denied in the worktree's latest turn and `✎N` its notes
-waiting to be sent.
+end of a row's second line, `⊘N` counts the tool calls denied in the worktree's latest turn and
+`✎N` its notes waiting to be sent. These icons (`≠ ⊘N ✎N PR`) sit there, right-aligned, after what
+the line says, which is cut with `…` to leave them room; a worktree with icons and nothing to say
+gets a second line holding only them.
 A row shows `≠` while its worktree is in the middle of a git merge, rebase, cherry-pick or revert,
 and the float names it (`rebase in progress (2/5)`); `worktree ls` adds it to the state
 (`idle, rebasing`). It is read from git's own files and is never a state.

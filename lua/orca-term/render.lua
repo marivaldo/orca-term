@@ -13,16 +13,18 @@
 -- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `≠` a git
 -- operation in progress (a merge here), `⊘N` counts the tool calls a worktree's latest turn had
 -- denied, and `✎N` its pending notes (`PR`, after them, marks a worktree whose branch has a pull
--- request, coloured by its state and checks). The agent (`cc`) and the age of the last activity
--- (`now`, `9m`, `3h`, `2d`) end the name line. A worktree whose state has nothing more urgent to
--- say shows how many files it changed on its second line (`1 file changed`):
+-- request, coloured by its state and checks). These icons end the second line, after what it says;
+-- a worktree with icons and nothing to say gets a second line holding only them (`docs`). The
+-- agent (`cc`) and the age of the last activity (`now`, `9m`, `3h`, `2d`) end the name line. A
+-- worktree whose state has nothing more urgent to say shows how many files it changed on its
+-- second line (`1 file changed`):
 --
 --   ▾ repo  main
 --
 --   NEEDS YOU 7
 --   ╭────────────────────────────────╮
---   │ ? pick-colour     ⊘3 ✎1 cc now │
---   │   Which colour?                │
+--   │ ? pick-colour           cc now │
+--   │   Which colour?          ⊘3 ✎1 │
 --   ╰────────────────────────────────╯
 --  •● slow-job                   cc 9m
 --     SLOW please
@@ -45,7 +47,8 @@
 --   ● reviewed                   cc 1d
 --     ok
 --   ○ standby                       cc
---   · docs                        ≠ ✎2
+--   · docs
+--                                 ≠ ✎2
 --   · spike
 --     ⎇ other-branch · 2 files changed
 --
@@ -79,18 +82,18 @@ M.GLYPHS = {
 ---The mark of an unseen worktree, in the first cell of its name line, before its glyph.
 M.UNSEEN = '•'
 
----The mark of notes: before a worktree's count of pending notes at the right of its name line, and
----before each note `notes.lua` draws in a review.
+---The mark of notes: before a worktree's count of pending notes at the right of its second line,
+---and before each note `notes.lua` draws in a review.
 M.NOTE = '✎'
 
----The mark of denials: before a worktree's count of denied tool calls at the right of its name
+---The mark of denials: before a worktree's count of denied tool calls at the right of its second
 ---line, and before each denied call in its detail.
 M.DENIED = '⊘'
 
 ---The mark of a git operation in progress (a merge, a rebase, a cherry-pick or a revert) at the
----right of a worktree's name line.
+---right of a worktree's second line.
 M.OPERATION = '≠'
----The icon of a worktree's pull request, after its notes at the right of its name line, in the
+---The icon of a worktree's pull request, after its notes at the right of its second line, in the
 ---colour `M.pr_group` gives it.
 M.PR = 'PR'
 
@@ -335,9 +338,6 @@ local function second_line_text(worktree)
   return text
 end
 
----The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
----in progress, `⊘N` for the tool calls its latest turn had denied, then `✎N` for its pending
----notes. Empty when it has nothing to show.
 ---The group the pull request `pr` is drawn in: an open one in the colour of its checks (passing,
 ---failing, pending; `OrcaTermPrOpen` with none), a merged one `OrcaTermPrMerged`, a closed one
 ---`OrcaTermPrClosed`, a draft `OrcaTermPrDraft`.
@@ -432,7 +432,7 @@ local function agent_and_age(worktree, now_ms)
   return found
 end
 
----The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
+---The icons at the right of a worktree's second line, from left to right: `≠` for a git operation
 ---in progress, `⊘N` for the tool calls its latest turn had denied, `✎N` for its pending notes,
 ---then `PR` for its pull request. Empty when it has nothing to show.
 ---@param worktree orca_term.Worktree
@@ -454,23 +454,24 @@ local function icons(worktree)
   return found
 end
 
----Adds `name` to `line`, in `group` when given, then `right` (the icons, then the agent and the
----age) flushed to the right end of the line's budget, a space between them. The name is cut with
----`…` to leave them room, and a space before them.
+---Adds `text` to `line`, in `group` when given, then `right` flushed to the right end of the
+---line's budget, a space between them. The text is cut with `…` to leave them room, and a space
+---before them. Both lines of a row use it: the name line with the agent and the age, the second
+---line with the icons.
 ---@param line orca_term.Line
----@param name string
+---@param text string
 ---@param group? string
 ---@param right { text: string, group: string }[]
-local function add_name(line, name, group, right)
+local function add_with_right(line, text, group, right)
   if #right == 0 then
-    add(line, name, group)
+    add(line, text, group)
     return
   end
   local texts = vim.tbl_map(function(icon)
     return icon.text
   end, right)
   local right_cells = cells(table.concat(texts, ' '))
-  add(line, truncate(name, line.budget - cells(line.text) - right_cells - 1), group)
+  add(line, truncate(text, line.budget - cells(line.text) - right_cells - 1), group)
   add(line, string.rep(' ', line.budget - cells(line.text) - right_cells))
   for index, icon in ipairs(right) do
     if index > 1 then
@@ -480,7 +481,8 @@ local function add_name(line, name, group, right)
   end
 end
 
----The lines of one worktree: its name line and, when it has something to say, its second line.
+---The lines of one worktree: its name line and, when it has something to say or an icon to show,
+---its second line.
 ---@param worktree orca_term.RankedWorktree
 ---@param needs_you boolean whether it is under "Needs you", which colours its second line
 ---@param budget integer the cells its lines may take
@@ -503,17 +505,19 @@ local function worktree_lines(worktree, needs_you, budget, frame, now)
   end
   add(name_line, M.glyph(worktree.state, frame), state_group)
   add(name_line, ' ')
-  -- The icons sit at the right of this line, then the agent and the age of its last activity.
-  local right = icons(worktree)
-  vim.list_extend(right, agent_and_age(worktree, now))
-  add_name(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil, right)
+  -- The agent and the age of its last activity sit at the right of this line.
+  local name_group = unseen and 'OrcaTermUnseenName' or nil
+  add_with_right(name_line, worktree.name, name_group, agent_and_age(worktree, now))
   local lines = { name_line }
 
+  -- The icons sit at the right of the second line, after what it says; a worktree with icons and
+  -- nothing to say gets a second line holding only them.
   local text = second_line_text(worktree)
-  if text ~= '' then
+  local right = icons(worktree)
+  if text ~= '' or #right > 0 then
     local detail_line = new_line(budget, worktree.path)
     add(detail_line, '   ')
-    add(detail_line, text, needs_you and state_group or 'OrcaTermMuted')
+    add_with_right(detail_line, text, needs_you and state_group or 'OrcaTermMuted', right)
     table.insert(lines, detail_line)
   end
   return lines

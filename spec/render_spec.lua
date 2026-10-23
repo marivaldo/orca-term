@@ -375,37 +375,42 @@ describe('render', function()
   )
 
   it(
-    "flushes a worktree's pending notes ✎N to the right of its name line, and shows none for zero",
+    "flushes a worktree's pending notes ✎N to the right of its second line, and shows none for zero",
     function()
-      local long = 'a-name-long-enough-to-reach-the-notes'
       local rendered = render.fleet(
         fleet({
           worktree('docs', { notes = 2 }),
           worktree('quiet', { notes = 0 }),
-          worktree(long, { notes = 12 }),
+          worktree('long', { notes = 12, activity = 'a question long enough to reach the notes' }),
           worktree('picked', { notes = 1 }),
         }),
         '/src/wt/picked'
       )
       assert_fits(rendered, render.WIDTH)
 
+      -- With nothing to say, the second line holds only the notes, flushed right.
       local docs = assert(rendered.firsts['/src/wt/docs'])
-      assert.are.equal(' · docs                          ✎2', rendered.lines[docs])
-      assert.are.equal(render.WIDTH - 1, vim.fn.strdisplaywidth(rendered.lines[docs]))
-      local badge = rendered.spans[assert(span_index(rendered, docs, 'OrcaTermBadge'))]
-      assert.are.equal('✎2', rendered.lines[docs]:sub(badge.first + 1, badge.last))
+      assert.are.equal(' · docs', rendered.lines[docs])
+      assert.are.equal('                                 ✎2', rendered.lines[docs + 1])
+      assert.are.equal('/src/wt/docs', rendered.paths[docs + 1])
+      assert.are.equal(render.WIDTH - 1, vim.fn.strdisplaywidth(rendered.lines[docs + 1]))
+      local badge = rendered.spans[assert(span_index(rendered, docs + 1, 'OrcaTermBadge'))]
+      assert.are.equal('✎2', rendered.lines[docs + 1]:sub(badge.first + 1, badge.last))
 
+      -- No notes and nothing to say: a single line.
       local quiet = assert(rendered.firsts['/src/wt/quiet'])
       assert.are.equal(' · quiet', rendered.lines[quiet])
-      assert.is_nil(span_index(rendered, quiet, 'OrcaTermBadge'))
+      assert.are_not.equal('/src/wt/quiet', rendered.paths[quiet + 1])
 
-      -- The name gives way to the notes, cut with `…`, a space before them.
-      local cut = assert(rendered.firsts['/src/wt/' .. long])
-      assert.are.equal(' · a-name-long-enough-to-reach… ✎12', rendered.lines[cut])
+      -- What the second line says gives way to the notes, cut with `…`, a space before them.
+      local long = assert(rendered.firsts['/src/wt/long'])
+      assert.are.equal(' · long', rendered.lines[long])
+      assert.are.equal('   a question long enough to r… ✎12', rendered.lines[long + 1])
 
       -- Inside the card, the notes end before its right border.
       local picked = assert(rendered.firsts['/src/wt/picked'])
-      assert.are.equal(' │ · picked                    ✎1 │', rendered.lines[picked])
+      assert.are.equal(' │ · picked                       │', rendered.lines[picked])
+      assert.are.equal(' │                             ✎1 │', rendered.lines[picked + 1])
     end
   )
 
@@ -422,22 +427,20 @@ describe('render', function()
     assert_fits(rendered, render.WIDTH)
 
     local both = assert(rendered.firsts['/src/wt/both'])
-    assert.are.equal(' · both                       ⊘3 ✎2', rendered.lines[both])
-    assert.are.same(
-      { 'OrcaTermStateNoAgent', 'OrcaTermDenied', 'OrcaTermBadge' },
-      groups_on(rendered, both)
-    )
-    local denied_span = rendered.spans[assert(span_index(rendered, both, 'OrcaTermDenied'))]
-    assert.are.equal('⊘3', rendered.lines[both]:sub(denied_span.first + 1, denied_span.last))
+    assert.are.equal('                              ⊘3 ✎2', rendered.lines[both + 1])
+    assert.are.same({ 'OrcaTermDenied', 'OrcaTermBadge' }, groups_on(rendered, both + 1))
+    local denied_span = rendered.spans[assert(span_index(rendered, both + 1, 'OrcaTermDenied'))]
+    assert.are.equal('⊘3', rendered.lines[both + 1]:sub(denied_span.first + 1, denied_span.last))
 
     local denied = assert(rendered.firsts['/src/wt/denied'])
-    assert.are.equal(' · denied                        ⊘1', rendered.lines[denied])
+    assert.are.equal('                                 ⊘1', rendered.lines[denied + 1])
 
     local none = assert(rendered.firsts['/src/wt/none'])
     assert.are.equal(' · none', rendered.lines[none])
+    assert.are_not.equal('/src/wt/none', rendered.paths[none + 1])
 
     local picked = assert(rendered.firsts['/src/wt/picked'])
-    assert.are.equal(' │ · picked                ⊘12 ✎1 │', rendered.lines[picked])
+    assert.are.equal(' │                         ⊘12 ✎1 │', rendered.lines[picked + 1])
   end)
 
   it(
@@ -454,16 +457,16 @@ describe('render', function()
       assert_fits(rendered, render.WIDTH)
 
       local all = assert(rendered.firsts['/src/wt/all'])
-      assert.are.equal(' · all                      ≠ ⊘3 ✎2', rendered.lines[all])
+      assert.are.equal('                            ≠ ⊘3 ✎2', rendered.lines[all + 1])
       assert.are.same(
-        { 'OrcaTermStateNoAgent', 'OrcaTermOperation', 'OrcaTermDenied', 'OrcaTermBadge' },
-        groups_on(rendered, all)
+        { 'OrcaTermOperation', 'OrcaTermDenied', 'OrcaTermBadge' },
+        groups_on(rendered, all + 1)
       )
-      local mark = rendered.spans[assert(span_index(rendered, all, 'OrcaTermOperation'))]
-      assert.are.equal('≠', rendered.lines[all]:sub(mark.first + 1, mark.last))
+      local mark = rendered.spans[assert(span_index(rendered, all + 1, 'OrcaTermOperation'))]
+      assert.are.equal('≠', rendered.lines[all + 1]:sub(mark.first + 1, mark.last))
 
       local merging = assert(rendered.firsts['/src/wt/merging'])
-      assert.are.equal(' · merging                        ≠', rendered.lines[merging])
+      assert.are.equal('                                  ≠', rendered.lines[merging + 1])
 
       local none = assert(rendered.firsts['/src/wt/none'])
       assert.are.equal(' │ · none                         │', rendered.lines[none])
@@ -495,7 +498,7 @@ describe('render', function()
   end)
 
   it(
-    'ends the name line with the agent and the age of its last activity, muted, after the icons',
+    'ends the name line with the agent and the age of its last activity, muted, the icons below',
     function()
       local now = 1700000000000
       local rendered = render.fleet(
@@ -518,7 +521,8 @@ describe('render', function()
         groups_on(rendered, docs)
       )
       local ts = assert(rendered.firsts['/src/wt/ts'])
-      assert.are.equal(' · ts                      ✎2 oc 3h', rendered.lines[ts])
+      assert.are.equal(' · ts                         oc 3h', rendered.lines[ts])
+      assert.are.equal('                                 ✎2', rendered.lines[ts + 1])
       local fresh = assert(rendered.firsts['/src/wt/fresh'])
       assert.are.equal(' · fresh                         cc', rendered.lines[fresh], 'no age')
       local mine = assert(rendered.firsts['/src/wt/mine'])
@@ -529,34 +533,43 @@ describe('render', function()
   )
 
   it(
-    'cuts the name first, keeping the agent and the age in their place, within the width',
+    'cuts the name and the second line first, keeping the agent, the age and the icons in place',
     function()
       local now = 1700000000000
       local long = string.rep('very-long-', 6)
       for _, width in ipairs({ 16, 24, 30, 36, 50 }) do
-        local rendered = render.fleet(
-          fleet({
-            worktree('aaa'),
-            worktree(long, {
-              agent = 'claude-code',
-              last_activity = now - 2 * 86400 * 1000,
-              operation = 'merge',
-              denials = 3,
-              notes = 1,
+        -- In the card (the long worktree selected) and out of it (`aaa` selected).
+        for _, selected in ipairs({ long, 'aaa' }) do
+          local border = selected == long and ' │' or ''
+          local rendered = render.fleet(
+            fleet({
+              worktree('aaa'),
+              worktree(long, {
+                agent = 'claude-code',
+                last_activity = now - 2 * 86400 * 1000,
+                activity = string.rep('busy ', 12),
+                operation = 'merge',
+                denials = 3,
+                notes = 1,
+              }),
             }),
-          }),
-          '/src/wt/' .. long,
-          width,
-          0,
-          now
-        )
-        assert_fits(rendered, width)
-        -- At 16 cells there is no room even for the icons, the agent and the age: the row is
-        -- cut, and never grows wider.
-        if width >= 24 then
-          local line = rendered.lines[assert(rendered.firsts['/src/wt/' .. long])]
-          assert(line:find('…', 1, true), line)
-          assert(vim.endswith(line, 'cc 2d │'), line)
+            '/src/wt/' .. selected,
+            width,
+            0,
+            now
+          )
+          assert_fits(rendered, width)
+          -- At 16 cells there is no room even for the icons, the agent and the age: the row is
+          -- cut, and never grows wider.
+          if width >= 24 then
+            local first = assert(rendered.firsts['/src/wt/' .. long])
+            local line = rendered.lines[first]
+            assert(line:find('…', 1, true), line)
+            assert(vim.endswith(line, 'cc 2d' .. border), line)
+            local second = rendered.lines[first + 1]
+            assert(second:find('busy', 1, true) and second:find('…', 1, true), second)
+            assert(vim.endswith(second, '… ≠ ⊘3 ✎1' .. border), second)
+          end
         end
       end
     end

@@ -121,4 +121,35 @@ describe('the sidebar, golden', function()
     )
     assert.are.same(vim.fn.readfile(GOLDEN), actual)
   end)
+
+  it("is drawn line for line in render.lua's header comment", function()
+    -- The golden's text: its lines up to the blank line before the highlights.
+    local golden = {}
+    for _, line in ipairs(vim.fn.readfile(GOLDEN)) do
+      if line == '# highlights: <line>:<first>-<last> <group>' then
+        break
+      end
+      table.insert(golden, line)
+    end
+    table.remove(golden)
+
+    -- The comment's picture: from the header line to the blank comment line before the text that
+    -- follows it, each line after `--  ` (a blank one is just `--`).
+    local drawn = {}
+    local inside = false
+    for _, line in ipairs(vim.fn.readfile(support.root .. '/lua/orca-term/render.lua')) do
+      if line == '--   ▾ repo  main' then
+        inside = true
+      end
+      if inside then
+        if not vim.startswith(line, '--') or line:match('^%-%- %S') then
+          break
+        end
+        table.insert(drawn, line == '--' and '' or line:sub(5))
+      end
+    end
+    table.remove(drawn)
+
+    assert.are.same(golden, drawn)
+  end)
 end)

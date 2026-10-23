@@ -1191,11 +1191,13 @@ what they print.
   belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
   glyph and a second line per worktree, the rounded card around the selected one; an unseen
   worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. At the right end of a worktree's name line sit its icons, a space apart: `≠`
+  name. At the right end of a worktree's second line sit its icons (#103), a space apart: `≠`
   (`render.OPERATION`) in `OrcaTermOperation` while a git operation is in progress, the denials of
   its latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
-  (`render.NOTE`) in `OrcaTermBadge`, the name cut with `…` to leave them room and a space; a zero
-  count shows nothing. After the icons, at the very end of the line (#91), come the agent's label
+  (`render.NOTE`) in `OrcaTermBadge`, what the line says cut with `…` to leave them room and a
+  space; a zero count shows nothing, and a worktree with icons and nothing to say gets a second
+  line holding only them. Both lines flush their right part with one helper, `add_with_right`. At
+  the right end of the name line (#91) come the agent's label
   (`agent_label`: `cc` for `claude-code`, `oc` for `opencode`, any other agent's own name) and the
   age of its last activity (`age`: `now`, `9m`, `3h`, `2d`, measured from the `now` passed to
   `fleet`, the clock's by default), both in `OrcaTermAge`; no agent shows neither, and no

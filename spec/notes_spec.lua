@@ -70,13 +70,15 @@ local function sidebar_window()
   error('no sidebar in the current tab')
 end
 
----The sidebar's name line of the worktree `name`.
+---The sidebar's second line of the worktree `name`, where its icons end the row (the line after
+---its name line; empty when there is none).
 ---@param name string
 ---@return string
-local function sidebar_row(name)
-  for _, line in ipairs(vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), 0, -1, false)) do
+local function sidebar_second_line(name)
+  local lines = vim.api.nvim_buf_get_lines(assert(sidebar.buffer()), 0, -1, false)
+  for index, line in ipairs(lines) do
     if line:find(' ' .. name, 1, true) then
-      return line
+      return lines[index + 1] or ''
     end
   end
   error('no sidebar line for ' .. name)
@@ -316,7 +318,7 @@ describe('notes', function()
     -- And so does the sidebar's row, in the worktree's tab.
     vim.api.nvim_set_current_tabpage((assert(tabs.find_all(repo.path)[1])))
     support.wait_for(function()
-      return sidebar_row('fix'):find(' ✎4', 1, true) ~= nil
+      return sidebar_second_line('fix'):find(' ✎4', 1, true) ~= nil
     end, 'the sidebar to count the notes')
   end)
 
@@ -416,7 +418,7 @@ describe('notes', function()
     wait_drawn(review.view.panel.bufid, {})
     vim.api.nvim_set_current_tabpage((assert(tabs.find_all(repo.path)[1])))
     support.wait_for(function()
-      return not sidebar_row('fix'):find('✎', 1, true)
+      return not sidebar_second_line('fix'):find('✎', 1, true)
     end, "the sidebar's ✎ to go")
   end)
 
