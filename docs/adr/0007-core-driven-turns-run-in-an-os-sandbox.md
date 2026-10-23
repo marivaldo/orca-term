@@ -54,3 +54,23 @@ rules. Both fall short of what a lane is supposed to guarantee. Decided in
   each agent.
 - claude's sandbox was seen failing even inside a worktree under `/private/tmp`, but not under
   `$HOME`, so lane bases should not be placed behind the `/tmp` symlink until that is explained.
+
+## Note, 2026-10-23: signing through the person's agent
+
+[Issue #105](https://github.com/marivaldo/orca-term/issues/105) measured the signing claim above
+on macOS with orca-term's own profiles and claude's sandbox engine. It holds for a key in a file
+only: reads are open, so `ssh-keygen` reads the private key and signs inside both sandboxes. A key
+held only by an agent (ssh-agent, 1Password, Secretive, a passphrase-protected or hardware key,
+gpg-agent) fails inside both, since opencode's profile denies every unix socket but the
+resolver's and claude's settings allow none.
+
+The policy therefore gains a second configurable part, opt-in: `sandbox.agent_socket: true` lets
+the agent connect to exactly the socket `SSH_AUTH_SOCK` names at launch (and gpg-agent's when git
+signs with openpgp), by its real path: one `path-literal` rule in opencode's macOS profile, and
+`allowUnixSockets` with that path in claude's settings. It is read only from the person's own
+files (`.git/orca-term.yaml`, the global config); a committed `orca-term.yaml` that sets it is
+refused and cannot be approved, since it would hand the agent's keys to whoever wrote the
+repository. On Linux, opencode's bwrap reaches pathname sockets already, and claude's sandbox would
+need `allowAllUnixSockets`, which opens every socket, so the setting does not touch it. claude's
+push over SSH on macOS fails regardless, because of its network proxy, which the socket does not
+change. The decision above stands otherwise.
