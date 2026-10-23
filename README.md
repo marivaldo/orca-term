@@ -160,6 +160,26 @@ names no socket, nothing changes either. It is off by default. A committed `orca
 sets it is refused: `agent start` starts nothing and says why, and no approval lets it through,
 since it would hand your agent's keys to whoever wrote the repository.
 
+With the setting on, `agent start` says what it allowed, one line per kind of socket, and never
+the socket's path:
+
+```
+signing: the sandbox reaches your ssh agent
+signing: the sandbox reaches gpg-agent
+```
+
+When it found none, it still starts the agent and warns, so you know before a signed commit
+fails (the gpgconf part appears only when git signs with openpgp):
+
+```
+signing: sandbox.agent_socket is on, but no signing agent socket was found (SSH_AUTH_SOCK is unset or not a socket; gpgconf names no gpg-agent socket)
+```
+
+`agent start --json` carries the same as `signing_sockets`: a list of `ssh-agent` and
+`gpg-agent`, possibly empty, with the setting on, and `null` with it off or when the agent was
+already running. A socket inside the repository's git directory, where orca-term keeps its own,
+is never allowed, even when `SSH_AUTH_SOCK` names it.
+
 `orca-term doctor` says when git signs with an ssh key whose private half is not a readable file
 (or with a key written in git's config), so that only an agent can sign with it, and names the
 setting.
