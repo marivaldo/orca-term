@@ -58,6 +58,26 @@ opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists i
 `<Plug>(OrcaTermSessions)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
 key.
 
+### Session managers
+
+orca-term keeps no layout of its own: it finds a worktree's tab again by the tab's `:tcd`. So a
+session saved with `:mksession` (or by a session manager such as persistence.nvim) that holds
+`curdir` and `tabpages` in `'sessionoptions'` brings the worktree tabs back. After a restore,
+`<CR>` on a worktree, `:OrcaTerm worktree N` and `<Plug>(OrcaTermWorktreeN)` go to its restored
+tab instead of opening a second one, and the sidebar marks the current tab's worktree.
+
+The agent's terminal is not restored. Without `terminal` in `'sessionoptions'` (LazyVim's
+persistence.nvim leaves it out), its window is not saved, and the first `<CR>` on the worktree
+opens the agent's terminal in the restored tab. With `terminal` (Neovim's default), the session
+brings back a `term://` buffer that runs `orca-term` with no arguments: it prints the usage and
+ends, and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
+scrollback replayed; the ended buffer goes with `:bwipeout`.
+
+With `blank` in `'sessionoptions'` (Neovim's default), a session saved while the sidebar is open
+keeps each sidebar window as an empty window named `orca-term://sidebar`. Sourcing it then
+reports `E95: Buffer with this name already exists` for every tab after the first, and leaves
+those empty windows. Close the sidebar before saving, or leave `blank` out, to avoid it.
+
 ## Install
 
 orca-term runs on macOS and Linux and needs Neovim 0.11 or later. With
