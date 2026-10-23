@@ -142,6 +142,65 @@ fn a_newer_claude_and_an_old_opencode_are_warnings_never_refusals() {
     );
 }
 
+/// The doctor's signing line (#105), as the text report shows it.
+const SIGNING: &str = "info     signing: git signs with an ssh key whose private half is not a \
+                       readable file, so it signs through your ssh agent; a worktree's agent can \
+                       reach it only with `sandbox.agent_socket: true` in your global config file \
+                       or .git/orca-term.yaml\n";
+
+#[test]
+fn doctor_names_the_agent_socket_setting_when_only_an_agent_holds_the_ssh_signing_key() {
+    let fx = AgentRepo::new();
+    fx.write_claude(&format!("{TESTED} (Claude Code)"), "");
+    let keys = fx.repo.tmp.path().join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    let public = keys.join("signing.pub");
+    std::fs::write(&public, "ssh-ed25519 AAAAnotakey throwaway\n").unwrap();
+    fx.repo.git(&["config", "gpg.format", "ssh"]);
+    fx.repo
+        .git(&["config", "user.signingkey", public.to_str().unwrap()]);
+    let report = || {
+        let out = fx.command(&["doctor"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "information never refuses");
+        stdout(&out)
+    };
+
+    let text = report();
+    assert!(
+        text.ends_with(&format!(
+            "{SIGNING}info     contract 1, orca-term {VERSION}\n"
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("signing.pub"), "never the key's path");
+    let doc = json(&fx.command(&["doctor", "--json"]).output().unwrap());
+    let checks = doc["checks"].as_array().unwrap();
+    let names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "git", "sandbox", "claude", "opencode", "signing", "contract"
+        ]
+    );
+    assert_eq!(checks[4]["status"], "info");
+    assert_eq!(checks[4]["found"], Value::Null);
+
+    // The private half readable as a file: git signs without the agent.
+    std::fs::write(keys.join("signing"), "not a key either\n").unwrap();
+    assert!(!report().contains("signing:"));
+
+    // A key written in the config itself, which only an agent can hold.
+    fx.repo
+        .git(&["config", "user.signingkey", "key::ssh-ed25519 AAAAnotakey"]);
+    let text = report();
+    assert!(text.contains(SIGNING), "{text}");
+    assert!(!text.contains("AAAAnotakey"), "never the key");
+
+    // Signing with openpgp is not judged.
+    fx.repo.git(&["config", "gpg.format", "openpgp"]);
+    assert!(!report().contains("signing:"));
+}
+
 #[test]
 fn doctor_prints_the_whole_report_then_refuses_as_prerequisite() {
     let fx = AgentRepo::new();

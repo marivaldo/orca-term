@@ -208,8 +208,12 @@ pub(crate) fn check_transcript(
 /// common dir denied, from sandboxed commands
 /// and from the Edit tool alike. `admin_dirs` are the admin directories that exist at launch:
 /// Linux ignores the `*` entries, so each one is listed concretely too. `writable` are the extra
-/// paths the config allows, absolute. `hooks` reports the turns to the worktree whose admin
-/// directory it names ([`HookTarget`]).
+/// paths the config allows, absolute. `unix_sockets` are the sockets the agent may connect to: the
+/// person's signing agent's, when `sandbox.agent_socket` is on (#105), listed as
+/// `allowUnixSockets`, which is absent when there are none; `allowAllUnixSockets` stays off
+/// whatever they are (claude's Linux sandbox honours only that one, so there the setting does
+/// nothing). `hooks` reports the turns to the worktree whose admin directory it names
+/// ([`HookTarget`]).
 ///
 /// Every weakening key is set explicitly, since a scalar in `--settings` overrides the same key
 /// in the person's own files. The Edit rules start with `//` because a single `/` would mean a
@@ -218,6 +222,7 @@ pub(crate) fn claude_settings(
     common_dir: &Path,
     admin_dirs: &[PathBuf],
     writable: &[PathBuf],
+    unix_sockets: &[PathBuf],
     hooks: &HookTarget,
 ) -> Value {
     let common = common_dir.display();
@@ -230,6 +235,17 @@ pub(crate) fn claude_settings(
         format!("{common}/{ADMIN_DIR_NAME}"),
     ]);
     let allow_write: Vec<String> = writable.iter().map(|p| p.display().to_string()).collect();
+    let mut network = json!({
+        "allowedDomains": ["*"],
+        "allowAllUnixSockets": false,
+    });
+    if !unix_sockets.is_empty() {
+        let sockets: Vec<String> = unix_sockets
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        network["allowUnixSockets"] = json!(sockets);
+    }
     json!({
         "sandbox": {
             "enabled": true,
@@ -243,10 +259,7 @@ pub(crate) fn claude_settings(
                 "allowWrite": allow_write,
                 "denyWrite": deny_write,
             },
-            "network": {
-                "allowedDomains": ["*"],
-                "allowAllUnixSockets": false,
-            },
+            "network": network,
         },
         "permissions": {
             "disableBypassPermissionsMode": "disable",
@@ -403,7 +416,7 @@ mod tests {
                 "acceptEdits"
             ]
         );
-        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         check_launch(
             &claude_argv("claude", Path::new("/a/claude-settings.json"), None),
             &settings,
@@ -429,7 +442,7 @@ mod tests {
                 UUID
             ]
         );
-        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         check_launch(&argv, &settings).unwrap();
     }
 
@@ -457,7 +470,7 @@ mod tests {
 
     #[test]
     fn the_guard_refuses_bypasses_beside_resume_and_a_resume_that_is_not_an_id() {
-        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         let refused = |args: &[&str]| check_launch(&argv(args), &settings).is_err();
         assert!(refused(&["--resume", "--dangerously-skip-permissions"]));
         assert!(refused(&[
@@ -612,7 +625,7 @@ mod tests {
         let common = Path::new("/r/.git");
         let admin = [PathBuf::from("/r/.git/worktrees/fix/orca-term")];
         let writable = [PathBuf::from("/home/me/.cache/pnpm")];
-        let settings = claude_settings(common, &admin, &writable, &target());
+        let settings = claude_settings(common, &admin, &writable, &[], &target());
         let at = |pointer: &str| settings.pointer(pointer).cloned().unwrap_or(Value::Null);
         assert_eq!(at("/sandbox/enabled"), json!(true));
         assert_eq!(at("/sandbox/failIfUnavailable"), json!(true));
@@ -639,6 +652,11 @@ mod tests {
         assert_eq!(at("/sandbox/network/allowedDomains"), json!(["*"]));
         assert_eq!(at("/sandbox/network/allowAllUnixSockets"), json!(false));
         assert_eq!(
+            at("/sandbox/network/allowUnixSockets"),
+            Value::Null,
+            "no socket unless the signing agent's is given"
+        );
+        assert_eq!(
             at("/permissions/disableBypassPermissionsMode"),
             json!("disable")
         );
@@ -663,8 +681,26 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_allow_the_signing_agents_socket_only_when_given_and_only_that_path() {
+        let socket = [PathBuf::from("/private/var/folders/x/T/agent.sock")];
+        let with = claude_settings(Path::new("/r/.git"), &[], &[], &socket, &target());
+        assert_eq!(
+            with["sandbox"]["network"],
+            json!({
+                "allowedDomains": ["*"],
+                "allowAllUnixSockets": false,
+                "allowUnixSockets": ["/private/var/folders/x/T/agent.sock"],
+            })
+        );
+        let mut without = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
+        without["sandbox"]["network"]["allowUnixSockets"] =
+            json!(["/private/var/folders/x/T/agent.sock"]);
+        assert_eq!(with, without, "nothing else changes");
+    }
+
+    #[test]
     fn the_settings_register_a_silent_hook_for_every_turn_event() {
-        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         let hooks = settings["hooks"].as_object().unwrap();
         let events: Vec<&str> = hooks.keys().map(String::as_str).collect();
         let mut expected = vec![
@@ -741,7 +777,7 @@ mod tests {
 
     #[test]
     fn a_launch_bypassing_permissions_is_refused_by_whole_argument() {
-        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         for flag in [
             "--dangerously-skip-permissions",
             "--allow-dangerously-skip-permissions",
@@ -800,7 +836,7 @@ mod tests {
 
     #[test]
     fn settings_defaulting_to_a_bypass_mode_are_refused() {
-        let good = claude_settings(Path::new("/r/.git"), &[], &[], &target());
+        let good = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         for mode in ["bypassPermissions", "auto"] {
             let bad = json!({"permissions": {"defaultMode": mode}});
             let err = check_launch(&argv(&[]), &bad).unwrap_err();

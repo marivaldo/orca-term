@@ -8,6 +8,7 @@
 
 use std::fs::{self, File, TryLockError};
 use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
+use std::os::unix::fs::FileTypeExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -213,6 +214,17 @@ pub(crate) fn is_dir(path: &Path) -> bool {
 /// Whether `path` is a regular file, following symlinks.
 pub(crate) fn is_file(path: &Path) -> bool {
     path.is_file()
+}
+
+/// Whether `path` is a unix socket, following symlinks.
+pub(crate) fn is_socket(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
+}
+
+/// Whether `path` is a regular file this process can open for reading, following symlinks. It is
+/// opened and closed at once, nothing read: the doctor asks it of a private key (#105).
+pub(crate) fn is_readable_file(path: &Path) -> bool {
+    path.is_file() && File::open(path).is_ok()
 }
 
 /// Whether `path` itself is a symlink.

@@ -151,7 +151,9 @@ the adapters, and returns a domain value that `output` prints.
   one as the typed `prerequisite`. `ensure_trust_file` writes an approvals' file approving nothing,
   under its lock, when there is none, before opencode starts (#35).
 - `ops/doctor.rs`: `doctor`: check git, claude's sandbox tools, each agent and the contract, in
-  that order. It only looks, needs no repository and never fails.
+  that order. It only looks, needs no repository and never fails. Before the contract, when git's
+  config signs with an ssh key whose private half is not a readable file (or a key written in the
+  config), an `info` line names `sandbox.agent_socket` (#105); the key is never read nor printed.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
   lock it, copy the copy list, run the setup. With `--agent` (#93), `start_agent` then records the
   agent and starts it through `agent_start::run`, only when the setup did not fail.
@@ -212,7 +214,12 @@ the adapters, and returns a domain value that `output` prints.
   opencode's own directories first), the wrapper (`sandbox-exec -f <admin>/opencode-sandbox.sb` or
   `bwrap <arguments> --`) and the command line `opencode [-s <id>]`, checks it, writes the profile
   and the config directory with the plugin, and starts the holder with `OPENCODE_CONFIG_DIR` set
-  and `--events opencode`. `start` is what `agent swap` reuses, under its own lock.
+  and `--events opencode`. `start` is what `agent swap` reuses, under its own lock. With
+  `sandbox.agent_socket` on (#105; a committed `orca-term.yaml` setting it refuses the start),
+  `signing_sockets` finds the socket `SSH_AUTH_SOCK` names and, when git signs with openpgp,
+  gpg-agent's (`gpgconf --list-dirs agent-socket`), each by its real path and only when it is a
+  socket; claude's settings list them in `allowUnixSockets`, opencode's `Policy` in
+  `unix_sockets`.
 - `ops/agent_swap.rs`: `agent swap` (#35): find the target (ready, not the primary checkout), lock
   it (or fail as `busy`), and when another agent's holder is alive refuse as `busy` an agent in a
   turn (`working` or `waiting`), check the new agent's sandbox and program, stop the holder
@@ -303,16 +310,20 @@ the adapters, and returns a domain value that `output` prints.
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
-  for the holder's peer check), finding an executable in the PATH directories, and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
+  for the holder's peer check), finding an executable in the PATH directories, whether a path is a
+  unix socket (`is_socket`) or a file this process can open (`is_readable_file`, opened and closed,
+  nothing read, #105), and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
   `agent.lock`, and the read-only probes `ls` uses for both.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
   `PATH`; the variables opencode finds its own directories by (`opencode_dirs_env`: `HOME`, the
-  four XDG base directories, `TMPDIR`); and the recording tap's file (`record_file`:
-  `ORCA_TERM_RECORD`, `None` when unset or empty, #44).
+  four XDG base directories, `TMPDIR`); the recording tap's file (`record_file`:
+  `ORCA_TERM_RECORD`, `None` when unset or empty, #44); and the ssh agent's socket
+  (`ssh_auth_sock`: `SSH_AUTH_SOCK`, `None` when unset or empty, never printed, #105).
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
-  sessions (`listed_by`, #41), with an empty stdin; both only read. `run_within` (#87) runs a
+  sessions or gpgconf for gpg-agent's socket (`listed_by`, #41, #105), with an empty stdin; both
+  only read. `run_within` (#87) runs a
   program with an empty stdin and a time limit, reading its stdout and stderr on threads of their
   own, and kills it past the limit (`Finished::TimedOut`); `pr refresh` runs gh through it.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
@@ -366,10 +377,12 @@ the adapters, and returns a domain value that `output` prints.
   gone worktrees, what a prune cleaned, and how many distinct files a worktree changed from git's
   two lists of paths (`count_changed_files`, #92).
 - `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`.
-- `domain/config.rs`: `orca-term.yaml` parsing (`base`, `scripts.setup`, `sandbox.writable`),
-  the precedence of the config files, which checkout supplies the committed file (the primary
-  checkout for `base`, the worktree for `scripts.setup` and `sandbox.writable`), `~` and relative
-  path expansion.
+- `domain/config.rs`: `orca-term.yaml` parsing (`base`, `scripts.setup`, `sandbox.writable`,
+  `sandbox.agent_socket`), the precedence of the config files, which checkout supplies the
+  committed file (the primary checkout for `base`, the worktree for `scripts.setup`,
+  `sandbox.writable` and `sandbox.agent_socket`), `~` and relative path expansion.
+  `resolve_agent_socket` refuses a committed file that sets `sandbox.agent_socket`, whatever its
+  value: it is read only from `.git/orca-term.yaml` and the global file, and never approved (#105).
 - `domain/state.rs`: a worktree's state and why it is broken or not ready, derived from
   `worktree.json`, the lock and the setup log; its admin directory and the files in it; and the
   `worktree.json` schema rules and bytes; and the git common dir and the worktree's path read
@@ -485,7 +498,13 @@ the adapters, and returns a domain value that `output` prints.
   directories above it; unix sockets denied but the name resolver's; a path it cannot hold
   refused) and the Linux `bwrap` arguments (`bwrap_args`: `/` read-only, the writable places
   bound, the denied ones bound read-only over them, a missing denied file covered by `/dev/null`,
-  a user namespace of its own, the network kept).
+  a user namespace of its own, the network kept). The policy's `unix_sockets` (the signing
+  agent's, #105) each get one `path-literal` rule after the resolver's on macOS; Linux needs none,
+  since bwrap reaches pathname sockets.
+- `domain/sandbox/signing.rs`: the person's signing agent (#105): whether git signs with openpgp
+  (`gpg.format` `openpgp` or unset), gpg-agent's socket from gpgconf's answer, the ssh key git
+  signs with (`SshSigningKey`: a `.pub` file and where its private half should be, a key written in
+  the config, or nothing to judge) and the doctor's `signing` line.
 - `domain/prerequisite.rs`: the programs orca-term needs (`Requirement`: git from 2.38, claude
   from 2.1.295 and tested up to 2.1.306, opencode from 1.18.0, optional to `doctor` and required
   to start it, `agent_requirement`), read from
@@ -645,7 +664,7 @@ validate"):
   `adapters/script.rs` starts the setup script, only `adapters/holder.rs` starts the holder (and
   only `adapters/holder/process.rs` starts an agent, on a PTY, and only `adapters/holder/events.rs`
   runs the hook for each event an agent reports through its pipe), only `adapters/program.rs` runs a
-  program for its version (or opencode for its list of sessions), only `adapters/fs.rs` reads or writes files, and only
+  program for its version (or opencode for its list of sessions, gpgconf for gpg-agent's socket), only `adapters/fs.rs` reads or writes files, and only
   `adapters/env.rs` reads the environment.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
   Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
@@ -727,6 +746,11 @@ validate"):
   directory holds only our plugin and the `.gitignore` opencode would write there; nothing is
   written to opencode's global config. Without `sandbox-exec` or `bwrap` nothing is launched
   (`no_sandbox`), and opencode must be 1.18.0 or later (`prerequisite`).
+- **An agent reaches the person's signing agent only when the person said so** (#105). The one
+  socket `SSH_AUTH_SOCK` names (and gpg-agent's, when git signs with openpgp) is allowed only with
+  `sandbox.agent_socket: true` from `.git/orca-term.yaml` or the global file, by its exact real
+  path; a committed `orca-term.yaml` setting it is refused, never approved. claude's
+  `allowAllUnixSockets` stays off whatever the setting.
 - **opencode's events reach the core through its holder** (#35). The plugin runs inside the
   sandbox, which denies the admin directory, so it never runs orca-term nor reaches any
   `agent.sock`: it writes one JSON line per event to the pipe the holder handed opencode

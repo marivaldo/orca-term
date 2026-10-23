@@ -115,6 +115,46 @@ it fails with `untrusted` and starts nothing. `agent start --approve-sandbox` ap
 without asking, and in Neovim `<CR>` shows it and asks `Allow` or `Cancel`. A changed list asks
 again; a list from `.git/orca-term.yaml` or the global config file needs no approval.
 
+## Signing
+
+A commit the agent makes is signed as yours are when git can reach your key from inside the
+sandbox. A key in a file signs inside both sandboxes, since they let the agent read everything. A
+key only an agent holds (ssh-agent, 1Password, Secretive, a passphrase-protected or hardware key,
+gpg-agent) does not: both sandboxes keep the agent away from unix sockets, your signing agent's
+among them. To let the agents of a repository's worktrees sign with it, turn on
+`sandbox.agent_socket` in `.git/orca-term.yaml`, or in your global config file for every
+repository:
+
+```yaml
+sandbox:
+  agent_socket: true
+```
+
+`agent start` then lets the agent connect to exactly the socket `SSH_AUTH_SOCK` names when it
+starts, by its real path, and, when git signs with openpgp (`gpg.format` is `openpgp` or unset),
+to gpg-agent's socket as `gpgconf --list-dirs agent-socket` names it: claude's settings list it in
+`allowUnixSockets`, and opencode's macOS profile allows that one path. The agent can then sign,
+and with ssh-agent authenticate, with your agent's keys without ever reading them. Nothing else
+changes: the holders' and Neovim's sockets stay out of its reach. When `SSH_AUTH_SOCK` is unset or
+names no socket, nothing changes either. It is off by default. A committed `orca-term.yaml` that
+sets it is refused: `agent start` starts nothing and says why, and no approval lets it through,
+since it would hand your agent's keys to whoever wrote the repository.
+
+`orca-term doctor` says when git signs with an ssh key whose private half is not a readable file
+(or with a key written in git's config), so that only an agent can sign with it, and names the
+setting.
+
+Limits:
+
+- With the setting on, every command the agent runs can use your agent's keys, to sign and to
+  authenticate, for as long as the agent runs.
+- On Linux, opencode's sandbox reaches pathname sockets already, so opencode signs through your
+  agent with or without the setting. claude's sandbox there allows a unix socket only through
+  `allowAllUnixSockets`, which opens every socket, so orca-term never turns it on and claude
+  cannot sign through an agent on Linux.
+- On macOS, claude's push over SSH fails inside its sandbox whatever the setting, because of
+  claude's own network proxy.
+
 ## opencode
 
 A worktree can run [opencode](https://opencode.ai) instead of claude:
@@ -147,7 +187,8 @@ approved `sandbox.writable` paths. orca-term creates opencode's own directories 
 launch, since the sandbox would keep opencode from creating the directories above them. orca-term's
 state stays out of its reach (every worktree's `orca-term` directory, `.git/orca-term.yaml`,
 `.git/orca-term-trust.json`, `refs/orca-term`), and so do the other agents: on macOS it may connect
-to no unix socket but the system's name resolver, and on Linux it runs in a user namespace of its
+to no unix socket but the system's name resolver (and your signing agent's, when you turn on
+`sandbox.agent_socket`, see Signing), and on Linux it runs in a user namespace of its
 own, whose clients the holders refuse. Without the sandbox tool, `agent start` refuses with
 `no_sandbox` (exit code 5); opencode must be 1.18.0 or later (exit code 9 otherwise).
 
@@ -177,8 +218,9 @@ Limits:
 - A recorded session opencode no longer has makes it exit at once with its own message on a cold
   start (`agent start`, `<CR>`); start a new one with `orca-term agent start <worktree> --fresh`.
   `session resume` asks opencode first (see Sessions).
-- On macOS, pushing over SSH and signing commits through an agent (ssh-agent, gpg-agent) fail inside
-  the sandbox, which allows no unix socket but the resolver's. On Linux, the sandbox covers the admin
+- On macOS, signing commits and pushing over SSH with a key only an agent holds (ssh-agent,
+  gpg-agent) fail inside the sandbox unless `sandbox.agent_socket` is on (see Signing); a key in a
+  file signs either way. On Linux, the sandbox covers the admin
   directories that exist at launch, and a missing `.git/orca-term.yaml` is covered by an empty file,
   which stays.
 - Your own `OPENCODE_CONFIG_DIR` is replaced by orca-term's for opencode in a worktree.
@@ -435,7 +477,8 @@ info     contract 1, orca-term 0.1.0
 It needs git 2.38 or later, claude's sandbox tools (`sandbox-exec` on macOS, `bwrap` and `socat`
 on Linux) and claude 2.1.295 or later. A claude newer than the one orca-term was tested with is
 only a warning. opencode is optional, since you may use only claude; starting it needs 1.18.0 or
-later. With `--json` it prints the same checks as one
+later. When git signs with an ssh key only an agent can use, an `info` line before the contract
+names `sandbox.agent_socket` (see Signing). With `--json` it prints the same checks as one
 document. It exits 0 unless something is missing or too old; then it prints the whole report and
 exits 9.
 

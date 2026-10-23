@@ -186,7 +186,7 @@ impl Status {
 /// One line of the doctor's report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Check {
-    /// What is checked: `git`, `sandbox`, `claude`, `opencode` or `contract`.
+    /// What is checked: `git`, `sandbox`, `claude`, `opencode`, `signing` (#105) or `contract`.
     pub(crate) name: &'static str,
     pub(crate) status: Status,
     /// What was found, such as a version; `None` when nothing was.
