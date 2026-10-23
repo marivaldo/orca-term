@@ -184,7 +184,9 @@ struct RemovedBranchView<'a> {
 /// `agent start --json`: the worktree as `worktree ls` shows it, the holder, the sandbox's
 /// extra writable paths with the config file that set them (`null` when nothing was launched),
 /// and `resumed`, the id of the session the agent was started on with `--resume` (`null` for a
-/// new session, or when nothing was launched).
+/// new session, or when nothing was launched). `signing_sockets` (#108) lists the kinds of signing
+/// agent socket the sandbox reaches, `ssh-agent` and `gpg-agent`, possibly none, with
+/// `sandbox.agent_socket` on; `null` with it off, or when nothing was launched. Never their paths.
 #[derive(Debug, Serialize)]
 struct StartedView<'a> {
     worktree: WorktreeView<'a>,
@@ -192,6 +194,7 @@ struct StartedView<'a> {
     holder: HolderView,
     writable: Option<WritableView<'a>>,
     resumed: Option<&'a str>,
+    signing_sockets: Option<Vec<&'static str>>,
 }
 
 /// `agent swap --json`: the document of `agent start` for the agent swapped in, with the agent the
@@ -703,6 +706,10 @@ fn started_view(started: &Started) -> StartedView<'_> {
             source: writable.source.as_deref(),
         }),
         resumed,
+        signing_sockets: started
+            .signing
+            .as_ref()
+            .map(|signing| signing.kinds.iter().map(|kind| kind.name()).collect()),
     }
 }
 
@@ -1075,6 +1082,7 @@ mod tests {
     use crate::domain::note::{LineRange, NotePath};
     use crate::domain::operation::RebaseStep;
     use crate::domain::review::Commit;
+    use crate::domain::sandbox::signing::{SigningReach, SocketKind};
     use crate::domain::setup::Exit;
     use crate::domain::state::{BrokenReason, NotReadyReason};
     use crate::domain::turn::Denial;
@@ -1250,12 +1258,16 @@ mod tests {
                 source: Some(".git/orca-term.yaml".to_owned()),
                 overridden: Vec::new(),
             }),
+            signing: Some(SigningReach {
+                kinds: vec![SocketKind::SshAgent, SocketKind::GpgAgent],
+                looked_for_gpg: true,
+            }),
         })
         .unwrap();
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"claude-code","holder":{{"status":"started","pid":4242}},"writable":{{"paths":["/home/me/.cache"],"source":".git/orca-term.yaml"}},"resumed":null,"signing_sockets":["ssh-agent","gpg-agent"]}}"#
             )
         );
         let doc: serde_json::Value = serde_json::from_str(
@@ -1264,6 +1276,7 @@ mod tests {
                 agent: Agent::ClaudeCode,
                 outcome: StartOutcome::AlreadyRunning { pid: None },
                 writable: None,
+                signing: None,
             })
             .unwrap(),
         )
@@ -1272,6 +1285,7 @@ mod tests {
         assert_eq!(doc["holder"]["pid"], serde_json::Value::Null);
         assert_eq!(doc["writable"], serde_json::Value::Null);
         assert_eq!(doc["resumed"], serde_json::Value::Null);
+        assert_eq!(doc["signing_sockets"], serde_json::Value::Null);
         let doc: serde_json::Value = serde_json::from_str(
             &started(&Started {
                 worktree: idle_worktree(),
@@ -1281,6 +1295,7 @@ mod tests {
                     resumed: SessionId::parse("0b983a87-4074-466e-b864-422ce6f063c8"),
                 },
                 writable: None,
+                signing: None,
             })
             .unwrap(),
         )
@@ -1303,13 +1318,14 @@ mod tests {
                     resumed: None,
                 },
                 writable: None,
+                signing: None,
             },
         })
         .unwrap();
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"previous":"claude-code","stopped":true}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"idle","detail":null,"activity":null,"agent":"opencode","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null}},"agent":"opencode","holder":{{"status":"started","pid":4243}},"writable":null,"resumed":null,"signing_sockets":null,"previous":"claude-code","stopped":true}}"#
             )
         );
     }
@@ -1357,6 +1373,7 @@ mod tests {
                 resumed: SessionId::parse("s-1"),
             },
             writable: None,
+            signing: None,
         };
         let doc: serde_json::Value = serde_json::from_str(
             &resumed(&Resumed {

@@ -397,18 +397,30 @@ fn render_worktrees_pruned(pruned: &Pruned) -> String {
 }
 
 /// Prints what `agent start` did and, in text, says on stderr which extra paths the sandbox may
-/// write to and which config file set them.
+/// write to and which config file set them, and which signing agent sockets it reaches.
 pub(crate) fn agent_started(started: &Started, format: Format) -> anyhow::Result<()> {
     match format {
         Format::Text => {
-            if let Some(writable) = &started.writable {
-                progress(&render_writable(writable), format);
-            }
+            sandbox_progress(started, format);
             out(&render_agent_started(started));
         }
         Format::Json => out(&json::started(started)?),
     }
     Ok(())
+}
+
+/// Says on stderr, in text, what the sandbox of an agent just launched got: its extra writable
+/// paths, and with `sandbox.agent_socket` on, which signing agent sockets it reaches or that it
+/// found none (#108). Nothing when nothing was launched.
+fn sandbox_progress(started: &Started, format: Format) {
+    if let Some(writable) = &started.writable {
+        progress(&render_writable(writable), format);
+    }
+    if let Some(signing) = &started.signing {
+        for line in signing.lines() {
+            progress(&line, format);
+        }
+    }
 }
 
 fn render_writable(writable: &crate::domain::config::Setting<Vec<PathBuf>>) -> String {
@@ -466,9 +478,7 @@ fn render_agent_started(started: &Started) -> String {
 pub(crate) fn agent_swapped(swapped: &Swapped, format: Format) -> anyhow::Result<()> {
     match format {
         Format::Text => {
-            if let Some(writable) = &swapped.started.writable {
-                progress(&render_writable(writable), format);
-            }
+            sandbox_progress(&swapped.started, format);
             out(&render_agent_swapped(swapped));
         }
         Format::Json => out(&json::swapped(swapped)?),
@@ -549,9 +559,7 @@ fn cut_prompt(prompt: &str) -> String {
 pub(crate) fn session_resumed(resumed: &Resumed, format: Format) -> anyhow::Result<()> {
     match format {
         Format::Text => {
-            if let Some(writable) = &resumed.swapped.started.writable {
-                progress(&render_writable(writable), format);
-            }
+            sandbox_progress(&resumed.swapped.started, format);
             out(&render_session_resumed(resumed));
         }
         Format::Json => out(&json::resumed(resumed)?),
@@ -575,8 +583,8 @@ fn render_session_resumed(resumed: &Resumed) -> String {
 pub(crate) fn session_discarded(discarded: &Discarded, format: Format) -> anyhow::Result<()> {
     match format {
         Format::Text => {
-            if let Some(writable) = discarded.started.as_ref().and_then(|s| s.writable.as_ref()) {
-                progress(&render_writable(writable), format);
+            if let Some(started) = &discarded.started {
+                sandbox_progress(started, format);
             }
             out(&render_session_discarded(discarded));
         }
@@ -1627,6 +1635,7 @@ mod tests {
                 source: Some(".git/orca-term.yaml".to_owned()),
                 overridden: vec!["orca-term.yaml".to_owned()],
             }),
+            signing: None,
         };
         assert_eq!(
             render_agent_started(&started),
@@ -1662,6 +1671,7 @@ mod tests {
         let again = Started {
             outcome: StartOutcome::AlreadyRunning { pid: None },
             writable: None,
+            signing: None,
             ..started
         };
         assert!(
@@ -1684,6 +1694,7 @@ mod tests {
                 resumed: None,
             },
             writable: None,
+            signing: None,
         };
         let swapped = Swapped {
             previous: Some(Agent::ClaudeCode),
@@ -1763,6 +1774,7 @@ mod tests {
             agent: Agent::ClaudeCode,
             outcome: StartOutcome::AlreadyRunning { pid: Some(7) },
             writable: None,
+            signing: None,
         };
         let resumed = Resumed {
             session: "s-1".to_owned(),
