@@ -877,6 +877,27 @@ function M.sessions(worktree, primary)
   end)
 end
 
+---`:OrcaTerm sessions`: in the sidebar, `s` on the worktree under the cursor; anywhere else, the
+---sessions of the current tab's worktree, the worktree whose tab is current, or the worktree a
+---review tab or a turn review reviews (`M.sessions`). Anywhere else it says what it needs.
+function M.sessions_current()
+  if require('orca-term.sidebar').list_sessions_here() then
+    return
+  end
+  local path, fleet = current_worktree(
+    "the sessions need a worktree's tab or its review; go to one, or press s on a worktree in the sidebar"
+  )
+  if not (path and fleet) then
+    return
+  end
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.path == path then
+      M.sessions(worktree, fleet.primary.path)
+      return
+    end
+  end
+end
+
 ---`New session` in the menu: asks first, then discards the current session of `worktree` through
 ---the core (`session new`, without blocking), in the worktree's tab. A running agent is restarted
 ---on a new session and shown in a terminal attached again; otherwise its next start begins one,

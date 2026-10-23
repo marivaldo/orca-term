@@ -16,10 +16,17 @@ describe('loading the client', function()
   it('defines :OrcaTerm, completing its subcommands', function()
     support.load_client()
     assert.are.equal(2, vim.fn.exists(':OrcaTerm'))
-    assert.are.same(
-      { 'install-cli', 'jump', 'notes', 'pr-refresh', 'review', 'sidebar', 'turns', 'worktree' },
-      vim.fn.getcompletion('OrcaTerm ', 'cmdline')
-    )
+    assert.are.same({
+      'install-cli',
+      'jump',
+      'notes',
+      'pr-refresh',
+      'review',
+      'sessions',
+      'sidebar',
+      'turns',
+      'worktree',
+    }, vim.fn.getcompletion('OrcaTerm ', 'cmdline'))
     assert.are.same({ 'worktree' }, vim.fn.getcompletion('OrcaTerm wo', 'cmdline'))
     assert.are.same({}, vim.fn.getcompletion('OrcaTerm worktree ', 'cmdline'))
   end)
@@ -34,6 +41,7 @@ describe('loading the client', function()
       '<Plug>(OrcaTermTurns)',
       '<Plug>(OrcaTermInstallCli)',
       '<Plug>(OrcaTermPrRefresh)',
+      '<Plug>(OrcaTermSessions)',
     }
     for n = 1, 9 do
       table.insert(wanted, ('<Plug>(OrcaTermWorktree%d)'):format(n))

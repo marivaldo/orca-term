@@ -28,6 +28,9 @@ local subcommands = {
   turns = function()
     require('orca-term.actions').turns_current()
   end,
+  sessions = function()
+    require('orca-term.actions').sessions_current()
+  end,
   ['install-cli'] = function()
     require('orca-term.install').install_cli()
   end,
@@ -105,6 +108,13 @@ vim.keymap.set(
   end,
   { desc = "orca-term: pick one of the current tab's worktree's turns and review it in diffview" }
 )
+
+vim.keymap.set('n', '<Plug>(OrcaTermSessions)', function()
+  require('orca-term.actions').sessions_current()
+end, {
+  desc = 'orca-term: list the sessions of the worktree under the cursor in the sidebar, '
+    .. "or of the current tab's worktree, to resume one",
+})
 
 vim.keymap.set('n', '<Plug>(OrcaTermPrRefresh)', function()
   require('orca-term.pr').refresh_all()

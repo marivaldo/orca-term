@@ -311,6 +311,46 @@ describe('Sessions', function()
     assert.are.same({}, ui.shown)
   end)
 
+  it(':OrcaTerm sessions lists the same sessions as s, in the sidebar and in a tab', function()
+    local _, demo = two_sessions_on_demo()
+    local ui = support.stub_ui({})
+
+    press_on(':OrcaTerm sessions<CR>', 'demo')
+
+    support.wait_for(function()
+      return #ui.shown > 0
+    end, 'the sessions from the sidebar')
+    assert.are.equal('Sessions of demo', ui.prompts[1])
+    assert.are.same({ CURRENT_HELLO, OLD_HELLO }, ui.shown[1])
+
+    require('orca-term.tabs').go_to(demo)
+    ui = support.stub_ui({})
+    vim.cmd('OrcaTerm sessions')
+
+    support.wait_for(function()
+      return #ui.shown > 0
+    end, "the sessions from the worktree's tab")
+    assert.are.equal('Sessions of demo', ui.prompts[1])
+    assert.are.same({ CURRENT_HELLO, OLD_HELLO }, ui.shown[1])
+    assert.are.same({}, ui.notes)
+  end)
+
+  it(':OrcaTerm sessions says what it needs outside a worktree', function()
+    support.load_client()
+    local repo = support.agent_repo()
+    support.cd(repo.root)
+    local ui = support.stub_ui({})
+
+    vim.cmd('OrcaTerm sessions')
+
+    assert.are.same({
+      message = "orca-term: the sessions need a worktree's tab or its review; "
+        .. 'go to one, or press s on a worktree in the sidebar',
+      level = vim.log.levels.ERROR,
+    }, ui.notes[1])
+    assert.are.same({}, ui.shown)
+  end)
+
   it('shows an age in words', function()
     local minute = 60 * 1000
     assert.are.equal('just now', actions.age(59000, 0))
