@@ -114,6 +114,13 @@ A worktree can run [opencode](https://opencode.ai) instead of claude:
 shows `opencode (running)`. Asking for another agent while one runs is refused as `busy` (exit
 code 3), naming the agent that runs.
 
+`orca-term worktree new <name> --agent claude-code|opencode` creates the worktree and, once its
+setup succeeded, records that agent and starts it, as `agent start --agent` would. A failed setup
+leaves the worktree *not ready* and starts nothing. When the start is refused (no sandbox,
+an unapproved `sandbox.writable` list, a missing or old agent), the worktree is still there and
+ready, with the agent recorded, and the command exits with the refusal's error. In Neovim, `a`
+asks for the name, then offers `claude-code`, `opencode` or `No agent`.
+
 `orca-term agent swap <worktree> <agent>` swaps a worktree's agent: it stops the one running and
 starts the other on the same worktree, which records it. It is refused as `busy` while the agent is
 in a turn, working or waiting for you; stop it with `agent stop` first if you mean to. The turns,

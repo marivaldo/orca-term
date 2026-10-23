@@ -103,6 +103,29 @@ local function agent_terminals()
   end, vim.api.nvim_list_bufs())
 end
 
+---Records, until the spec ends, the worktree name and agent of every `core.worktree_new` call and
+---the path of every `core.agent_start` call, still running each one: the core is never stubbed.
+---@return { worktree_new: string[][], agent_start: string[] }
+local function record_core_calls()
+  local core = require('orca-term.core')
+  local worktree_new, agent_start = core.worktree_new, core.agent_start
+  local calls = { worktree_new = {}, agent_start = {} }
+  ---@diagnostic disable-next-line: duplicate-set-field
+  core.worktree_new = function(name, agent, ...)
+    table.insert(calls.worktree_new, { name, agent })
+    return worktree_new(name, agent, ...)
+  end
+  ---@diagnostic disable-next-line: duplicate-set-field
+  core.agent_start = function(path, ...)
+    table.insert(calls.agent_start, path)
+    return agent_start(path, ...)
+  end
+  finally(function()
+    core.worktree_new, core.agent_start = worktree_new, agent_start
+  end)
+  return calls
+end
+
 ---A repository whose agents are the fake claude, with worktrees named `names` made by the core;
 ---those in `with_agent` get their agent started by the core. Neovim is in its primary checkout,
 ---the sidebar open.
@@ -401,11 +424,12 @@ describe('the agent screen', function()
     it('asks for the agent after the name; claude-code lands in its attached terminal', function()
       local repo = repo_with({})
       local ui = support.stub_ui({ input = 'gamma', select = { 'claude-code' } })
+      local calls = record_core_calls()
 
       press_on('a', 'no worktrees yet')
 
       assert.are.same({ 'New worktree name: ', 'Agent for gamma' }, ui.prompts)
-      assert.are.same({ { 'claude-code', 'No agent' } }, ui.shown)
+      assert.are.same({ { 'claude-code', 'opencode', 'No agent' } }, ui.shown)
       assert.are.equal('orca-term: created worktree gamma', next_note(ui).message)
       local gamma = support.worktree_path(repo, 'gamma')
       local buf = wait_for_terminal(gamma)
@@ -413,7 +437,32 @@ describe('the agent screen', function()
       assert.are.equal(buf, vim.api.nvim_get_current_buf())
       wait_for_screen(buf, 'fake claude ready')
       assert.is_true(support.listed(repo, 'gamma').holder)
+      assert.are.equal('claude-code', support.listed(repo, 'gamma').agent)
       assert.are.equal(1, #ui.notes)
+      -- One call: `worktree new --agent claude-code` started the agent; no `agent start` followed.
+      assert.are.same({ { 'gamma', 'claude-code' } }, calls.worktree_new)
+      assert.are.same({}, calls.agent_start)
+    end)
+
+    it('a start the core refuses lands in the tab, records the agent and tells why', function()
+      local repo = repo_with({})
+      support.remove_sandbox(repo)
+      local ui = support.stub_ui({ input = 'gamma', select = { 'claude-code' } })
+
+      press_on('a', 'no worktrees yet')
+
+      -- Both notes come in the same turn of the event loop.
+      support.wait_for(function()
+        return #ui.notes >= 2
+      end, 'two notifications')
+      assert.are.equal('orca-term: created worktree gamma', ui.notes[1].message)
+      local note = ui.notes[2]
+      assert.are.equal(vim.log.levels.ERROR, note.level)
+      assert(note.message:find("claude's sandbox is not available", 1, true), note.message)
+      assert.are.equal(support.worktree_path(repo, 'gamma'), tab_directory())
+      assert.are.same({}, agent_terminals())
+      local listed = support.listed(repo, 'gamma')
+      assert.are.same({ 'claude-code', false }, { listed.agent, listed.holder })
     end)
 
     it('No agent lands in the tab with no terminal', function()

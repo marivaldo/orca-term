@@ -101,6 +101,8 @@
 ---@class orca_term.Created
 ---@field worktree orca_term.Worktree
 ---@field setup orca_term.SetupResult
+---With `--agent`, what starting the agent did once the setup succeeded; `nil` otherwise
+---@field started? orca_term.Started
 
 ---What `worktree setup --json` prints.
 ---@class orca_term.SetUp
@@ -353,12 +355,24 @@ end
 ---`on_done` may come minutes later. A failed setup is a document whose `setup.status` is
 ---`failed`, not an error: the worktree exists. A setup script from a committed `orca-term.yaml`
 ---that the person has not approved does not run: the worktree exists, not ready, and the error is
----`untrusted`, carrying the `script` and its `source`.
+---`untrusted`, carrying the `script` and its `source`. With an `agent` (`claude-code` or
+---`opencode`) it passes `--agent <agent> --rows R --cols C`, `size` being the agent's first
+---terminal size: once the setup succeeded the core records that agent and starts it, and the
+---document carries `started`. A failed setup starts nothing. A start the core refuses is
+---`agent start`'s error (`no_sandbox`, `prerequisite`, `untrusted` with `what` `sandbox`); the
+---worktree then exists, ready, with the agent recorded.
 ---@param name string
+---@param agent? string
+---@param size { rows: integer, cols: integer }
 ---@param cwd string
 ---@param on_done fun(created: orca_term.Created?, err: orca_term.Error?)
-function M.worktree_new(name, cwd, on_done)
-  run_async({ 'worktree', 'new', name }, cwd, on_done)
+function M.worktree_new(name, agent, size, cwd, on_done)
+  local args = { 'worktree', 'new', name }
+  if agent then
+    vim.list_extend(args, { '--agent', agent, '--rows', tostring(size.rows) })
+    vim.list_extend(args, { '--cols', tostring(size.cols) })
+  end
+  run_async(args, cwd, on_done)
 end
 
 ---Runs the setup of the worktree at `path` (or named `path`) again, without waiting:
@@ -401,15 +415,20 @@ end
 ---`no_sandbox`; the message says why and names the fix. Extra writable paths from a committed
 ---`orca-term.yaml` not approved fail as `untrusted` (`what` is `sandbox`, with the `writable`
 ---paths and their `source`), unless `approve` passes `--approve-sandbox`, which approves them.
+---With an `agent` it passes `--agent <agent>`, which starts that agent and records it.
 ---@param path string
 ---@param size { rows: integer, cols: integer }
 ---@param fresh boolean
 ---@param approve boolean
 ---@param cwd string
 ---@param on_done fun(started: orca_term.Started?, err: orca_term.Error?)
-function M.agent_start(path, size, fresh, approve, cwd, on_done)
+---@param agent? string
+function M.agent_start(path, size, fresh, approve, cwd, on_done, agent)
   local rows, cols = tostring(size.rows), tostring(size.cols)
   local args = { 'agent', 'start', path, '--rows', rows, '--cols', cols }
+  if agent then
+    vim.list_extend(args, { '--agent', agent })
+  end
   if fresh then
     table.insert(args, '--fresh')
   end

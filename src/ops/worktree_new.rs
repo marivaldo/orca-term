@@ -1,5 +1,6 @@
 //! Ops: `worktree new`, which creates git's worktree at `<base>/<repo>/<name>` on a new branch
-//! from the default branch, copies the copy list in and runs the worktree's setup.
+//! from the default branch, copies the copy list in and runs the worktree's setup. With
+//! `--agent`, it then starts that agent as `agent start --agent` does, once the setup succeeded.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,13 +8,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::adapters::{env, fs, git};
+use crate::domain::agent::{Agent, StartMode, Started};
 use crate::domain::config;
 use crate::domain::error::{self, TypedError};
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::include;
 use crate::domain::setup::SetupReport;
-use crate::domain::worktree::{self, Created, WorktreeName};
-use crate::ops::{Approval, config_layers, lock_worktree, notify_changed, set_up};
+use crate::domain::worktree::{self, Created, Target, WorktreeName};
+use crate::ops::agent_start::{self, Wanted};
+use crate::ops::{Approval, config_layers, lock_worktree, notify_changed, set_up, write_agent};
 
 /// Creates the worktree `name` in the repository containing the current directory, echoing its
 /// setup's output to `echo`. A failed setup is not an error: the report says the worktree is not
@@ -79,6 +82,37 @@ pub(crate) fn run(
         base,
         setup,
     })
+}
+
+/// Starts `agent` in the worktree `created` made, with its first terminal size `rows` by `cols`
+/// where given, but only when its setup did not fail: a worktree that is not ready gets no agent,
+/// recorded or started, and `None` comes back. The agent is recorded first, so a start refused
+/// (no sandbox, untrusted, prerequisite) still leaves it the worktree's agent for the next
+/// `agent start`; then it starts exactly as `agent start --agent` would, with the same refusals.
+pub(crate) fn start_agent(
+    created: &Created,
+    agent: Agent,
+    size: (Option<u16>, Option<u16>),
+    approval: &mut Approval<'_>,
+) -> Result<Option<Started>> {
+    if created.setup.outcome.failed() {
+        return Ok(None);
+    }
+    record_agent(created, agent)?;
+    let wanted = Wanted {
+        agent: Some(agent),
+        rows: size.0,
+        cols: size.1,
+        mode: StartMode::Resume,
+    };
+    let target = Target::Path(created.path.clone());
+    agent_start::run(&target, &wanted, approval).map(Some)
+}
+
+/// Records `agent` as the agent of the worktree `created` made, under its lock.
+fn record_agent(created: &Created, agent: Agent) -> Result<()> {
+    let lock = lock_worktree(created.name.as_str(), &created.path)?;
+    write_agent(&lock, agent)
 }
 
 /// Locks the new worktree, tells the running Neovims it exists, copies the copy list and runs the
