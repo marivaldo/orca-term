@@ -13,36 +13,37 @@
 -- spec/golden/sidebar.txt, with `pick-colour` selected; `•` marks the unseen worktrees, `≠` a git
 -- operation in progress (a merge here), `⊘N` counts the tool calls a worktree's latest turn had
 -- denied, and `✎N` its pending notes (`PR`, after them, marks a worktree whose branch has a pull
--- request, coloured by its state and checks):
+-- request, coloured by its state and checks). The agent (`cc`) and the age of the last activity
+-- (`now`, `9m`, `3h`, `2d`) end the name line:
 --
 --   ▾ repo  main
 --
 --   NEEDS YOU 7
 --   ╭────────────────────────────────╮
---   │ ? pick-colour            ⊘3 ✎1 │
+--   │ ? pick-colour     ⊘3 ✎1 cc now │
 --   │   Which colour?                │
 --   ╰────────────────────────────────╯
---  •● api-call
---     API Error: 400 fake bad request
---  •● slow-job
+--  •● slow-job                   cc 9m
 --     SLOW please
+--  •● api-call                   cc 3h
+--     API Error: 400 fake bad request
 --   △ fix-login
 --     setup failed (exit 1): npm ERR!…
 --   ! old-spike
 --     directory missing; run orca-ter…
---  •● greet
+--  •○ nudged                     cc 5m
+--  •● greet                      cc 2d
 --     ok
---  •○ nudged
 --
 --   RUNNING 2
---   ◌ install-deps
---   ◐ run-tests
+--   ◐ run-tests                 cc now
 --     Bash: sleep 6
+--   ◌ install-deps
 --
 --   QUIET 4
---   ● reviewed
+--   ● reviewed                   cc 1d
 --     ok
---   ○ standby
+--   ○ standby                       cc
 --   · docs                        ≠ ✎2
 --   · spike
 --     ⎇ other-branch
@@ -105,6 +106,14 @@ local PR_STATE_GROUPS = {
   merged = 'OrcaTermPrMerged',
   closed = 'OrcaTermPrClosed',
   draft = 'OrcaTermPrDraft',
+}
+
+---The short label of each agent the core knows, at the right of a worktree's name line. Any other
+---agent shows its own name.
+---@type table<string, string>
+M.AGENT_LABELS = {
+  ['claude-code'] = 'cc',
+  opencode = 'oc',
 }
 
 ---The frames of the working glyph, one after the other: frame 0 is the first, as `M.GLYPHS`
@@ -353,6 +362,52 @@ function M.ago(then_ms, now_ms)
   return math.floor(hours / 24) .. ' d ago'
 end
 
+---The label of `agent` at the right of a worktree's name line: `cc` for `claude-code`, `oc` for
+---`opencode`, any other agent's own name.
+---@param agent string
+---@return string
+function M.agent_label(agent)
+  return M.AGENT_LABELS[agent] or agent
+end
+
+---How long ago `then_ms` was at `now_ms` (both in milliseconds since the Unix epoch), short, as a
+---worktree's name line shows it: `now` under a minute, then `9m`, `3h`, `2d`.
+---@param then_ms integer
+---@param now_ms integer
+---@return string
+function M.age(then_ms, now_ms)
+  local seconds = math.max(0, math.floor((now_ms - then_ms) / 1000))
+  if seconds < 60 then
+    return 'now'
+  end
+  local minutes = math.floor(seconds / 60)
+  if minutes < 60 then
+    return minutes .. 'm'
+  end
+  local hours = math.floor(minutes / 60)
+  if hours < 24 then
+    return hours .. 'h'
+  end
+  return math.floor(hours / 24) .. 'd'
+end
+
+---What ends a worktree's name line: its agent's label and the age of its last activity at
+---`now_ms` (`cc 9m`), both muted. Only the label when its last activity is unknown, and nothing
+---when it has no agent.
+---@param worktree orca_term.Worktree
+---@param now_ms integer
+---@return { text: string, group: string }[]
+local function agent_and_age(worktree, now_ms)
+  if not worktree.agent then
+    return {}
+  end
+  local found = { { text = M.agent_label(worktree.agent), group = 'OrcaTermAge' } }
+  if worktree.last_activity then
+    table.insert(found, { text = M.age(worktree.last_activity, now_ms), group = 'OrcaTermAge' })
+  end
+  return found
+end
+
 ---The icons at the right of a worktree's name line, from left to right: `≠` for a git operation
 ---in progress, `⊘N` for the tool calls its latest turn had denied, `✎N` for its pending notes,
 ---then `PR` for its pull request. Empty when it has nothing to show.
@@ -375,9 +430,9 @@ local function icons(worktree)
   return found
 end
 
----Adds `name` to `line`, in `group` when given, then `icons` flushed to the right end of the line's
----budget, a space between them. The name is cut with `…` to leave the icons room, and a space
----before them.
+---Adds `name` to `line`, in `group` when given, then `right` (the icons, then the agent and the
+---age) flushed to the right end of the line's budget, a space between them. The name is cut with
+---`…` to leave them room, and a space before them.
 ---@param line orca_term.Line
 ---@param name string
 ---@param group? string
@@ -406,8 +461,10 @@ end
 ---@param needs_you boolean whether it is under "Needs you", which colours its second line
 ---@param budget integer the cells its lines may take
 ---@param frame integer the spinner frame
+---@param now integer the time the age of its last activity is measured from, in milliseconds
+---since the Unix epoch
 ---@return orca_term.Line[]
-local function worktree_lines(worktree, needs_you, budget, frame)
+local function worktree_lines(worktree, needs_you, budget, frame, now)
   local state_group = highlights.state_group(worktree.state)
 
   local name_line = new_line(budget, worktree.path)
@@ -422,9 +479,10 @@ local function worktree_lines(worktree, needs_you, budget, frame)
   end
   add(name_line, M.glyph(worktree.state, frame), state_group)
   add(name_line, ' ')
-  -- The icons sit at the right of this line; the agent and the age of the last activity will join
-  -- them.
-  add_name(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil, icons(worktree))
+  -- The icons sit at the right of this line, then the agent and the age of its last activity.
+  local right = icons(worktree)
+  vim.list_extend(right, agent_and_age(worktree, now))
+  add_name(name_line, worktree.name, unseen and 'OrcaTermUnseenName' or nil, right)
   local lines = { name_line }
 
   local text = second_line_text(worktree)
@@ -508,17 +566,27 @@ local function finish(built, order, selected)
   return rendered
 end
 
+---The time the sidebar measures ages from when it is given none, in milliseconds since the Unix
+---epoch: the clock's. The golden spec replaces it, so the golden never depends on the clock.
+---@return integer
+function M.clock()
+  return os.time() * 1000
+end
+
 ---The sidebar for `fleet`, with the worktree at path `selected` in the card. When no worktree
 ---has that path (it is `nil`, or the worktree is gone), the first worktree shown is selected.
----A working worktree's glyph is the spinner's frame `frame`.
+---A working worktree's glyph is the spinner's frame `frame`. The age of each worktree's last
+---activity is measured from `now`, in milliseconds since the Unix epoch (the clock's when `nil`).
 ---@param fleet orca_term.Fleet
 ---@param selected? string
 ---@param width? integer
 ---@param frame? integer 0 or more; `nil` is frame 0
+---@param now? integer
 ---@return orca_term.Rendered
-function M.fleet(fleet, selected, width, frame)
+function M.fleet(fleet, selected, width, frame, now)
   width = width or M.WIDTH
   frame = frame or 0
+  now = now or M.clock()
   local sections = fleet_order.sections(fleet.worktrees)
 
   local order = {}
@@ -560,10 +628,10 @@ function M.fleet(fleet, selected, width, frame)
     for _, worktree in ipairs(section.worktrees) do
       if worktree.path == selected then
         -- Inside the card, a row has 4 cells fewer: ` │` on its left and `│` on its right.
-        local body = worktree_lines(worktree, needs_you, width - 5, frame)
+        local body = worktree_lines(worktree, needs_you, width - 5, frame, now)
         add_card(built, body, worktree.path, width)
       else
-        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1, frame))
+        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1, frame, now))
       end
     end
   end

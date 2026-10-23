@@ -79,6 +79,27 @@ describe('fleet', function()
     assert.are.same({ { 'Quiet', 'alpha', 'mid', 'zeta' } }, names(sections))
   end)
 
+  it('orders worktrees of the same rank by recency, those with none last, then by name', function()
+    local function active(name, at)
+      local item = worktree(name, 'finished')
+      item.last_activity = at
+      return item
+    end
+    local sections = fleet.sections({
+      active('old', 100),
+      active('never-b', nil),
+      active('newest', 300),
+      active('never-a', nil),
+      active('tie-b', 200),
+      active('tie-a', 200),
+      worktree('urgent', 'waiting'),
+    })
+    assert.are.same({
+      { 'Needs you', 'urgent' },
+      { 'Quiet', 'newest', 'tie-a', 'tie-b', 'old', 'never-a', 'never-b' },
+    }, names(sections))
+  end)
+
   it('leaves out empty sections and returns none for an empty fleet', function()
     assert.are.same({ { 'Running', 'x' } }, names(fleet.sections({ worktree('x', 'setting_up') })))
     assert.are.same({}, fleet.sections({}))

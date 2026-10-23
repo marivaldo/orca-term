@@ -108,6 +108,7 @@ mod tests {
             denials: 0,
             operation: None,
             pr: None,
+            last_activity: None,
         }
     }
 

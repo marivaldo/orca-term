@@ -82,6 +82,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.denials = derived.denials;
         worktree.operation = derived.operation;
         worktree.pr = derived.pr;
+        worktree.last_activity = derived.last_activity;
     }
     Ok(fleet)
 }
@@ -106,6 +107,8 @@ pub(crate) struct Derived {
     pub(crate) operation: Option<Operation>,
     /// What `pr refresh` last found about its pull request (`domain/pr.rs`).
     pub(crate) pr: Option<PrFacts>,
+    /// When its current session was last active (`domain/session.rs`).
+    pub(crate) last_activity: Option<u64>,
 }
 
 impl Derived {
@@ -120,6 +123,7 @@ impl Derived {
             denials: 0,
             operation: None,
             pr: None,
+            last_activity: None,
         }
     }
 }
@@ -151,7 +155,16 @@ pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     derived.denials = read_denial_count(admin);
     derived.operation = read_operation(admin);
     derived.pr = read_pr(admin).usable();
+    derived.last_activity = read_last_activity(admin);
     Ok(derived)
+}
+
+/// When the current session of the worktree whose admin directory is `admin` was last active, from
+/// its turn log and the hooks' live status (`session::current_activity`). Only reads, and never
+/// fails: a turn log that cannot be read says nothing.
+fn read_last_activity(admin: &AdminDir) -> Option<u64> {
+    let sessions = read_sessions(admin).ok()?;
+    session::current_activity(&sessions, read_status(admin).as_ref())
 }
 
 /// The git operation (a merge, a rebase, a cherry-pick or a revert) the worktree whose admin
@@ -239,6 +252,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 denials: 0,
                 operation: None,
                 pr: None,
+                last_activity: None,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -272,6 +286,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         denials: 0,
         operation: None,
         pr: None,
+        last_activity: None,
     })
 }
 
