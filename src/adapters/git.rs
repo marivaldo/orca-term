@@ -229,6 +229,43 @@ pub(crate) fn has_changes(worktree: &Path) -> Result<bool> {
     Ok(!status.is_empty())
 }
 
+/// The paths that differ between the merge base of `start` and `HEAD` and the files on disk of
+/// the worktree at `worktree`, committed, staged or not, NUL-separated and relative to its root:
+/// `git diff --name-only -z --find-renames --merge-base <start> --`, one process. A moved file
+/// names only its new path. Untracked files are not in it ([`untracked_files`]). `None` when
+/// `start` and `HEAD` share no commit (unrelated histories). Writes nothing.
+pub(crate) fn changed_paths(worktree: &Path, start: &StartPoint) -> Result<Option<Vec<u8>>> {
+    let start = start.to_string();
+    let args = [
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-ext-diff",
+        "--find-renames",
+        "--merge-base",
+        start.as_str(),
+        "--",
+    ];
+    let out = invoke(worktree, &args)?;
+    if out.status.success() {
+        return Ok(Some(out.stdout));
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("no merge base") {
+        return Ok(None);
+    }
+    bail!("git {} failed: {}", display_args(&args), stderr.trim())
+}
+
+/// The untracked files of the worktree at `worktree` that git does not ignore, NUL-separated and
+/// relative to its root: `git ls-files -z --others --exclude-standard`. Writes nothing.
+pub(crate) fn untracked_files(worktree: &Path) -> Result<Vec<u8>> {
+    output(
+        worktree,
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+    )
+}
+
 /// `git worktree remove`, with `--force` when the removal is forced.
 pub(crate) fn worktree_remove(
     primary: &PrimaryCheckout,

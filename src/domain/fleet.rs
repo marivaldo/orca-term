@@ -74,6 +74,11 @@ pub(crate) struct Worktree {
     /// session's turn starts and ends and the hooks' last report (`domain/session.rs`), or `None`
     /// when it has no current session or nothing says.
     pub(crate) last_activity: Option<u64>,
+    /// How many files it changed against its base (#92): the paths that differ between the merge
+    /// base with the start point and the files on disk, committed or not, plus the untracked
+    /// files git does not ignore ([`count_changed_files`]). `None` when it cannot be counted, or
+    /// was not: only `worktree ls` and `worktree detail` count it.
+    pub(crate) changed_files: Option<usize>,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -106,6 +111,7 @@ impl Fleet {
                 operation: None,
                 pr: None,
                 last_activity: None,
+                changed_files: None,
             })
             .collect();
         Ok(Self {
@@ -136,6 +142,37 @@ impl Worktree {
             | State::NotReady(_) => false,
         }
     }
+
+    /// Whether its changed files are worth counting: not while it is broken (git may not be able
+    /// to read it) or its setup is still running (the setup is busy writing files).
+    pub(crate) fn counts_changes(&self) -> bool {
+        match &self.state {
+            State::Broken(_) | State::SettingUp => false,
+            State::NoAgent
+            | State::Idle
+            | State::Working
+            | State::Waiting
+            | State::Finished
+            | State::Failed
+            | State::Interrupted
+            | State::NotReady(_) => true,
+        }
+    }
+}
+
+/// How many distinct files two NUL-separated lists of paths name together: `changed`, what
+/// `git diff --name-only -z <base>` printed, and `untracked`, what
+/// `git ls-files -z --others --exclude-standard` printed. A path in both counts once, as does a
+/// path listed twice.
+pub(crate) fn count_changed_files(changed: &[u8], untracked: &[u8]) -> usize {
+    let mut paths: Vec<&[u8]> = changed
+        .split(|byte| *byte == 0)
+        .chain(untracked.split(|byte| *byte == 0))
+        .filter(|path| !path.is_empty())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths.len()
 }
 
 /// What `worktree prune` cleaned: the worktrees gone from disk that git forgot, and the chains of
@@ -178,6 +215,35 @@ mod tests {
             branch: branch.map(Branch::new),
             prunable: None,
         }
+    }
+
+    #[test]
+    fn changed_files_count_each_path_once() {
+        assert_eq!(count_changed_files(b"", b""), 0, "no changes");
+        assert_eq!(count_changed_files(b"a.txt\0b.txt\0", b""), 2);
+        assert_eq!(count_changed_files(b"", b"new.txt\0"), 1);
+        assert_eq!(
+            count_changed_files(b"a.txt\0gone.txt\0", b"gone.txt\0new.txt\0"),
+            3,
+            "a file removed from the index but still on disk is in both lists"
+        );
+        assert_eq!(
+            count_changed_files(b"dir/with space.txt\0", b""),
+            1,
+            "-z leaves paths unquoted"
+        );
+    }
+
+    #[test]
+    fn only_a_worktree_neither_broken_nor_setting_up_counts_its_changes() {
+        let fleet = Fleet::from_entries(vec![wt("/repo", Some("main")), wt("/l/fix", Some("fix"))])
+            .unwrap();
+        let mut worktree = fleet.worktrees[0].clone();
+        assert!(worktree.counts_changes());
+        worktree.state = State::SettingUp;
+        assert!(!worktree.counts_changes());
+        worktree.state = State::Broken(BrokenReason::DirectoryMissing);
+        assert!(!worktree.counts_changes());
     }
 
     #[test]

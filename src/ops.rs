@@ -44,9 +44,10 @@ use crate::adapters::fs::{self, FileLock, WorktreeLock};
 use crate::adapters::nvim::Sent;
 use crate::adapters::{self, env, git, program, script};
 use crate::domain::agent::{Agent, HolderStatus};
+use crate::domain::branch::StartPoint;
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
-use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
+use crate::domain::fleet::{self, Fleet, PrimaryCheckout, Worktree};
 use crate::domain::history::{self, History};
 use crate::domain::note::translate;
 use crate::domain::note::{self, Anchor, BlobId, Note, Notes, PendingNote};
@@ -85,6 +86,39 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.last_activity = derived.last_activity;
     }
     Ok(fleet)
+}
+
+/// Counts the changed files of every worktree of `fleet` (`Worktree::changed_files`), against
+/// the repository's start point, found once. Only reads, and never fails: a worktree whose count
+/// cannot be read, or every worktree when there is no start point, keeps `None`.
+///
+/// Each worktree is counted on a thread of its own, all at once: most of the time goes to
+/// waiting for git's two processes, so counting ten worktrees takes about as long as one, which
+/// keeps `worktree ls`, the sidebar's read, fast. Every thread writes only its own worktree, and
+/// all of them end before this returns.
+pub(crate) fn count_fleet_changes(fleet: &mut Fleet) {
+    let start = git::start_point(&fleet.primary).ok();
+    let start = start.as_ref();
+    std::thread::scope(|scope| {
+        for worktree in &mut fleet.worktrees {
+            scope.spawn(move || {
+                worktree.changed_files =
+                    start.and_then(|start| read_changed_files(worktree, start));
+            });
+        }
+    });
+}
+
+/// How many files `worktree` changed against its merge base with `start`
+/// (`fleet::count_changed_files`): `git diff --name-only --merge-base` and `git ls-files`.
+/// `None` when it is broken or setting up, shares no history with `start`, or git fails.
+pub(crate) fn read_changed_files(worktree: &Worktree, start: &StartPoint) -> Option<usize> {
+    if !worktree.counts_changes() {
+        return None;
+    }
+    let changed = git::changed_paths(&worktree.path, start).ok()??;
+    let untracked = git::untracked_files(&worktree.path).ok()?;
+    Some(fleet::count_changed_files(&changed, &untracked))
 }
 
 /// A worktree's state and the facts beside it, derived on read.

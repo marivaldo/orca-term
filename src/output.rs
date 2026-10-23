@@ -668,7 +668,8 @@ fn pr_text(found: &Found) -> String {
 
 /// Prints what `worktree detail` found, as a block of lines: the worktree and its state, then
 /// the whole detail indented, the denials of the latest turn, the setup with the end of its log,
-/// and the drift, each part only when it has something to say:
+/// how many files it changed (when it changed some) and the drift, each part only when it has
+/// something to say:
 ///
 /// ```text
 /// fix: failed
@@ -677,6 +678,7 @@ fn pr_text(found: &Found) -> String {
 ///   Bash: FOO=bar ls
 /// setup succeeded (log /r/.git/worktrees/fix/orca-term/setup.log):
 ///   done
+/// 3 files changed
 /// 2 ahead of main, 1 behind
 /// ```
 pub(crate) fn worktree_detail(detail: &Detail, format: Format) -> anyhow::Result<()> {
@@ -710,8 +712,17 @@ fn render_worktree_detail(detail: &Detail) -> String {
     if let Some(setup) = &detail.setup {
         text.push_str(&render_setup_detail(setup));
     }
+    if let Some(changed) = detail.worktree.changed_files.filter(|count| *count > 0) {
+        let _ = writeln!(text, "{}", files_changed(changed));
+    }
     text.push_str(&render_drift(detail.drift.as_ref()));
     text
+}
+
+/// How many files a worktree changed, in Orca's words: `1 file changed`, `3 files changed`.
+fn files_changed(count: usize) -> String {
+    let files = if count == 1 { "file" } else { "files" };
+    format!("{count} {files} changed")
 }
 
 /// The setup's line, `setup failed (exit 1) (log <path>):`, and the end of its log, indented.
@@ -1119,6 +1130,7 @@ mod tests {
             operation: None,
             pr: None,
             last_activity: None,
+            changed_files: None,
         }
     }
 
@@ -1396,6 +1408,7 @@ mod tests {
             worktree: Worktree {
                 unseen: true,
                 operation: Some(Operation::Rebase),
+                changed_files: Some(3),
                 ..worktree("fix", State::Failed)
             },
             why: Some("API Error: 400\n{\"x\":1}".to_owned()),
@@ -1425,10 +1438,14 @@ mod tests {
              rebase in progress (2/5)\n\
              denied 1 tool call in the latest turn:\n  Bash: FOO=bar ls\n\
              setup failed (exit 2) (log /a/setup.log):\n  installing\n  error: boom\n\
+             3 files changed\n\
              2 ahead of main, 1 behind"
         );
         let bare = Detail {
-            worktree: worktree("docs", State::NoAgent),
+            worktree: Worktree {
+                changed_files: Some(0),
+                ..worktree("docs", State::NoAgent)
+            },
             why: None,
             denials: Vec::new(),
             setup: Some(SetupDetail {
@@ -1444,6 +1461,12 @@ mod tests {
             "docs: no agent\nsetup succeeded (log /a/setup.log)\n\
              no drift to show: no local default branch, or a history unrelated to it"
         );
+    }
+
+    #[test]
+    fn one_changed_file_is_singular() {
+        assert_eq!(files_changed(1), "1 file changed");
+        assert_eq!(files_changed(4), "4 files changed");
     }
 
     #[test]

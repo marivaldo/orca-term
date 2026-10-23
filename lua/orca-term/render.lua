@@ -14,7 +14,8 @@
 -- operation in progress (a merge here), `⊘N` counts the tool calls a worktree's latest turn had
 -- denied, and `✎N` its pending notes (`PR`, after them, marks a worktree whose branch has a pull
 -- request, coloured by its state and checks). The agent (`cc`) and the age of the last activity
--- (`now`, `9m`, `3h`, `2d`) end the name line:
+-- (`now`, `9m`, `3h`, `2d`) end the name line. A worktree whose state has nothing more urgent to
+-- say shows how many files it changed on its second line (`1 file changed`):
 --
 --   ▾ repo  main
 --
@@ -33,7 +34,7 @@
 --     directory missing; run orca-ter…
 --  •○ nudged                     cc 5m
 --  •● greet                      cc 2d
---     ok
+--     1 file changed
 --
 --   RUNNING 2
 --   ◐ run-tests                 cc now
@@ -46,7 +47,7 @@
 --   ○ standby                       cc
 --   · docs                        ≠ ✎2
 --   · spike
---     ⎇ other-branch
+--     ⎇ other-branch · 2 files changed
 --
 -- Nothing reaches the last column: rows end one cell before `width`, where the card's right
 -- border ends.
@@ -292,14 +293,37 @@ local function header(repo, branch, width)
   return line
 end
 
----What a worktree's second line says: its detail or, when it has none, its agent's activity,
----after its branch when the branch is not named like the worktree. An empty string means the
----worktree has no second line.
+---The states whose second line gives way to the count of changed files (#92): nothing more
+---urgent to say there. A question, an error, a setup failure, a broken worktree's reason and a
+---working agent's activity keep the line.
+---@type table<string, boolean>
+local SHOWS_CHANGED_FILES = {
+  finished = true,
+  interrupted = true,
+  idle = true,
+  no_agent = true,
+}
+
+---How many files a worktree changed, in Orca's words: `1 file changed`, `4 files changed`.
+---@param count integer
+---@return string
+function M.files_changed(count)
+  return count .. (count == 1 and ' file changed' or ' files changed')
+end
+
+---What a worktree's second line says: how many files it changed, when it changed some and its
+---state has nothing more urgent to say (`SHOWS_CHANGED_FILES`); otherwise its detail or, when it
+---has none, its agent's activity. Either comes after its branch when the branch is not named like
+---the worktree. An empty string means the worktree has no second line.
 ---@param worktree orca_term.Worktree
 ---@return string
 local function second_line_text(worktree)
   local said = worktree.detail or worktree.activity
   local text = said and one_line(said) or ''
+  local changed = worktree.changed_files
+  if SHOWS_CHANGED_FILES[worktree.state] and changed and changed > 0 then
+    text = M.files_changed(changed)
+  end
   if worktree.branch ~= worktree.name then
     local branch = '⎇ ' .. (worktree.branch or 'detached')
     if text == '' then
@@ -691,6 +715,7 @@ end
 ---
 ---   ● failed · claude-code
 ---   fix  ↑2 ↓1 main
+---   3 files changed
 ---
 ---   rebase in progress (2/5)
 ---
@@ -760,6 +785,12 @@ function M.detail(detail, width, now)
     add(branch_line, drift, 'OrcaTermMuted')
   end
   table.insert(built, branch_line)
+
+  -- How many files it changed, under its branch, when it changed some.
+  local changed = worktree.changed_files
+  if changed and changed > 0 then
+    add_line(M.files_changed(changed), 'OrcaTermMuted')
+  end
 
   -- The git operation in progress, with a rebase's step when git records it.
   if worktree.operation then

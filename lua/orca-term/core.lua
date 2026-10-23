@@ -71,6 +71,10 @@
 ---When its current session was last active, in milliseconds since the Unix epoch; `nil` when it
 ---has no current session or nothing says (only `worktree ls` and `worktree detail` print it)
 ---@field last_activity? integer
+---How many files it changed against its merge base with the default branch, committed or not,
+---untracked files git does not ignore included; `nil` when it cannot be counted, or it is broken
+---or setting up (only `worktree ls` and `worktree detail` print it)
+---@field changed_files? integer
 
 ---What `pr refresh` last found about a worktree's pull request, as `worktree ls --json` prints it:
 ---the pull request (`number` set), `none` when its branch has none, or `unavailable`, why the

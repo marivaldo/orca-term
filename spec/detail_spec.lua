@@ -196,10 +196,11 @@ describe('the detail float', function()
 
     local float, lines = open_detail('fix')
     -- A stopped rebase leaves the worktree detached on the commits replayed so far: here none, on
-    -- `main` itself.
+    -- `main` itself, with the conflicted `a.txt` changed on disk.
     assert.are.same({
       ' · no agent',
       ' detached  up to date with main',
+      ' 1 file changed',
       '',
       ' rebase in progress (1/2)',
     }, lines)

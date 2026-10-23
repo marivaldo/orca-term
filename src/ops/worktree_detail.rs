@@ -1,6 +1,7 @@
 //! Ops: `worktree detail`, everything the Neovim client's detail float shows about a worktree
-//! (`domain/detail.rs`). Only reads: it runs git to count the drift, and fetches nothing. The step
-//! of a rebase in progress is read from git's own files, with no git run.
+//! (`domain/detail.rs`). Only reads: it runs git to count the drift and the changed files, and
+//! fetches nothing. The step of a rebase in progress is read from git's own files, with no git
+//! run.
 //!
 //! A worktree whose directory is gone still gives its state and the reason; it has no denials,
 //! setup or drift to show, since git can no longer name its admin directory or its `HEAD`.
@@ -17,7 +18,9 @@ use crate::domain::operation::{Operation, RebaseStep};
 use crate::domain::setup;
 use crate::domain::state::{AdminDir, State};
 use crate::domain::worktree::Target;
-use crate::ops::{find_target, read_fleet, read_rebase_step, read_recorded, read_status};
+use crate::ops::{
+    find_target, read_changed_files, read_fleet, read_rebase_step, read_recorded, read_status,
+};
 
 /// How much of the end of the setup log is read: far more than the lines shown.
 const SETUP_LOG_TAIL: u64 = 64 * 1024;
@@ -27,7 +30,7 @@ const SETUP_LOG_TAIL: u64 = 64 * 1024;
 pub(crate) fn run(target: &Target) -> Result<Detail> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
-    let worktree = find_target(&fleet, &cwd, target)?.clone();
+    let mut worktree = find_target(&fleet, &cwd, target)?.clone();
     if worktree.is_gone() {
         return Ok(Detail {
             why: worktree.state.detail(),
@@ -39,6 +42,9 @@ pub(crate) fn run(target: &Target) -> Result<Detail> {
         });
     }
     let admin = git::admin_dir(&worktree.path)?;
+    worktree.changed_files = git::start_point(&fleet.primary)
+        .ok()
+        .and_then(|start| read_changed_files(&worktree, &start));
     let status = read_status(&admin);
     Ok(Detail {
         why: detail::whole_detail(&worktree.state, status.as_ref()),

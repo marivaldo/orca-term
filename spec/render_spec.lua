@@ -196,6 +196,86 @@ describe('render', function()
     assert.are.equal(' │   ⎇ other · ok                 │', rendered.lines[moved + 1])
   end)
 
+  it(
+    'says how many files changed on the second line when the state has nothing more urgent',
+    function()
+      local quiet = {
+        finished = 'All done.',
+        interrupted = 'SLOW please',
+        idle = false,
+        no_agent = false,
+      }
+      local worktrees = {}
+      for state, activity in pairs(quiet) do
+        local fields = { state = state, changed_files = 4, activity = activity or nil }
+        table.insert(worktrees, worktree(state, fields))
+      end
+      table.insert(worktrees, worktree('single', { state = 'finished', changed_files = 1 }))
+      table.insert(
+        worktrees,
+        worktree('clean', { state = 'finished', changed_files = 0, activity = 'ok' })
+      )
+      table.insert(worktrees, worktree('unknown', { state = 'idle' }))
+      table.insert(worktrees, worktree('moved', { branch = 'other', changed_files = 2 }))
+      local rendered = render.fleet(fleet(worktrees), '/src/wt/unknown')
+      for state in pairs(quiet) do
+        local name = assert(line_with(rendered, render.glyph(state) .. ' ' .. state), state)
+        assert.are.equal('   4 files changed', rendered.lines[name + 1], state)
+      end
+      assert.are.equal(
+        '   1 file changed',
+        rendered.lines[assert(line_with(rendered, 'single')) + 1]
+      )
+      assert.are.equal('   ok', rendered.lines[assert(line_with(rendered, 'clean')) + 1])
+      -- A count the core could not give leaves the line as it was: none, for an idle worktree.
+      local unknown = assert(rendered.firsts['/src/wt/unknown'])
+      assert.are.equal(
+        ' ╰────────────────────────────────╯',
+        rendered.lines[unknown + 1]
+      )
+      local moved = assert(line_with(rendered, 'moved'))
+      assert.are.equal('   ⎇ other · 2 files changed', rendered.lines[moved + 1])
+      assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, moved + 1))
+      assert_fits(rendered, render.WIDTH)
+    end
+  )
+
+  it(
+    'keeps the question, the error, the setup failure, the reason and the activity first',
+    function()
+      local urgent = {
+        waiting = { activity = 'Which colour?' },
+        failed = { activity = 'API Error: 400' },
+        not_ready = { detail = 'setup failed (exit 1)' },
+        broken = { detail = 'directory missing' },
+        working = { activity = 'Bash: sleep 6' },
+      }
+      local worktrees = {}
+      for state, fields in pairs(urgent) do
+        local all = vim.tbl_extend('force', { state = state, changed_files = 4 }, fields)
+        table.insert(worktrees, worktree(state, all))
+      end
+      -- A quiet worktree holds the card, so that every urgent row reads plain.
+      table.insert(worktrees, worktree('chosen'))
+      local rendered = render.fleet(fleet(worktrees), '/src/wt/chosen')
+      for state, fields in pairs(urgent) do
+        local name = assert(line_with(rendered, render.glyph(state) .. ' ' .. state), state)
+        assert.are.equal('   ' .. (fields.detail or fields.activity), rendered.lines[name + 1])
+      end
+      assert.is_nil(line_with(rendered, 'changed'))
+      -- Under Needs you, the count takes the state's colour, as the line always does there.
+      local unseen = render.fleet(
+        fleet({
+          worktree('done', { state = 'finished', unseen = true, changed_files = 2 }),
+          worktree('chosen'),
+        }),
+        '/src/wt/chosen'
+      )
+      local done = assert(line_with(unseen, '   2 files changed'))
+      assert.are.same({ 'OrcaTermStateFinished' }, groups_on(unseen, done))
+    end
+  )
+
   it('turns only the working glyph with the spinner frame', function()
     local worktrees = {}
     for state in pairs(render.GLYPHS) do
@@ -585,6 +665,23 @@ describe("render.detail, a worktree's detail", function()
       assert.are.same({ ' · no agent', ' detached' }, bare.lines)
     end
   )
+
+  it('lists how many files the worktree changed under its branch, when it changed some', function()
+    local rendered = render.detail(
+      document({ drift = { against = 'main', ahead = 1, behind = 0 } }, { changed_files = 3 }),
+      50
+    )
+    assert.are.same(
+      { ' ● finished · claude-code', ' fix  ↑1 main', ' 3 files changed' },
+      rendered.lines
+    )
+    assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, 3))
+    assert.are.equal(
+      ' 1 file changed',
+      render.detail(document({}, { changed_files = 1 }), 50).lines[3]
+    )
+    assert.are.equal(2, #render.detail(document({}, { changed_files = 0 }), 50).lines)
+  end)
 
   it('names opencode as the agent the same way (#35)', function()
     local rendered = render.detail(document({}, { agent = 'opencode' }), 50)

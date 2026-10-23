@@ -49,13 +49,16 @@ struct FleetView<'a> {
 /// what `pr refresh` last found about its pull request (null when it never ran for it), then
 /// `last_activity`, when its current session was last active, in milliseconds since the Unix
 /// epoch (the latest of that session's turn starts and ends and the hooks' last report; null when
-/// it has no current session or nothing says).
+/// it has no current session or nothing says), then `changed_files`, how many files it changed
+/// against its merge base with the start point, committed or not, untracked files git does not
+/// ignore included (null when it cannot be counted, or it is broken or setting up).
 #[derive(Debug, Serialize)]
 struct ListedWorktreeView<'a> {
     #[serde(flatten)]
     worktree: WorktreeView<'a>,
     pr: Option<PrView<'a>>,
     last_activity: Option<u64>,
+    changed_files: Option<usize>,
 }
 
 /// What `pr refresh` found, and when (`fetched_at`, milliseconds since the Unix epoch), in one of
@@ -590,6 +593,7 @@ fn set_up_worktree(
         // last activity.
         pr: None,
         last_activity: None,
+        changed_files: None,
     }
 }
 
@@ -1004,6 +1008,7 @@ fn listed_worktree_view(worktree: &Worktree) -> ListedWorktreeView<'_> {
         worktree: worktree_view(worktree),
         pr: worktree.pr.as_ref().map(pr_view),
         last_activity: worktree.last_activity,
+        changed_files: worktree.changed_files,
     }
 }
 
@@ -1091,7 +1096,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}]}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -1140,7 +1145,7 @@ mod tests {
             .unwrap();
             assert!(
                 fleet_doc.contains(&format!(
-                    r#""denials":0,"operation":null,"pr":{shape},"last_activity":null}}]"#
+                    r#""denials":0,"operation":null,"pr":{shape},"last_activity":null,"changed_files":null}}]"#
                 )),
                 "{fleet_doc}"
             );
@@ -1204,7 +1209,7 @@ mod tests {
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}]}}"#
             )
         );
     }
@@ -1224,6 +1229,7 @@ mod tests {
             operation: None,
             pr: None,
             last_activity: None,
+            changed_files: None,
         }
     }
 
@@ -1561,6 +1567,7 @@ mod tests {
                 denials: 1,
                 operation: Some(Operation::Rebase),
                 last_activity: Some(1_700_000_000_000),
+                changed_files: Some(3),
                 ..idle_worktree()
             },
             why: Some("API Error: 400\n{}".to_owned()),
@@ -1588,7 +1595,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase","pr":null,"last_activity":1700000000000}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase","pr":null,"last_activity":1700000000000,"changed_files":3}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
             )
         );
     }
@@ -1613,6 +1620,7 @@ mod tests {
         assert_eq!(bare["drift"], serde_json::Value::Null);
         assert_eq!(bare["worktree"]["operation"], serde_json::Value::Null);
         assert_eq!(bare["worktree"]["last_activity"], serde_json::Value::Null);
+        assert_eq!(bare["worktree"]["changed_files"], serde_json::Value::Null);
         assert_eq!(bare["operation_step"], serde_json::Value::Null);
         for (progress, name) in [
             (SetupProgress::Running, "running"),
