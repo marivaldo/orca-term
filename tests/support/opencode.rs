@@ -18,7 +18,7 @@ use crate::support::Repo;
 /// The fake `opencode`: answers `--version`, answers `session list` with `<log>.sessions` as the
 /// test wrote it (nothing when it did not, which is no list) and its arguments in
 /// `<log>.session-list`, records its arguments, directory, environment variable names (never
-/// values) and the value of `OPENCODE_CONFIG_DIR` (ours), runs a test's prelude, says it is ready,
+/// values) and the values of `OPENCODE_CONFIG_DIR` and `OPENCODE_DISABLE_AUTOUPDATE` (ours), runs a test's prelude, says it is ready,
 /// then writes the events it is told to send, echoes anything else, exits on `exit <code>`, and
 /// ends on `SIGHUP`. Bash builtins and absolute paths only.
 const FAKE_OPENCODE: &str = r#"#!/bin/bash
@@ -33,6 +33,7 @@ printf '%s\0' "$@" > "$log.argv"
 pwd > "$log.cwd"
 compgen -e > "$log.env"
 printf '%s' "$OPENCODE_CONFIG_DIR" > "$log.config"
+printf '%s' "$OPENCODE_DISABLE_AUTOUPDATE" > "$log.autoupdate"
 echo start >> "$log.starts"
 trap 'echo "got HUP"; exit 129' HUP
 PRELUDE
@@ -166,6 +167,11 @@ impl OpenCodeRepo {
     /// `OPENCODE_CONFIG_DIR` as the fake opencode last saw it.
     pub(crate) fn config_dir(&self) -> PathBuf {
         PathBuf::from(fs::read_to_string(self.log.with_extension("config")).unwrap())
+    }
+
+    /// The value of `OPENCODE_DISABLE_AUTOUPDATE` opencode was started with, empty when unset.
+    pub(crate) fn autoupdate_off(&self) -> String {
+        fs::read_to_string(self.log.with_extension("autoupdate")).unwrap()
     }
 
     /// How many times the fake opencode was started.

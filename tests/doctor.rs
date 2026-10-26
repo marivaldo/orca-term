@@ -33,6 +33,28 @@ use serde_json::{Value, json};
 /// The tested claude, as `domain/prerequisite.rs` names it.
 const TESTED: &str = "2.1.306";
 
+/// The tested opencode, as `domain/prerequisite.rs` names it.
+const OPENCODE_TESTED: &str = "1.18.0";
+
+/// The newest version among the recordings in `tests/fixtures/<dir>`, named
+/// `<recording>-<version>.log`.
+fn newest_recorded(dir: &str) -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(dir);
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            let version = name.strip_suffix(".log")?.rsplit('-').next()?.to_owned();
+            let parts: Vec<u64> = version.split('.').map(|p| p.parse().unwrap()).collect();
+            Some((parts, version))
+        })
+        .max()
+        .unwrap()
+        .1
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8(out.stdout.clone()).unwrap()
 }
@@ -337,18 +359,7 @@ fn agent_start_refuses_a_claude_below_the_floor_or_missing_as_prerequisite() {
 
 #[test]
 fn the_tested_claude_is_the_newest_one_recorded_in_the_fixtures() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-hooks");
-    let newest = std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|entry| {
-            let name = entry.unwrap().file_name().into_string().unwrap();
-            let version = name.strip_suffix(".log")?.rsplit('-').next()?.to_owned();
-            let parts: Vec<u64> = version.split('.').map(|p| p.parse().unwrap()).collect();
-            Some((parts, version))
-        })
-        .max()
-        .unwrap()
-        .1;
+    let newest = newest_recorded("claude-hooks");
     assert_eq!(
         newest, TESTED,
         "raise CLAUDE_TESTED in domain/prerequisite.rs"
@@ -358,4 +369,27 @@ fn the_tested_claude_is_the_newest_one_recorded_in_the_fixtures() {
     fx.write_claude(&format!("{newest} (Claude Code)"), "");
     let doc = json(&doctor(&fx, &["--json"]));
     assert_eq!(doc["checks"][2]["status"], "ok", "{doc}");
+}
+
+#[test]
+fn the_tested_opencode_is_the_newest_one_recorded_in_the_fixtures() {
+    let newest = newest_recorded("opencode-events");
+    assert_eq!(
+        newest, OPENCODE_TESTED,
+        "raise OPENCODE_TESTED in domain/prerequisite.rs"
+    );
+
+    let fx = AgentRepo::new();
+    fx.write_tool("opencode", &format!("#!/bin/sh\necho {newest}\n"));
+    let doc = json(&doctor(&fx, &["--json"]));
+    assert_eq!(doc["checks"][3]["name"], "opencode", "{doc}");
+    assert_eq!(doc["checks"][3]["status"], "ok", "{doc}");
+
+    fx.write_tool("opencode", "#!/bin/sh\necho 99.0.0\n");
+    let doc = json(&doctor(&fx, &["--json"]));
+    assert_eq!(doc["checks"][3]["status"], "warn", "{doc}");
+    assert_eq!(
+        doc["checks"][3]["message"],
+        format!("opencode 99.0.0: newer than the tested {OPENCODE_TESTED}; it may still work")
+    );
 }

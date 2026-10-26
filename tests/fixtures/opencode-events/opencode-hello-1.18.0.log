@@ -1,0 +1,4 @@
+{"type":"start"}
+{"type":"prompt","session":"ses_e86275003ffe1J5xnsCsQnfbZU","parent":null,"text":"reply with the single word ok"}
+{"type":"idle","session":"ses_e86275003ffe1J5xnsCsQnfbZU","parent":null,"text":"ok","finish":"stop","error":null}
+{"type":"end"}

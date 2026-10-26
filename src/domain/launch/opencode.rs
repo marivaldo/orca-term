@@ -23,6 +23,11 @@ use crate::domain::launch::SessionId;
 /// The variable that names opencode's extra config directory, the one holding our plugin.
 pub(crate) const CONFIG_DIR_VAR: &str = "OPENCODE_CONFIG_DIR";
 
+/// The variable that turns off opencode's update check, set to `1` at every launch. Inside the
+/// sandbox an update can only fail, and the dialog opencode opens to offer it takes the first keys
+/// typed: Enter confirmed an update and the prompt was lost (measured on opencode 1.18.0).
+pub(crate) const NO_AUTOUPDATE_VAR: &str = "OPENCODE_DISABLE_AUTOUPDATE";
+
 /// The plugin, a plain JavaScript file importing only Node's built-in `fs`.
 pub(crate) const PLUGIN: &str = include_str!("opencode/orca-term.js");
 

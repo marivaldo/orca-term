@@ -25,6 +25,11 @@ pub(crate) const CLAUDE_TESTED: &str = "2.1.306";
 /// written against (#35).
 pub(crate) const OPENCODE_FLOOR: &str = "1.18.0";
 
+/// The newest opencode orca-term was tested with: the version of the newest recordings of
+/// opencode's events in `tests/fixtures/opencode-events/` (`*-1.18.0.log`). A newer opencode is
+/// warned about, never refused. Raise it when new recordings land.
+pub(crate) const OPENCODE_TESTED: &str = "1.18.0";
+
 /// The oldest git orca-term supports.
 pub(crate) const GIT_FLOOR: &str = "2.38";
 
@@ -74,7 +79,7 @@ pub(crate) const CLAUDE: Requirement = Requirement {
 pub(crate) const OPENCODE: Requirement = Requirement {
     program: Agent::OpenCode.program(),
     floor: OPENCODE_FLOOR,
-    tested: None,
+    tested: Some(OPENCODE_TESTED),
     need: Need::Optional,
     install: "install opencode (https://opencode.ai)",
 };
@@ -403,6 +408,24 @@ mod tests {
         assert_eq!(
             old.message,
             "claude 2.1.294: orca-term needs 2.1.295 or later"
+        );
+    }
+
+    #[test]
+    fn opencode_newer_than_the_tested_version_is_a_warning_never_a_refusal() {
+        let tested = check_program(&OPENCODE, &printed("1.18.0"));
+        assert_eq!(tested.status, Status::Ok);
+        let newer = check_program(&OPENCODE, &printed("2.1.4"));
+        assert_eq!(newer.status, Status::Warn);
+        assert_eq!(
+            newer.message,
+            "opencode 2.1.4: newer than the tested 1.18.0; it may still work"
+        );
+        let started = check_program(&agent_requirement(Agent::OpenCode), &printed("2.1.4"));
+        assert_eq!(
+            started.status,
+            Status::Warn,
+            "agent start runs it all the same"
         );
     }
 

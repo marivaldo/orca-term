@@ -1,0 +1,6 @@
+{"type":"start"}
+{"type":"prompt","session":"ses_e8626a0b1ffesC1K2yWF3oMliV","parent":null,"text":"write the numbers from 1 to 300, one per line"}
+{"type":"error","session":"ses_e8626a0b1ffesC1K2yWF3oMliV","parent":null,"name":"MessageAbortedError","message":"Aborted"}
+{"type":"idle","session":"ses_e8626a0b1ffesC1K2yWF3oMliV","parent":null,"text":null,"finish":null,"error":null}
+{"type":"idle","session":"ses_e8626a0b1ffesC1K2yWF3oMliV","parent":null,"text":null,"finish":null,"error":"MessageAbortedError"}
+{"type":"end"}
