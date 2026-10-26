@@ -19,9 +19,10 @@ mod layers;
 mod live;
 mod pr_title;
 mod release_version;
+mod schema_fixtures;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | release-version <tag> | vocab | layers | client-boundary | launch-guard | gh-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | release-version <tag> | vocab | layers | client-boundary | launch-guard | gh-guard | schema-fixtures | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -78,6 +79,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
         ["client-boundary"] => client_boundary::lint_repository(Path::new(".")),
         ["launch-guard"] => launch_guard::lint_repository(Path::new(".")),
         ["gh-guard"] => gh_guard::lint_repository(Path::new(".")),
+        ["schema-fixtures"] => schema_fixtures::lint_repository(Path::new(".")),
         _ => bail!(USAGE),
     }
 }
