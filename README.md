@@ -622,6 +622,10 @@ every checksum, and only then creates the GitHub release with them. A pull reque
 the build runs the same build and check as a dry run that publishes nothing, and so does
 `gh workflow run release.yml --ref <branch>`.
 
+Before tagging, set `version` in `Cargo.toml` to the release's version and tag it as `v<version>`, for
+example `v0.1.0` for `0.1.0`: the release fails before building anything when the tag is not
+exactly that, which `cargo xtask release-version <tag>` checks locally.
+
 ## Scope
 
 In: parallel agents in isolated worktrees, diff review that can feed comments back to the agent

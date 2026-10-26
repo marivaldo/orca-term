@@ -1029,6 +1029,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   ADR 0008, packs each with `.github/scripts/package-release.sh` and checks every asset with
   `.github/scripts/verify-release.sh` before its `publish` job, the only one that may write,
   creates the release; pull requests touching the build run it as a dry run.
+- On a tag push, the release workflow's first job runs `cargo xtask release-version <tag>`
+  (`xtask/src/release_version.rs`, #117), which fails unless the tag is exactly `v<version>` of
+  `Cargo.toml`, before anything is built; each binary the runner can execute is checked to print
+  `orca-term <version>` for `--version`.
 - The live checks never run in CI: a unit test of `xtask/src/live.rs`
   (`no_workflow_and_no_other_recipe_runs_the_live_checks`) fails when a workflow, or any recipe
   of the justfile but `check-live` itself, mentions `check-live`.
