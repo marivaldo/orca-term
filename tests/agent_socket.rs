@@ -5,7 +5,8 @@
 //! `opencode` and fake sandbox tools on an isolated PATH, with a socket of the test's own as
 //! `SSH_AUTH_SOCK` (passed explicitly, never the developer's) and a fake `gpgconf`. A committed
 //! `orca-term.yaml` that sets it starts nothing. The real sandbox reaching a real throwaway
-//! ssh-agent is `tests/opencode_sandbox.rs`.
+//! ssh-agent is `tests/opencode_sandbox.rs`. `agent start` says which kinds of socket it allowed,
+//! or warns that it found none, and never allows one inside the git common dir (#108).
 
 #![expect(
     clippy::unwrap_used,
@@ -254,4 +255,113 @@ fn opencodes_profile_allows_the_socket_by_one_exact_rule() {
         assert!(!argv_off.iter().any(|arg| arg.contains(&socket)));
         assert!(!argv_on.iter().any(|arg| arg.contains(&socket)));
     }
+}
+
+/// Starts claude in a new worktree `name` with `SSH_AUTH_SOCK` set to `socket`, or unset when
+/// `None`, once in text and, after stopping it, once with `--json`. Returns the text start's
+/// stderr and the `--json` start's `signing_sockets`.
+fn start_reporting(fx: &AgentRepo, name: &str, socket: Option<&Path>) -> (String, Value) {
+    let run = |args: &[&str]| {
+        let mut command = fx.command(args);
+        match socket {
+            Some(socket) => command.env("SSH_AUTH_SOCK", socket),
+            None => command.env_remove("SSH_AUTH_SOCK"),
+        };
+        let out = command.output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        out
+    };
+    fx.new_worktree(name);
+    let text = run(&["agent", "start", name]);
+    fx.wait_for_output(name, "fake claude ready");
+    fx.ok(&["agent", "stop", name]);
+    let json = run(&["agent", "start", name, "--json", "--fresh"]);
+    let doc: Value = serde_json::from_slice(&json.stdout).unwrap();
+    (stderr(&text), doc["signing_sockets"].clone())
+}
+
+/// The lines of `stderr` about signing.
+fn signing_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("signing:"))
+        .collect()
+}
+
+#[test]
+fn agent_start_says_it_reaches_the_ssh_agent_and_lists_its_kind() {
+    let fx = AgentRepo::new();
+    fx.repo.write(".git/orca-term.yaml", ON);
+    let (_listener, socket) = listening(&socket_dir(&fx), "agent.sock");
+
+    let (stderr, kinds) = start_reporting(&fx, "fix", Some(&socket));
+
+    assert_eq!(
+        signing_lines(&stderr),
+        ["signing: the sandbox reaches your ssh agent"]
+    );
+    assert!(
+        !stderr.contains(&socket.display().to_string()),
+        "never the path: {stderr}"
+    );
+    assert_eq!(kinds, json!(["ssh-agent"]));
+}
+
+#[test]
+fn without_the_setting_agent_start_says_nothing_of_signing_and_the_field_is_null() {
+    let fx = AgentRepo::new();
+    let (_listener, socket) = listening(&socket_dir(&fx), "agent.sock");
+
+    let (stderr, kinds) = start_reporting(&fx, "fix", Some(&socket));
+
+    assert!(signing_lines(&stderr).is_empty(), "{stderr}");
+    assert_eq!(kinds, Value::Null);
+}
+
+#[test]
+fn with_no_socket_agent_start_warns_and_still_starts() {
+    let fx = AgentRepo::new();
+    fx.repo.write(".git/orca-term.yaml", ON);
+    let file = socket_dir(&fx).join("not-a-socket");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "").unwrap();
+
+    let (stderr, kinds) = start_reporting(&fx, "openpgp", Some(&file));
+    assert_eq!(
+        signing_lines(&stderr),
+        [
+            "signing: sandbox.agent_socket is on, but no signing agent socket was found \
+             (SSH_AUTH_SOCK is unset or not a socket; gpgconf names no gpg-agent socket)"
+        ]
+    );
+    assert_eq!(kinds, json!([]));
+
+    fx.repo.git(&["config", "gpg.format", "ssh"]);
+    let (stderr, kinds) = start_reporting(&fx, "ssh", None);
+    assert_eq!(
+        signing_lines(&stderr),
+        [
+            "signing: sandbox.agent_socket is on, but no signing agent socket was found \
+             (SSH_AUTH_SOCK is unset or not a socket)"
+        ],
+        "gpgconf is named only when git signs with openpgp"
+    );
+    assert_eq!(kinds, json!([]));
+}
+
+#[test]
+fn a_socket_inside_the_git_common_dir_is_never_allowed() {
+    let fx = AgentRepo::new();
+    fx.repo.write(".git/orca-term.yaml", ON);
+    let (_listener, socket) = listening(&fx.repo.root.join(".git/s"), "agent.sock");
+
+    let (stderr, kinds) = start_reporting(&fx, "fix", Some(&socket));
+    let network = start_claude(&fx, "again", Some(&socket));
+
+    assert_eq!(network.get("allowUnixSockets"), None, "{network}");
+    assert_eq!(kinds, json!([]));
+    assert!(
+        signing_lines(&stderr)[0].contains("no signing agent socket was found"),
+        "{stderr}"
+    );
 }
