@@ -155,8 +155,10 @@ the adapters, and returns a domain value that `output` prints.
   config signs with an ssh key whose private half is not a readable file (or a key written in the
   config), an `info` line names `sandbox.agent_socket` (#105); the key is never read nor printed.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
-  lock it, copy the copy list, run the setup. With `--agent` (#93), `start_agent` then records the
-  agent and starts it through `agent_start::run`, only when the setup did not fail.
+  lock it, copy the copy list, run the setup. With `--agent` (#93), the agent is recorded under the
+  lock before the setup runs, so a failed or unapproved setup still leaves it the worktree's agent
+  (#119); `start_agent` then starts it through `agent_start::run`, only when the setup did not
+  fail.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
   the setup again.
 - Both run the setup through `ops::set_up`, which, for a script from a committed

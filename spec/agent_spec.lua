@@ -2,7 +2,8 @@
 -- `support.agent_repo()`. `<CR>` on a worktree with an agent goes to its tab and shows the agent
 -- there, in a terminal attached to its holder; wiping that terminal, or quitting another Neovim
 -- holding one, only detaches, and `<CR>` attaches again with the scrollback. A worktree that is not
--- ready, or with no sandbox, is refused with the core's reason. `a` asks which agent to start.
+-- ready, or with no sandbox, is refused with the core's reason. `a` asks which agent to start;
+-- after a failed setup the agent stays recorded, and `<CR>` starts it once the setup succeeds.
 -- `vim.ui` and `vim.notify` are stubbed; the core never is. What needs Neovim's main loop running
 -- as a person's does (terminal mode, typed keys, quitting) is driven in a child Neovim over RPC.
 
@@ -492,7 +493,7 @@ describe('the agent screen', function()
       assert.are.same({}, ui.notes)
     end)
 
-    it('a failed setup with claude-code warns and starts no agent', function()
+    it('a failed setup with claude-code records it, and <CR> starts it once set up', function()
       local repo = repo_with({})
       support.set_setup(repo, { 'echo boom', 'exit 3' })
       local ui = support.stub_ui({ input = 'broken', select = { 'claude-code' } })
@@ -510,7 +511,20 @@ describe('the agent screen', function()
       vim.wait(300)
       assert.are.same({}, agent_terminals())
       local listed = support.listed(repo, 'broken')
-      assert.are.same({ 'not_ready', false }, { listed.state, listed.holder })
+      assert.are.same(
+        { 'not_ready', false, 'claude-code' },
+        { listed.state, listed.holder, listed.agent }
+      )
+
+      -- Fixed and set up again (`worktree setup` starts nothing): `<CR>` starts the agent chosen.
+      support.set_setup(repo, {})
+      support.core(repo, { 'worktree', 'setup', 'broken' })
+      assert.is_false(support.listed(repo, 'broken').holder)
+      vim.cmd('doautocmd FocusGained')
+      press_on('<CR>', 'broken')
+      local buf = wait_for_terminal(support.worktree_path(repo, 'broken'))
+      wait_for_screen(buf, 'fake claude ready')
+      assert.is_true(support.listed(repo, 'broken').holder)
     end)
   end)
 end)

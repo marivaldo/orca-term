@@ -671,10 +671,10 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
 }
 
 /// Runs `worktree new`: says what it creates, creates it and prints what it made. With `agent`
-/// (`--agent`), the agent then starts once the setup succeeded, with its first terminal `size`
-/// (rows, columns) where given. As text, what was made is printed before the start, so it shows
-/// even when the start is refused; as JSON, one document carries both, and a refused start prints
-/// only its error.
+/// (`--agent`), the agent is recorded before the setup runs and starts once the setup succeeded,
+/// with its first terminal `size` (rows, columns) where given. As text, what was made is printed
+/// before the start, so it shows even when the start is refused; as JSON, one document carries
+/// both, and a refused start prints only its error.
 fn run_worktree_new(
     name: &WorktreeName,
     agent: Option<Agent>,
@@ -685,7 +685,12 @@ fn run_worktree_new(
     output::creating_worktree(name, format);
     let mut ask = ask_at_terminal;
     let mut setup_approval = approval(approve_setup, format, &mut ask);
-    let created = worktree_new::run(name, &mut setup_approval, &mut *output::live_echo(format))?;
+    let created = worktree_new::run(
+        name,
+        agent,
+        &mut setup_approval,
+        &mut *output::live_echo(format),
+    )?;
     let Some(agent) = agent else {
         output::worktree_created(&created, None, format)?;
         return Ok(exit_code(&created.setup));
