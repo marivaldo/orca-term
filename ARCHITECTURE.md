@@ -1136,7 +1136,11 @@ what they print.
   and the `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
   `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`, `<Plug>(OrcaTermInstallCli)` and
   `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and nothing else. Since #87 also
-  `pr-refresh` and `<Plug>(OrcaTermPrRefresh)` (`pr.refresh_all`).
+  `pr-refresh` and `<Plug>(OrcaTermPrRefresh)` (`pr.refresh_all`). Since #113 also the
+  `orca-term-session` autocommand group: `BufFilePost` on `orca-term://sidebar` while a session is
+  sourced calls `sidebar.name_taken`, and `SessionLoadPost` calls `sidebar.session_loaded` once the
+  sidebar module is loaded; neither loads a module nor calls the core until a session names a
+  buffer after the sidebar.
 - `build.lua`: the build hook, at the root where lazy.nvim finds it and runs it by itself (other
   managers run `nvim -l build.lua`). It loads `install.lua` by its path, since the plugin is not on
   the runtimepath yet, runs `install.build`, yielding to lazy.nvim's coroutine while it waits, and
@@ -1338,7 +1342,14 @@ what they print.
   `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
   nothing works or the sidebar closes. Opening the sidebar subscribes to `live.lua` after its first
   read, which registers this Neovim from that fleet's primary checkout; closing it unsubscribes, so
-  the core's events read nothing for it while it is closed.
+  the core's events read nothing for it while it is closed. A session saved with `blank` while the
+  sidebar was open (#113) keeps each sidebar window as `enew` and `file orca-term://sidebar`:
+  `name_taken` renames each such buffer that is not the sidebar's own to
+  `orca-term://sidebar-restored-<n>` while `g:SessionLoad` is set (and wipes the unloaded buffer
+  the rename leaves with the old name), so no tab's `file` fails with E95; `session_loaded`, once
+  the session is over (scheduled, since `:doautoall` runs `SessionLoadPost` in an autocommand
+  window), closes their windows (a tab's last window is emptied instead), wipes them and opens the
+  sidebar.
 - `lua/orca-term/detail.lua`: the detail float, `K` in the sidebar. `toggle(sidebar, worktree,
   cwd)` asks the core for `worktree detail` without waiting and opens a float of `render.detail`'s
   lines in a scratch buffer (`bufhidden=wipe`, highlights in `NAMESPACE`): `relative = 'win'` on the

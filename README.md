@@ -74,9 +74,12 @@ ends, and starts no agent. `<CR>` then attaches the agent's terminal in the rest
 scrollback replayed; the ended buffer goes with `:bwipeout`.
 
 With `blank` in `'sessionoptions'` (Neovim's default), a session saved while the sidebar is open
-keeps each sidebar window as an empty window named `orca-term://sidebar`. Sourcing it then
-reports `E95: Buffer with this name already exists` for every tab after the first, and leaves
-those empty windows. Close the sidebar before saving, or leave `blank` out, to avoid it.
+keeps each sidebar window as an empty window named `orca-term://sidebar`. When the session is
+sourced, orca-term renames each of them as it comes, so no tab reports `E95: Buffer with this name
+already exists`. Once the session is loaded, it closes those empty windows and opens the sidebar
+in every tab, as it was when the session was saved. Your own blank windows stay. Without `blank`,
+or with the sidebar closed when saving, the session restores no sidebar, and `:OrcaTerm sidebar`
+opens it.
 
 ## Install
 

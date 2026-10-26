@@ -1,8 +1,9 @@
 -- orca-term's Neovim client: the `:OrcaTerm <subcommand>` command. Neovim runs this file at startup.
 --
--- It defines the command and the `<Plug>` maps a person can bind keys of their own to, and nothing
--- else: no global key, no autocommand, and no work until the command runs. Each subcommand calls a
--- module under lua/orca-term/.
+-- It defines the command, the `<Plug>` maps a person can bind keys of their own to, and the two
+-- autocommands that bring the sidebar back when a session is sourced, and nothing else: no global
+-- key, and no work until the command runs or a session restores the sidebar. Each subcommand calls
+-- a module under lua/orca-term/.
 
 ---Tells the person that `:OrcaTerm` was used wrongly.
 ---@param message string
@@ -129,3 +130,31 @@ for n = 1, 9 do
     require('orca-term.actions').go_to_nth(n)
   end, { desc = ('orca-term: go to the tab of worktree %d in the sidebar'):format(n) })
 end
+
+-- A session saved with the sidebar open (#113). `:mksession` with `blank` keeps each sidebar window
+-- as an empty buffer named `orca-term://sidebar` (the sidebar's `BUFFER_NAME`). The sidebar module
+-- renames each one as the session names it, and once the session is loaded, closes them and shows
+-- the sidebar. Nothing is loaded until a session names such a buffer.
+local session_group = vim.api.nvim_create_augroup('orca-term-session', { clear = true })
+
+vim.api.nvim_create_autocmd('BufFilePost', {
+  group = session_group,
+  pattern = 'orca-term://sidebar',
+  desc = 'orca-term: rename an empty window a session keeps for the sidebar',
+  callback = function(args)
+    if vim.g.SessionLoad == 1 then
+      require('orca-term.sidebar').name_taken(args.buf)
+    end
+  end,
+})
+
+vim.api.nvim_create_autocmd('SessionLoadPost', {
+  group = session_group,
+  desc = 'orca-term: bring back the sidebar a session was saved with',
+  callback = function()
+    -- The sidebar module is loaded when the session named a buffer after it, or was opened before.
+    if package.loaded['orca-term.sidebar'] then
+      require('orca-term.sidebar').session_loaded()
+    end
+  end,
+})
