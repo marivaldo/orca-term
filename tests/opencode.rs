@@ -159,7 +159,7 @@ fn check_sandbox_wrapper(oc: &OpenCodeRepo, worktree: &Path, admin: &Path) {
 }
 
 /// Checks opencode was given the config directory in `admin`, holding our plugin byte for byte,
-/// and the events pipe.
+/// the events pipe, and its update check turned off.
 fn check_config_dir(oc: &OpenCodeRepo, admin: &Path) {
     let config = admin.join("opencode");
     assert_eq!(oc.config_dir(), config);
@@ -168,6 +168,7 @@ fn check_config_dir(oc: &OpenCodeRepo, admin: &Path) {
         PLUGIN
     );
     assert!(config.join(".gitignore").is_file());
+    assert_eq!(oc.autoupdate_off(), "1", "opencode's update check is off");
     let names = oc.env_names();
     for name in ["OPENCODE_CONFIG_DIR", "ORCA_TERM_EVENTS_FD", "HOME", "PATH"] {
         assert!(names.iter().any(|n| n == name), "{name} not in {names:?}");

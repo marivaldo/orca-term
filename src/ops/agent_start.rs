@@ -226,7 +226,10 @@ fn opencode_launch(plan: &Plan<'_>) -> Result<Launched> {
     let config_dir = write_plugin(plan.admin)?;
     Ok(Launched {
         argv,
-        vars: vec![(opencode::CONFIG_DIR_VAR, config_dir.display().to_string())],
+        vars: vec![
+            (opencode::CONFIG_DIR_VAR, config_dir.display().to_string()),
+            (opencode::NO_AUTOUPDATE_VAR, "1".to_owned()),
+        ],
         events: Some(Agent::OpenCode.program().to_owned()),
     })
 }
