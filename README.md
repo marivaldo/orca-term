@@ -233,7 +233,9 @@ state stays out of its reach (every worktree's `orca-term` directory, `.git/orca
 to no unix socket but the system's name resolver (and your signing agent's, when you turn on
 `sandbox.agent_socket`, see Signing), and on Linux it runs in a user namespace of its
 own, whose clients the holders refuse. Without the sandbox tool, `agent start` refuses with
-`no_sandbox` (exit code 5); opencode must be 1.18.0 or later (exit code 9 otherwise).
+`no_sandbox` (exit code 5); opencode must be 1.18.0 or later (exit code 9 otherwise). orca-term
+launches it with `OPENCODE_DISABLE_AUTOUPDATE=1`: an update could only fail inside the sandbox,
+and the dialog opencode opens to offer one would take the first keys you type.
 
 The status comes from a plugin orca-term ships: one small JavaScript file, written before each
 launch into the worktree's own opencode config directory (`orca-term/opencode` in its admin
@@ -520,7 +522,7 @@ info     contract 1, orca-term 0.1.0
 It needs git 2.38 or later, claude's sandbox tools (`sandbox-exec` on macOS, `bwrap` and `socat`
 on Linux) and claude 2.1.295 or later. A claude newer than the one orca-term was tested with is
 only a warning. opencode is optional, since you may use only claude; starting it needs 1.18.0 or
-later. When git signs with an ssh key only an agent can use, an `info` line before the contract
+later, and one newer than the tested 1.18.0 is only a warning too. When git signs with an ssh key only an agent can use, an `info` line before the contract
 names `sandbox.agent_socket` (see Signing). With `--json` it prints the same checks as one
 document. It exits 0 unless something is missing or too old; then it prints the whole report and
 exits 9.
@@ -599,8 +601,8 @@ recording the same version again shows in `git diff`. The summary lists each sce
 or failed (a failed one writes nothing and keeps its directory, with the attach's screen in
 `screen.log`), each suite as passed or diverged with its failing tests, and `git status --short` of
 the fixtures; it exits 1 when a suite diverged or a scenario failed. A newer claude makes the
-`doctor` suite diverge until `CLAUDE_TESTED` in `src/domain/prerequisite.rs` names it: raise it and
-commit it with the recordings.
+`doctor` suite diverge until `CLAUDE_TESTED` in `src/domain/prerequisite.rs` names it, and a newer
+opencode until `OPENCODE_TESTED` does: raise it and commit it with the recordings.
 
 A scenario is a small file in `tests/live/`: the agent, the recording's name, a timeout, the
 outcome of each turn the recording must replay to, then the keys to type and the hooks to wait for
