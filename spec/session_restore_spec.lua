@@ -18,6 +18,11 @@
 -- only, so the restored `term://` buffer runs the bare `orca-term` binary, which prints its usage
 -- and exits. It starts no holder and no agent, and it is no agent terminal of orca-term's (it has
 -- no mark), so `<CR>` attaches a new terminal in its place. The specs below guard all of that.
+--
+-- With `blank` (#113), `:mksession` keeps each tab's sidebar window as `enew` followed by
+-- `file orca-term://sidebar`. The client renames each such buffer as the session names it, so no
+-- tab's `file` fails with E95, and once the session is loaded closes their windows, wipes them and
+-- opens the sidebar. The specs check the child's `v:errmsg`, its buffers and each tab's windows.
 
 local support = require('support')
 
@@ -33,10 +38,11 @@ assert(DEFAULT:find('terminal', 1, true), "Neovim's default sessionoptions hold 
 ---@type integer[]
 local children = {}
 
----Lua run in a child Neovim: what it shows, tab by tab. For each tab, its tab-local directory
----and its windows: the buffer's name, its 'buftype', whether it is an agent terminal of
----orca-term's (its mark), whether its job still runs, and its non-blank lines. Also the current
----tab's number, and the sidebar's lines when it is open.
+---Lua run in a child Neovim: what it shows, tab by tab. For each tab, its tab-local directory,
+---how many windows show the sidebar, and its other windows: the buffer's name, its 'buftype',
+---whether it is an agent terminal of orca-term's (its mark), whether its job still runs, and its
+---non-blank lines. Also the current tab's number, the sidebar's lines when it is open, and the
+---names of the buffers other than the sidebar's whose name starts with the sidebar's.
 local SHOWN = [[
   local terminal = require('orca-term.terminal')
   local sidebar = require('orca-term.sidebar')
@@ -44,9 +50,12 @@ local SHOWN = [[
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
     local number = vim.api.nvim_tabpage_get_number(tab)
     local windows = {}
+    local sidebars = 0
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
       local buf = vim.api.nvim_win_get_buf(win)
-      if buf ~= sidebar.buffer() then
+      if buf == sidebar.buffer() then
+        sidebars = sidebars + 1
+      else
         local lines = vim.tbl_filter(function(line)
           return line ~= ''
         end, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
@@ -60,21 +69,34 @@ local SHOWN = [[
       end
     end
     local localdir = vim.fn.haslocaldir(-1, number) == 1
-    table.insert(tabs, { directory = localdir and vim.fn.getcwd(-1, number) or nil, windows = windows })
+    table.insert(tabs, {
+      directory = localdir and vim.fn.getcwd(-1, number) or nil,
+      sidebars = sidebars,
+      windows = windows,
+    })
+  end
+  local others = {}
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(buf)
+    if buf ~= sidebar.buffer() and vim.startswith(name, sidebar.BUFFER_NAME) then
+      table.insert(others, name)
+    end
   end
   local open = sidebar.buffer() and sidebar.is_open()
   return {
     tabs = tabs,
     current = vim.fn.tabpagenr(),
     sidebar = open and vim.api.nvim_buf_get_lines(sidebar.buffer(), 0, -1, false) or nil,
+    named_like_sidebar = others,
   }
 ]]
 
 ---What a child Neovim shows, as `SHOWN` returns it.
 ---@class spec.Shown
----@field tabs { directory?: string, windows: { name: string, buftype: string, marked: boolean, running: boolean, lines: string[] }[] }[]
+---@field tabs { directory?: string, sidebars: integer, windows: { name: string, buftype: string, marked: boolean, running: boolean, lines: string[] }[] }[]
 ---@field current integer
 ---@field sidebar? string[]
+---@field named_like_sidebar string[]
 
 ---What the child Neovim `child` shows.
 ---@param child integer
@@ -103,6 +125,27 @@ local function marks_current(child, name)
     end
   end
   return false
+end
+
+---Waits until the sidebar of the child is open. A session saved with `blank` in 'sessionoptions'
+---while the sidebar was open brings it back by itself once it is sourced (#113).
+---@param child integer
+local function wait_for_sidebar(child)
+  support.wait_for(function()
+    return shown(child).sidebar ~= nil
+  end, 'the sidebar to come back in the child')
+end
+
+---Opens the sidebar of the child after a session saved under `sessionoptions` was sourced: the
+---session brought it back when `sessionoptions` holds `blank`, and the spec opens it otherwise.
+---@param child integer
+---@param sessionoptions string
+local function sidebar_after_restore(child, sessionoptions)
+  if vim.tbl_contains(vim.split(sessionoptions, ','), 'blank') then
+    wait_for_sidebar(child)
+  else
+    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+  end
 end
 
 ---Lua run in a child Neovim: puts the cursor on the sidebar line holding `...`.
@@ -290,7 +333,7 @@ describe('a session manager restoring worktree tabs', function()
 
         assert.are.same({ false, alpha, beta }, directories(child))
         assert.are.equal(3, shown(child).current)
-        vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+        sidebar_after_restore(child, sessionoptions)
         assert(marks_current(child, 'beta'), 'the sidebar marks the current tab')
 
         -- `<CR>` in the primary checkout's tab goes to alpha's restored tab, making none.
@@ -318,6 +361,94 @@ describe('a session manager restoring worktree tabs', function()
   end
 
   it(
+    'with blank in sessionoptions, brings the sidebar back in every tab without E95 or the empty '
+      .. "windows the session kept for it, and keeps the person's blank windows",
+    function()
+      local repo = repo_with({})
+      local alpha = support.worktree_path(repo, 'alpha')
+      local beta = support.worktree_path(repo, 'beta')
+      press_on('<CR>', '· alpha')
+      press_on('<CR>', '· beta')
+      -- A blank window of the person's own, next to alpha's in its tab.
+      vim.cmd('tabnext 2')
+      vim.cmd('belowright new')
+      vim.cmd('tabnext 3')
+      assert(DEFAULT:find('blank', 1, true), "Neovim's default sessionoptions hold `blank`")
+
+      local child = restore_in_child(repo, save_session(repo, DEFAULT))
+
+      local errmsg = vim.rpcrequest(child, 'nvim_get_vvar', 'errmsg') --[[@as string]]
+      assert(not errmsg:find('E95', 1, true), errmsg)
+      wait_for_sidebar(child)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar, 'no buffer the session made for the sidebar')
+      assert.are.same({ false, alpha, beta }, directories(child))
+      assert.are.equal(3, now.current)
+      for number, tab in ipairs(now.tabs) do
+        assert.are.equal(1, tab.sidebars, 'one sidebar window in tab ' .. number)
+        for _, window in ipairs(tab.windows) do
+          assert.are.same({ '', '' }, { window.name, window.buftype }, 'a blank window')
+        end
+      end
+      assert.are.same({ 1, 2, 1 }, {
+        #now.tabs[1].windows,
+        #now.tabs[2].windows,
+        #now.tabs[3].windows,
+      }, "each tab's own windows, the blank one in alpha's tab with them")
+      assert(marks_current(child, 'beta'), 'the sidebar marks the current tab')
+
+      -- `<CR>` in the primary checkout's tab goes to alpha's restored tab, making none.
+      vim.rpcrequest(child, 'nvim_command', 'tabfirst')
+      press_in_child(child, '<CR>', '· alpha')
+      support.wait_for(function()
+        return shown(child).current == 2
+      end, "alpha's restored tab to be current")
+      assert.are.same({ false, alpha, beta }, directories(child))
+      assert.is_true(marks_current(child, 'alpha'))
+    end
+  )
+
+  it(
+    'with blank but not terminal in sessionoptions, a tab left with only the window kept for the '
+      .. 'sidebar keeps an empty window beside it',
+    function()
+      local repo = repo_with({ 'alpha' })
+      local alpha = support.worktree_path(repo, 'alpha')
+      press_on('<CR>', '○ alpha')
+      wait_for_terminal(alpha)
+
+      -- The agent's terminal is not saved, so alpha's tab is saved with only the sidebar's window.
+      local child = restore_in_child(repo, save_session(repo, 'blank,curdir,tabpages,winsize'))
+
+      wait_for_sidebar(child)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar)
+      assert.are.same({ false, alpha }, directories(child))
+      assert.are.same({ 1, 1 }, { now.tabs[1].sidebars, now.tabs[2].sidebars })
+      assert.are.equal(1, #now.tabs[2].windows)
+      assert.are.same({ '', '' }, { now.tabs[2].windows[1].name, now.tabs[2].windows[1].buftype })
+    end
+  )
+
+  it(
+    'with blank in sessionoptions, a session saved with the sidebar closed leaves it closed',
+    function()
+      local repo = repo_with({})
+      press_on('<CR>', '· alpha')
+      vim.cmd('OrcaTerm sidebar')
+
+      local child = restore_in_child(repo, save_session(repo, DEFAULT))
+
+      -- Anything the sidebar would do once the session is loaded has had its turn by then.
+      vim.rpcrequest(child, 'nvim_exec_lua', 'vim.wait(200)', {})
+      local now = shown(child)
+      assert.is_nil(now.sidebar)
+      assert.are.same({}, now.named_like_sidebar)
+      assert.are.same({ 1, 1 }, { #now.tabs[1].windows, #now.tabs[2].windows })
+    end
+  )
+
+  it(
     "without terminal in sessionoptions, the first <CR> opens the agent's terminal in the restored "
       .. 'tab',
     function()
@@ -336,7 +467,7 @@ describe('a session manager restoring worktree tabs', function()
       assert.are.equal(1, #restored.windows, 'the terminal window is not saved')
       assert.are.equal('', restored.windows[1].buftype)
 
-      vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+      sidebar_after_restore(child, LAZYVIM)
       press_in_child(child, '<CR>', '○ alpha')
       support.wait_for(function()
         local window = shown(child).tabs[2].windows[1]
@@ -386,7 +517,7 @@ describe('a session manager restoring worktree tabs', function()
       assert(vim.uv.fs_stat(started) == nil, 'no agent started')
       assert(support.listed(repo, 'alpha').holder, 'the holder still runs')
 
-      vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+      sidebar_after_restore(child, DEFAULT)
       press_in_child(child, '<CR>', '○ alpha')
       local attached
       support.wait_for(function()

@@ -23,6 +23,8 @@
 -- Opening never moves the cursor out of the person's window and never resizes their windows beyond
 -- the split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
 -- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
+-- A session saved while the sidebar was open brings it back in every tab, without E95 and without
+-- the empty windows `:mksession` keeps for it (`M.name_taken`, `M.session_loaded`, #113).
 
 local actions = require('orca-term.actions')
 local detail = require('orca-term.detail')
@@ -390,6 +392,9 @@ local function ensure_buffer()
   local buf = named_buffer()
   if not buf then
     buf = vim.api.nvim_create_buf(false, true)
+    -- Known as the sidebar's before it is named, so `M.name_taken` never takes it for a window a
+    -- session restored.
+    state.buf = buf
     vim.api.nvim_buf_set_name(buf, M.BUFFER_NAME)
   end
   vim.bo[buf].buftype = 'nofile'
@@ -643,6 +648,64 @@ function M.toggle()
   else
     M.open()
   end
+end
+
+---The buffers a session being sourced made in place of the sidebar, waiting for
+---`M.session_loaded`.
+---@type integer[]
+local restored = {}
+
+---Called when the buffer `buf` takes the sidebar's name. A session saved with `blank` in
+---'sessionoptions' while the sidebar was open keeps each sidebar window as `enew` followed by
+---`file orca-term://sidebar`. So while a session is being sourced, a buffer other than the
+---sidebar's own that takes its name is one of those: it is renamed at once, so the next tab's
+---`file` does not fail with E95, and kept for `M.session_loaded`. At any other time it does nothing.
+---@param buf integer
+function M.name_taken(buf)
+  if vim.g.SessionLoad ~= 1 or buf == state.buf then
+    return
+  end
+  vim.api.nvim_buf_set_name(buf, ('%s-restored-%d'):format(M.BUFFER_NAME, buf))
+  -- Renaming leaves the old name on a new unlisted, unloaded buffer, as `:file` does. It is wiped,
+  -- so that it is never taken over as the sidebar's.
+  for _, other in ipairs(vim.api.nvim_list_bufs()) do
+    local named = vim.api.nvim_buf_get_name(other) == M.BUFFER_NAME
+    if named and other ~= state.buf and not vim.api.nvim_buf_is_loaded(other) then
+      vim.api.nvim_buf_delete(other, { force = true })
+    end
+  end
+  table.insert(restored, buf)
+end
+
+---Called after a session was sourced (SessionLoadPost). When it made buffers in place of the
+---sidebar (`M.name_taken`), closes their windows, wipes them and shows the sidebar, which was open
+---when the session was saved. A tab whose only window is one of them keeps that window, emptied.
+---No other window is touched. Does nothing when the session made none.
+function M.session_loaded()
+  if #restored == 0 then
+    return
+  end
+  local buffers = restored
+  restored = {}
+  -- SessionLoadPost runs once per buffer, some of them in a window of their own: the windows are
+  -- changed once the session is over.
+  vim.schedule(function()
+    for _, buf in ipairs(buffers) do
+      for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+        hide(win)
+      end
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+    end
+    if state.open then
+      for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+        show_in(tab)
+      end
+    else
+      M.open()
+    end
+  end)
 end
 
 ---`:OrcaTerm sessions` in the sidebar: `s`, on the worktree under the cursor. `false`, doing nothing,
