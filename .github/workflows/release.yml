@@ -34,25 +34,45 @@ env:
     aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 
 jobs:
+  # A tag first: nothing is built unless the tag is exactly `v<version in Cargo.toml>`, so the
+  # assets the tag names carry the version the binary reports. A dry run has no tag to check.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against the crate version
+        if: github.event_name == 'push'
+        run: cargo xtask release-version "$VERSION"
+
   # The full matrix runs on dry runs too: the four builds run in parallel, so a dry run takes about
   # as long as one build, and a target that stopped building is caught before a tag, not after.
   # No cache: a release is built from scratch, so no cache written elsewhere can reach it.
   build:
     name: build (${{ matrix.target }})
+    needs: version
     strategy:
       fail-fast: false
       matrix:
         include:
           # macOS builds both architectures on one runner. Linux builds with musl, so one binary
-          # runs on any distribution, each architecture natively.
+          # runs on any distribution, each architecture natively. `native` marks the binaries the
+          # runner can execute, whose `--version` is checked.
           - target: aarch64-apple-darwin
             runner: macos-latest
+            native: true
           - target: x86_64-apple-darwin
             runner: macos-latest
+            native: false
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
+            native: true
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
+            native: true
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -72,6 +92,20 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET"
+      # The binary reports the crate version, which the `version` job matched to the tag.
+      - name: Check the binary's version
+        if: matrix.native
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="$(cargo metadata --no-deps --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "orca-term") | .version')"
+          reported="$("target/$TARGET/release/orca-term" --version)"
+          echo "$reported"
+          if [ "$reported" != "orca-term $version" ]; then
+            echo "the binary reports '$reported', expected 'orca-term $version'" >&2
+            exit 1
+          fi
       - name: Pack
         env:
           TARGET: ${{ matrix.target }}

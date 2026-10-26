@@ -18,9 +18,10 @@ mod launch_guard;
 mod layers;
 mod live;
 mod pr_title;
+mod release_version;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | vocab | layers | client-boundary | launch-guard | gh-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | release-version <tag> | vocab | layers | client-boundary | launch-guard | gh-guard | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,6 +67,12 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
             Ok(problems)
         }
         ["pr-title-lint", title] => Ok(pr_title::lint(title)),
+        ["release-version", tag] => {
+            let manifest = std::fs::read_to_string("Cargo.toml").context("reading Cargo.toml")?;
+            let version = release_version::package_version(&manifest)
+                .context("Cargo.toml has no `version` in its [package] table")?;
+            Ok(release_version::lint(tag, version))
+        }
         ["vocab"] => vocab::lint_repository(Path::new(".")),
         ["layers"] => layers::lint_repository(Path::new(".")),
         ["client-boundary"] => client_boundary::lint_repository(Path::new(".")),
