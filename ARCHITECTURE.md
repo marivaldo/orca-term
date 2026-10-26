@@ -884,6 +884,33 @@ validate"):
   not start; 9 for `prerequisite`, a program the command needs (git, claude, opencode) that is missing or
   too old, and for `doctor` when any check is.
 
+## State and schema
+
+Every state file carries `schema`, and a constant names the newest schema this core writes for
+each: `SUPPORTED_SCHEMA` (`worktree.json`, `domain/state.rs`), `STATUS_SCHEMA` and `TURNS_SCHEMA`
+(`domain/turn.rs`), `SEEN_SCHEMA`, `NOTES_SCHEMA`, `PR_SCHEMA` and `TRUST_SCHEMA`
+(`orca-term-trust.json`). The config files carry no schema.
+
+Schema 1 is frozen (#118). `tests/fixtures/schema-1/` holds one sample of each file, laid out as
+in a repository: `checkout/` for the committed files the samples depend on, `git/` for the
+repository's `.git` directory (the approvals' file, and the admin directory of the worktree
+`demo`). The samples were written by the real binary against the fake agents, their local paths
+then made placeholders (`{{transcripts}}`) that `tests/support/schema_samples.rs` fills back in as
+it copies them into a fresh repository. `tests/schema_1.rs` checks that the binary reads every one
+and that reading rewrites none. A field old files can do without may still join a schema, since
+they read without it; any other change raises the schema. To raise one:
+
+1. Raise its constant.
+2. Add `tests/fixtures/schema-<n>/`, samples of the new schema written by the real binary against
+   the fake agents and normalised the same way, and a suite that reads them, like
+   `tests/schema_1.rs`.
+3. Write the migration: a file of the old schema reads as the new shape and is migrated forward on
+   its next write, with a test that builds the old samples (`schema_samples::build(fx, <old>)`)
+   and checks both.
+4. Keep the old samples and their suite, so old state goes on reading.
+
+`cargo xtask schema-fixtures` fails while a constant names a schema with no samples.
+
 ## Known limits of the agent holder
 
 - **The Linux peer check is namespace equality, nothing finer.** A client is served when it
@@ -1024,6 +1051,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
 - `cargo xtask gh-guard` (`xtask/src/gh_guard.rs`, #87) rejects the string literal `"gh"`, outside
   comments, in every file under `src/` but `src/ops/pr_refresh.rs`, and `"gh"` or `'gh'` anywhere
   in `lua/`, `plugin/` and `build.lua`.
+- `cargo xtask schema-fixtures` (`xtask/src/schema_fixtures.rs`, #118) reads every
+  `const *_SCHEMA: u64` under `src/` and rejects a value with no `tests/fixtures/schema-<n>/`, or
+  finding no constant at all ("State and schema").
 - Clippy `print_stdout` and `print_stderr` keep printing in `output`.
 - The compiler keeps writes to a worktree's state under its lock: `ops::write_state` and
   `ops::write_agent` take a `&WorktreeLock`, which only taking the lock can make.
@@ -1083,6 +1113,10 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   fake agents. `tests/pr.rs` (#87) runs `pr refresh` with a fake `gh` on the agent fixture's PATH
   (it records where it ran and its arguments, and answers per branch from files beside it), and
   without one, then reads `pr.json`, `worktree ls --json` and `worktree detail --json`.
+  `tests/schema_1.rs` (#118) copies the frozen samples of schema 1 into a fresh repository
+  (`tests/support/schema_samples.rs`) and reads them through `worktree ls`, `worktree detail`,
+  `turn ls`, `note ls` and `session ls`, then uses their approvals through `worktree new` and
+  `agent start`, checking that no state file changed ("State and schema").
 - **Live checks, against the real agents** (#44): `cargo xtask check-live` (`just check-live`),
   never run by CI, in `xtask/src/live.rs`: it checks the agents with `orca-term doctor --json`,
   runs each scenario of `tests/live/` (`live/scenario.rs` reads them) in a throwaway repository
