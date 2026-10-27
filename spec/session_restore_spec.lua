@@ -23,6 +23,10 @@
 -- `file orca-term://sidebar`. The client renames each such buffer as the session names it, so no
 -- tab's `file` fails with E95, and once the session is loaded closes their windows, wipes them and
 -- opens the sidebar. The specs check the child's `v:errmsg`, its buffers and each tab's windows.
+--
+-- A child can also open the sidebar before it sources the session (#124), as a person restoring a
+-- session from a Neovim already in use does: the sidebar's own buffer then holds the name the
+-- session's `file` lines give, and the specs check it comes back the same buffer, under its name.
 
 local support = require('support')
 
@@ -104,6 +108,22 @@ local SHOWN = [[
 local function shown(child)
   return vim.rpcrequest(child, 'nvim_exec_lua', SHOWN, {}) --[[@as spec.Shown]]
 end
+
+---Lua run in a child Neovim: the sidebar's buffer, its name and its lines.
+local SIDEBAR_BUFFER = [[
+  local buf = assert(require('orca-term.sidebar').buffer())
+  return {
+    buf = buf,
+    name = vim.api.nvim_buf_get_name(buf),
+    lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false),
+  }
+]]
+
+---The sidebar's buffer in a child Neovim, as `SIDEBAR_BUFFER` returns it.
+---@class spec.SidebarBuffer
+---@field buf integer
+---@field name string
+---@field lines string[]
 
 ---The tab-local directory of each tab the child shows, `false` for a tab with none.
 ---@param child integer
@@ -251,12 +271,14 @@ local function save_session(repo, sessionoptions)
 end
 
 ---A fresh child Neovim, embedded and driven over RPC, in the primary checkout of `repo`, with the
----client loaded and set up, that has sourced `session` as a session manager does. It inherits the
----fake claude's PATH, so it is started by its full path.
+---client loaded and set up. It inherits the fake claude's PATH, so it is started by its full path.
+---With `sidebar_open`, the child has opened the sidebar, as a person restoring a session from it
+---would (#124).
 ---@param repo spec.Repo
----@param session string
+---@param sidebar_open? boolean
 ---@return integer channel
-local function restore_in_child(repo, session)
+---@return spec.SidebarBuffer? sidebar the sidebar's buffer, with `sidebar_open`
+local function start_child(repo, sidebar_open)
   local child = vim.fn.jobstart({
     vim.v.progpath,
     '--embed',
@@ -270,8 +292,25 @@ local function restore_in_child(repo, session)
   vim.rpcrequest(child, 'nvim_exec_lua', 'vim.o.columns = 160', {})
   local setup = "require('orca-term').setup({ binary = ... })"
   vim.rpcrequest(child, 'nvim_exec_lua', setup, { support.binary })
+  local sidebar
+  if sidebar_open then
+    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+    sidebar = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {})
+  end
+  return child, sidebar
+end
+
+---A fresh child Neovim, as `start_child` makes it, that has sourced `session` as a session manager
+---does.
+---@param repo spec.Repo
+---@param session string
+---@param sidebar_open? boolean
+---@return integer channel
+---@return spec.SidebarBuffer? sidebar the sidebar's buffer before the session, with `sidebar_open`
+local function restore_in_child(repo, session, sidebar_open)
+  local child, sidebar = start_child(repo, sidebar_open)
   vim.rpcrequest(child, 'nvim_command', 'silent! source ' .. vim.fn.fnameescape(session))
-  return child
+  return child, sidebar
 end
 
 ---Every file under the repository's git directory that belongs to orca-term (a path with an
@@ -447,6 +486,143 @@ describe('a session manager restoring worktree tabs', function()
       assert.are.same({ 1, 1 }, { #now.tabs[1].windows, #now.tabs[2].windows })
     end
   )
+
+  it(
+    'with blank in sessionoptions, a session sourced with the sidebar already open brings the same '
+      .. 'sidebar back in every tab, without E95 or the empty windows the session kept for it',
+    function()
+      local repo = repo_with({})
+      local alpha = support.worktree_path(repo, 'alpha')
+      local beta = support.worktree_path(repo, 'beta')
+      press_on('<CR>', '· alpha')
+      press_on('<CR>', '· beta')
+      -- A blank window of the person's own, next to alpha's in its tab.
+      vim.cmd('tabnext 2')
+      vim.cmd('belowright new')
+      vim.cmd('tabnext 3')
+
+      local child, before = restore_in_child(repo, save_session(repo, DEFAULT), true)
+
+      local errmsg = vim.rpcrequest(child, 'nvim_get_vvar', 'errmsg') --[[@as string]]
+      assert(not errmsg:find('E95', 1, true), errmsg)
+      wait_for_sidebar(child)
+      local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+      assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
+      assert.are.equal('orca-term://sidebar', after.name)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar, 'no buffer the session made for the sidebar')
+      assert.are.same({ false, alpha, beta }, directories(child))
+      assert.are.equal(3, now.current)
+      for number, tab in ipairs(now.tabs) do
+        assert.are.equal(1, tab.sidebars, 'one sidebar window in tab ' .. number)
+        for _, window in ipairs(tab.windows) do
+          assert.are.same({ '', '' }, { window.name, window.buftype }, 'a blank window')
+        end
+      end
+      assert.are.same({ 1, 2, 1 }, {
+        #now.tabs[1].windows,
+        #now.tabs[2].windows,
+        #now.tabs[3].windows,
+      }, "each tab's own windows, the blank one in alpha's tab with them")
+      assert(marks_current(child, 'beta'), 'the sidebar marks the current tab')
+
+      -- `<CR>` in the primary checkout's tab goes to alpha's restored tab, making none.
+      vim.rpcrequest(child, 'nvim_command', 'tabfirst')
+      press_in_child(child, '<CR>', '· alpha')
+      support.wait_for(function()
+        return shown(child).current == 2
+      end, "alpha's restored tab to be current")
+      assert.are.same({ false, alpha, beta }, directories(child))
+      assert.is_true(marks_current(child, 'alpha'))
+    end
+  )
+
+  it(
+    'a session with no sidebar window, sourced with the sidebar open, leaves the sidebar its buffer '
+      .. 'and its name, and shows it in every tab',
+    function()
+      local repo = repo_with({})
+      local alpha = support.worktree_path(repo, 'alpha')
+      press_on('<CR>', '· alpha')
+      vim.cmd('OrcaTerm sidebar')
+
+      local child, before = restore_in_child(repo, save_session(repo, DEFAULT), true)
+
+      local errmsg = vim.rpcrequest(child, 'nvim_get_vvar', 'errmsg') --[[@as string]]
+      assert(not errmsg:find('E95', 1, true), errmsg)
+      -- Anything the sidebar would do once the session is loaded has had its turn by then.
+      vim.rpcrequest(child, 'nvim_exec_lua', 'vim.wait(200)', {})
+      local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+      assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
+      assert.are.equal('orca-term://sidebar', after.name)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar)
+      -- The sidebar, open, is shown in every tab the session made, beside the session's windows.
+      assert.are.same({ false, alpha }, directories(child))
+      assert.are.same({ 1, 1 }, { now.tabs[1].sidebars, now.tabs[2].sidebars })
+      assert.are.same({ 1, 1 }, { #now.tabs[1].windows, #now.tabs[2].windows })
+    end
+  )
+
+  it(
+    'a session file written before Neovim 0.12, which triggers no SessionLoadPre, sourced with the '
+      .. 'sidebar open, brings the same sidebar back in every tab without E95',
+    function()
+      local repo = repo_with({})
+      local alpha = support.worktree_path(repo, 'alpha')
+      press_on('<CR>', '· alpha')
+      local session = save_session(repo, DEFAULT)
+      -- The line Neovim 0.12 added: without it, the file is what Neovim 0.11 writes.
+      local file_lines = vim.fn.readfile(session)
+      local older = vim.tbl_filter(function(line)
+        return line ~= 'doautoall SessionLoadPre'
+      end, file_lines)
+      assert.are.equal(#file_lines - 1, #older, 'the session triggers SessionLoadPre')
+      vim.fn.writefile(older, session)
+
+      local child, before = restore_in_child(repo, session, true)
+
+      local errmsg = vim.rpcrequest(child, 'nvim_get_vvar', 'errmsg') --[[@as string]]
+      assert(not errmsg:find('E95', 1, true), errmsg)
+      wait_for_sidebar(child)
+      local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+      assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
+      assert.are.equal('orca-term://sidebar', after.name)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar)
+      assert.are.same({ false, alpha }, directories(child))
+      assert.are.same({ 1, 1 }, { now.tabs[1].sidebars, now.tabs[2].sidebars })
+      assert.are.same({ 1, 1 }, { #now.tabs[1].windows, #now.tabs[2].windows })
+    end
+  )
+
+  it('a session that fails part way leaves the sidebar its name at its next open', function()
+    local repo = repo_with({})
+    -- A session that stops with an error before it is loaded: SessionLoadPost never runs.
+    local session = repo.tmp .. '/Failing.vim'
+    vim.fn.writefile({
+      'let SessionLoad = 1',
+      'doautoall SessionLoadPre',
+      "throw 'the session failed'",
+    }, session)
+
+    local child, before = start_child(repo, true)
+    local source = 'silent! source ' .. vim.fn.fnameescape(session)
+    local sourced = pcall(vim.rpcrequest, child, 'nvim_command', source)
+    assert(not sourced, 'the session fails')
+    local during = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+    assert.are_not.equal('orca-term://sidebar', during.name, 'the session took the name off')
+
+    -- The sidebar, still open, is closed and opened again.
+    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+    local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+    assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
+    assert.are.equal('orca-term://sidebar', after.name)
+    local now = shown(child)
+    assert.are.same({}, now.named_like_sidebar)
+    assert.are.equal(1, now.tabs[1].sidebars)
+  end)
 
   it(
     "without terminal in sessionoptions, the first <CR> opens the agent's terminal in the restored "
