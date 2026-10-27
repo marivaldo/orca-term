@@ -17,8 +17,8 @@ built in small slices, each a GitHub issue under that spec.
 
 Today: `orca-term worktree new|ls|setup|rm|prune` manage the worktrees of the current repository
 (`worktree detail <worktree>` tells all about one), and `orca-term agent start|attach|stop
-<worktree>` run claude in one of them, inside claude's own sandbox, held by a detached process that
-any terminal can attach to. `orca-term note
+<worktree>` run the worktree's agent (claude or opencode) in one of them, inside a sandbox, held by
+a detached process that any terminal can attach to. `orca-term note
 add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
 agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
 turns, show what one turn changed and say which turn wrote each line of a file. `orca-term doctor`
@@ -208,8 +208,10 @@ shows `opencode (running)`. Asking for another agent while one runs is refused a
 code 3), naming the agent that runs.
 
 `orca-term worktree new <name> --agent claude-code|opencode` creates the worktree and, once its
-setup succeeded, records that agent and starts it, as `agent start --agent` would. A failed setup
-leaves the worktree *not ready* and starts nothing. When the start is refused (no sandbox,
+setup succeeded, starts that agent, as `agent start --agent` would. A failed setup leaves the
+worktree *not ready* and starts nothing, but the agent stays recorded: once `orca-term worktree
+setup` succeeds (it starts nothing itself), `agent start` (and `<CR>` in Neovim) starts the agent
+chosen at creation. When the start is refused (no sandbox,
 an unapproved `sandbox.writable` list, a missing or old agent), the worktree is still there and
 ready, with the agent recorded, and the command exits with the refusal's error. In Neovim, `a`
 asks for the name, then offers `claude-code`, `opencode` or `No agent`.

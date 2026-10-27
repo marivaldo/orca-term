@@ -1,7 +1,9 @@
 //! `worktree new --agent` (#93), driven as a black box against a fake `claude`, a fake `opencode`
 //! and fake sandbox tools on an isolated PATH (seam 1): the agent is recorded and started in its
-//! holder once the setup succeeded, never when the setup failed, with `agent start`'s refusals
-//! (no sandbox, untrusted, prerequisite) and exit codes. Without `--agent` nothing changes.
+//! holder once the setup succeeded, with `agent start`'s refusals (no sandbox, untrusted,
+//! prerequisite) and exit codes. A failed setup still records the agent but starts nothing, and
+//! the `agent start` after a later successful `worktree setup` starts it (#119). Without `--agent`
+//! nothing changes.
 
 #![expect(
     clippy::unwrap_used,
@@ -140,19 +142,22 @@ fn with_agent_opencode_the_new_worktree_records_and_starts_opencode() {
 }
 
 #[test]
-fn a_failed_setup_leaves_the_worktree_not_ready_with_no_agent_recorded_or_started() {
-    let fx = AgentRepo::new();
-    fx.repo
-        .write("orca-term.yaml", "scripts:\n  setup: exit 3\n");
-    fx.repo.commit_all("failing setup");
+fn a_failed_setup_records_the_agent_but_starts_nothing_until_a_later_setup_succeeds() {
+    let oc = OpenCodeRepo::new();
+    let fx = &oc.fx;
+    fx.repo.write(
+        "orca-term.yaml",
+        "scripts:\n  setup: \"if [ ! -f ready.txt ]; then echo 'missing ready.txt'; exit 3; fi\"\n",
+    );
+    fx.repo.commit_all("setup that needs ready.txt");
 
-    let out = fx.run(&[
+    let out = oc.run(&[
         "worktree",
         "new",
         "fix",
         "--approve-setup",
         "--agent",
-        "claude-code",
+        "opencode",
         "--json",
     ]);
 
@@ -160,16 +165,35 @@ fn a_failed_setup_leaves_the_worktree_not_ready_with_no_agent_recorded_or_starte
     let doc = json(&out);
     assert_eq!(doc["setup"]["status"], "failed");
     assert!(doc.get("started").is_none(), "{doc}");
-    let admin = fx.admin_dir(&worktree_path(&fx, "fix"));
+    assert_eq!(doc["worktree"]["agent"], "opencode", "{doc}");
+    let worktree = worktree_path(fx, "fix");
+    let admin = fx.admin_dir(&worktree);
     assert!(!holder_alive(&admin));
-    assert_eq!(state_file(&admin)["agent"], Value::Null);
-    assert_eq!(fx.starts(), 0);
+    assert_eq!(state_file(&admin)["agent"], "opencode");
+    assert_eq!(oc.starts(), 0);
     let listed = fx.listed("fix");
     assert_eq!(listed["state"], "not_ready", "{listed}");
-    assert_eq!(listed["agent"], Value::Null);
+    assert_eq!(listed["agent"], "opencode", "{listed}");
     assert_eq!(listed["holder"], false);
 
-    let text = fx.run(&[
+    // Fixed and set up again: `worktree setup` itself starts nothing.
+    std::fs::write(worktree.join("ready.txt"), "").unwrap();
+    let set_up: Value =
+        serde_json::from_str(&oc.ok(&["worktree", "setup", "fix", "--json"])).unwrap();
+    assert_eq!(set_up["setup"]["status"], "succeeded");
+    assert_eq!(set_up["worktree"]["agent"], "opencode", "{set_up}");
+    assert!(!holder_alive(&admin));
+    assert_eq!(oc.starts(), 0);
+
+    // `agent start` with no `--agent` starts the agent chosen at creation, not claude-code.
+    let started: Value =
+        serde_json::from_str(&oc.ok(&["agent", "start", "fix", "--json"])).unwrap();
+    assert_eq!(started["agent"], "opencode");
+    assert_eq!(started["holder"]["status"], "started");
+    assert!(holder_alive(&admin));
+    assert_eq!(fx.starts(), 0, "claude must not start");
+
+    let text = oc.run(&[
         "worktree",
         "new",
         "other",
@@ -179,6 +203,25 @@ fn a_failed_setup_leaves_the_worktree_not_ready_with_no_agent_recorded_or_starte
     ]);
     assert_eq!(text.status.code(), Some(1));
     assert!(!stdout(&text).contains("started"), "{}", stdout(&text));
+}
+
+#[test]
+fn a_setup_script_not_approved_still_records_the_agent() {
+    let oc = OpenCodeRepo::new();
+    oc.fx
+        .repo
+        .write("orca-term.yaml", "scripts:\n  setup: echo setting up\n");
+    oc.fx.repo.commit_all("setup script");
+
+    let out = oc.run(&["worktree", "new", "fix", "--agent", "opencode", "--json"]);
+
+    assert_eq!(out.status.code(), Some(8), "{}", stdout(&out));
+    assert_eq!(json(&out)["error"]["kind"], "untrusted");
+    let listed = oc.fx.listed("fix");
+    assert_eq!(listed["state"], "not_ready", "{listed}");
+    assert_eq!(listed["agent"], "opencode", "{listed}");
+    assert_eq!(listed["holder"], false);
+    assert_eq!(oc.starts(), 0);
 }
 
 #[test]

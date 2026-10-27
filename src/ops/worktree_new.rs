@@ -1,6 +1,7 @@
 //! Ops: `worktree new`, which creates git's worktree at `<base>/<repo>/<name>` on a new branch
 //! from the default branch, copies the copy list in and runs the worktree's setup. With
-//! `--agent`, it then starts that agent as `agent start --agent` does, once the setup succeeded.
+//! `--agent`, it records that agent before the setup runs, so the worktree keeps it even when the
+//! setup fails (#119), then starts it as `agent start --agent` does, once the setup succeeded.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,14 @@ use crate::ops::agent_start::{self, Wanted};
 use crate::ops::{Approval, config_layers, lock_worktree, notify_changed, set_up, write_agent};
 
 /// Creates the worktree `name` in the repository containing the current directory, echoing its
-/// setup's output to `echo`. A failed setup is not an error: the report says the worktree is not
-/// ready. A committed setup script not approved through `approval` does not run: the worktree
-/// stays, not ready, and the typed error `untrusted` is returned.
+/// setup's output to `echo`, with `agent` (`--agent`) recorded as its agent before the setup
+/// runs. A failed setup is not an error: the report says the worktree is not ready, and the agent
+/// stays recorded for the `agent start` that follows a later successful `worktree setup`. A
+/// committed setup script not approved through `approval` does not run: the worktree stays, not
+/// ready, with the agent recorded, and the typed error `untrusted` is returned.
 pub(crate) fn run(
     name: &WorktreeName,
+    agent: Option<Agent>,
     approval: &mut Approval<'_>,
     echo: &mut dyn Write,
 ) -> Result<Created> {
@@ -61,7 +65,7 @@ pub(crate) fn run(
 
     // From here on the worktree exists, and nothing is undone: a failure leaves it in place. A
     // script not approved says so itself, naming the worktree.
-    let (copied, setup) = match finish(name, &primary, &path, approval, echo) {
+    let (copied, setup) = match finish(name, agent, &primary, &path, approval, echo) {
         Ok(finished) => finished,
         Err(err) if matches!(error::typed(&err), Some(TypedError::Untrusted { .. })) => {
             return Err(err);
@@ -85,10 +89,10 @@ pub(crate) fn run(
 }
 
 /// Starts `agent` in the worktree `created` made, with its first terminal size `rows` by `cols`
-/// where given, but only when its setup did not fail: a worktree that is not ready gets no agent,
-/// recorded or started, and `None` comes back. The agent is recorded first, so a start refused
-/// (no sandbox, untrusted, prerequisite) still leaves it the worktree's agent for the next
-/// `agent start`; then it starts exactly as `agent start --agent` would, with the same refusals.
+/// where given, but only when its setup did not fail: a worktree that is not ready gets no agent
+/// started, and `None` comes back. `run` recorded the agent already, so a failed setup or a start
+/// refused (no sandbox, untrusted, prerequisite) still leaves it the worktree's agent for the next
+/// `agent start`; it starts exactly as `agent start --agent` would, with the same refusals.
 pub(crate) fn start_agent(
     created: &Created,
     agent: Agent,
@@ -98,7 +102,6 @@ pub(crate) fn start_agent(
     if created.setup.outcome.failed() {
         return Ok(None);
     }
-    record_agent(created, agent)?;
     let wanted = Wanted {
         agent: Some(agent),
         rows: size.0,
@@ -109,24 +112,23 @@ pub(crate) fn start_agent(
     agent_start::run(&target, &wanted, approval).map(Some)
 }
 
-/// Records `agent` as the agent of the worktree `created` made, under its lock.
-fn record_agent(created: &Created, agent: Agent) -> Result<()> {
-    let lock = lock_worktree(created.name.as_str(), &created.path)?;
-    write_agent(&lock, agent)
-}
-
-/// Locks the new worktree, tells the running Neovims it exists, copies the copy list and runs the
-/// setup (which tells them again as it starts and ends). Returns how many files were copied and
-/// what the setup did. The lock is taken before anything else touches the worktree and held until
-/// its setup ends, so nothing else may use the worktree before it is ready.
+/// Locks the new worktree, records `agent` as its agent where given, tells the running Neovims it
+/// exists, copies the copy list and runs the setup (which tells them again as it starts and ends).
+/// Returns how many files were copied and what the setup did. The lock is taken before anything
+/// else touches the worktree and held until its setup ends, so nothing else may use the worktree
+/// before it is ready.
 fn finish(
     name: &WorktreeName,
+    agent: Option<Agent>,
     primary: &PrimaryCheckout,
     worktree: &Path,
     approval: &mut Approval<'_>,
     echo: &mut dyn Write,
 ) -> Result<(usize, SetupReport)> {
     let lock = lock_worktree(name.as_str(), worktree)?;
+    if let Some(agent) = agent {
+        write_agent(&lock, agent)?;
+    }
     notify_changed(lock.admin());
     let copied = copy_include_list(primary, worktree, &include_list(primary)?)?;
     let setup = set_up(&lock, primary, worktree, name.as_str(), approval, echo)?;
