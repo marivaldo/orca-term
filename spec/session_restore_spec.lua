@@ -577,7 +577,9 @@ describe('a session manager restoring worktree tabs', function()
       local older = vim.tbl_filter(function(line)
         return line ~= 'doautoall SessionLoadPre'
       end, file_lines)
-      assert.are.equal(#file_lines - 1, #older, 'the session triggers SessionLoadPre')
+      if vim.fn.exists('##SessionLoadPre') == 1 then
+        assert.are.equal(#file_lines - 1, #older, 'the session triggers SessionLoadPre')
+      end
       vim.fn.writefile(older, session)
 
       local child, before = restore_in_child(repo, session, true)
@@ -596,33 +598,37 @@ describe('a session manager restoring worktree tabs', function()
     end
   )
 
-  it('a session that fails part way leaves the sidebar its name at its next open', function()
-    local repo = repo_with({})
-    -- A session that stops with an error before it is loaded: SessionLoadPost never runs.
-    local session = repo.tmp .. '/Failing.vim'
-    vim.fn.writefile({
-      'let SessionLoad = 1',
-      'doautoall SessionLoadPre',
-      "throw 'the session failed'",
-    }, session)
+  -- SessionLoadPre is new in Neovim 0.12. On 0.11 the name comes off only at the session's first
+  -- `file`, so a session that fails before it leaves the name where it was.
+  if vim.fn.exists('##SessionLoadPre') == 1 then
+    it('a session that fails part way leaves the sidebar its name at its next open', function()
+      local repo = repo_with({})
+      -- A session that stops with an error before it is loaded: SessionLoadPost never runs.
+      local session = repo.tmp .. '/Failing.vim'
+      vim.fn.writefile({
+        'let SessionLoad = 1',
+        'doautoall SessionLoadPre',
+        "throw 'the session failed'",
+      }, session)
 
-    local child, before = start_child(repo, true)
-    local source = 'silent! source ' .. vim.fn.fnameescape(session)
-    local sourced = pcall(vim.rpcrequest, child, 'nvim_command', source)
-    assert(not sourced, 'the session fails')
-    local during = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
-    assert.are_not.equal('orca-term://sidebar', during.name, 'the session took the name off')
+      local child, before = start_child(repo, true)
+      local source = 'silent! source ' .. vim.fn.fnameescape(session)
+      local sourced = pcall(vim.rpcrequest, child, 'nvim_command', source)
+      assert(not sourced, 'the session fails')
+      local during = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+      assert.are_not.equal('orca-term://sidebar', during.name, 'the session took the name off')
 
-    -- The sidebar, still open, is closed and opened again.
-    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
-    vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
-    local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
-    assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
-    assert.are.equal('orca-term://sidebar', after.name)
-    local now = shown(child)
-    assert.are.same({}, now.named_like_sidebar)
-    assert.are.equal(1, now.tabs[1].sidebars)
-  end)
+      -- The sidebar, still open, is closed and opened again.
+      vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+      vim.rpcrequest(child, 'nvim_command', 'OrcaTerm sidebar')
+      local after = vim.rpcrequest(child, 'nvim_exec_lua', SIDEBAR_BUFFER, {}) --[[@as spec.SidebarBuffer]]
+      assert.are.equal(assert(before).buf, after.buf, 'the sidebar keeps its buffer')
+      assert.are.equal('orca-term://sidebar', after.name)
+      local now = shown(child)
+      assert.are.same({}, now.named_like_sidebar)
+      assert.are.equal(1, now.tabs[1].sidebars)
+    end)
+  end
 
   it(
     "without terminal in sessionoptions, the first <CR> opens the agent's terminal in the restored "
