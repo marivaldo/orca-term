@@ -101,8 +101,8 @@ deny:
     cargo deny check
 
 # Spelling, workflows, vocabulary, layers, the client boundary, the launch guard, the gh guard,
-# commit messages and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard gh-guard (commit-lint range) guard-test
+# the schema fixtures, commit messages and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard gh-guard schema-fixtures (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree; files the config excludes stay excluded when named.
 typos *files:
@@ -133,6 +133,11 @@ launch-guard:
 # client never does.
 gh-guard:
     cargo xtask gh-guard
+
+# Every state schema the core writes has frozen samples in tests/fixtures/schema-<n>/: a schema
+# rises only with samples of the new schema and a migration test from the old one.
+schema-fixtures:
+    cargo xtask schema-fixtures
 
 # Lints every commit in the range; skipped when its base does not exist (no remote yet).
 commit-lint range="origin/main..HEAD":

@@ -1,0 +1,1 @@
+{"schema":1,"next_id":3,"notes":[{"id":1,"path":"src/app.txt","anchor":{"scope":"line","line":2},"body":"Say why two comes before three.","rev":1,"created":1793047380941,"copy":"f384549cbeb481e437091320de6d1f2e15e11b4a"},{"id":2,"path":"src/app.txt","anchor":{"scope":"file"},"body":"Add a header to this file.","rev":1,"created":1793047381027}]}

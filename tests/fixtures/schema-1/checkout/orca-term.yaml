@@ -1,0 +1,5 @@
+scripts:
+  setup: echo setting up > setup-ran.txt
+sandbox:
+  writable:
+    - ~/.cache/demo
