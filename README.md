@@ -81,6 +81,10 @@ in every tab, as it was when the session was saved. Your own blank windows stay.
 or with the sidebar closed when saving, the session restores no sidebar, and `:OrcaTerm sidebar`
 opens it.
 
+This works with the sidebar already open when you source the session (or load it with a session
+manager's command): the sidebar's own buffer gives up the name `orca-term://sidebar` while the
+session loads, and the same sidebar comes back in every tab once it is loaded.
+
 ## Install
 
 orca-term runs on macOS and Linux and needs Neovim 0.11 or later. With

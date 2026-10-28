@@ -137,6 +137,32 @@ end
 -- the sidebar. Nothing is loaded until a session names such a buffer.
 local session_group = vim.api.nvim_create_augroup('orca-term-session', { clear = true })
 
+-- A session sourced while the sidebar's own buffer holds that name (#124): it gives the name up for
+-- the length of the load. SessionLoadPre is new in Neovim 0.12, and only a session file written by
+-- 0.12 or later triggers it; BufFilePre, which every `:file` of the session triggers before it
+-- names its buffer, covers Neovim 0.11 and older session files. Doing it twice does nothing.
+if vim.fn.exists('##SessionLoadPre') == 1 then
+  vim.api.nvim_create_autocmd('SessionLoadPre', {
+    group = session_group,
+    desc = "orca-term: take the sidebar's name off its buffer while a session loads",
+    callback = function()
+      if package.loaded['orca-term.sidebar'] then
+        require('orca-term.sidebar').session_loading()
+      end
+    end,
+  })
+end
+
+vim.api.nvim_create_autocmd('BufFilePre', {
+  group = session_group,
+  desc = "orca-term: take the sidebar's name off its buffer before a session names a window",
+  callback = function()
+    if vim.g.SessionLoad == 1 and package.loaded['orca-term.sidebar'] then
+      require('orca-term.sidebar').session_loading()
+    end
+  end,
+})
+
 vim.api.nvim_create_autocmd('BufFilePost', {
   group = session_group,
   pattern = 'orca-term://sidebar',

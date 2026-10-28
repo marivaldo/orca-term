@@ -24,7 +24,8 @@
 -- the split itself; closing only closes the sidebar's windows. A tab never ends up holding only the
 -- sidebar: `:q` on its last other window closes the tab (or quits Neovim) as it would without it.
 -- A session saved while the sidebar was open brings it back in every tab, without E95 and without
--- the empty windows `:mksession` keeps for it (`M.name_taken`, `M.session_loaded`, #113).
+-- the empty windows `:mksession` keeps for it (`M.name_taken`, `M.session_loaded`, #113), also when
+-- the session is sourced with the sidebar already open (`M.session_loading`, #124).
 
 local actions = require('orca-term.actions')
 local detail = require('orca-term.detail')
@@ -381,6 +382,35 @@ local function named_buffer()
   return nil
 end
 
+---The name the sidebar's own buffer holds while a session is being sourced (`M.session_loading`,
+---#124).
+local LOADING_NAME = M.BUFFER_NAME .. '-loading'
+
+---Gives the buffer `buf` the name `name`. Renaming leaves the old name on a new unlisted, unloaded
+---buffer, as `:file` does. It is wiped, so that the old name is free again and that buffer is never
+---taken over as the sidebar's.
+---@param buf integer
+---@param name string
+local function rename(buf, name)
+  local old = vim.api.nvim_buf_get_name(buf)
+  vim.api.nvim_buf_set_name(buf, name)
+  for _, other in ipairs(vim.api.nvim_list_bufs()) do
+    local named = vim.api.nvim_buf_get_name(other) == old
+    if named and other ~= state.buf and not vim.api.nvim_buf_is_loaded(other) then
+      vim.api.nvim_buf_delete(other, { force = true })
+    end
+  end
+end
+
+---Gives the sidebar's buffer its name back when `M.session_loading` took it off for a session.
+---Does nothing otherwise.
+local function name_back()
+  local buf = M.buffer()
+  if buf and vim.api.nvim_buf_get_name(buf) == LOADING_NAME then
+    rename(buf, M.BUFFER_NAME)
+  end
+end
+
 ---The sidebar's buffer, made the first time: a scratch buffer with the sidebar's keys. A buffer
 ---left by an earlier load of this module (a plugin manager reloading it) is taken over.
 ---@return integer
@@ -554,6 +584,8 @@ end
 function M.open()
   highlights.define()
   ensure_buffer()
+  -- A session that failed part way never gave the name back (`M.session_loading`).
+  name_back()
   state.open = true
   -- Not subscribed yet: the first fleet comes back from the read itself.
   on_fleet(live.read())
@@ -571,7 +603,11 @@ function M.open()
     group = group,
     desc = 'orca-term: show the sidebar in this tab',
     callback = function()
-      show_in(vim.api.nvim_get_current_tabpage())
+      -- A session being sourced lays out its tabs by itself, counting their windows: the sidebar
+      -- is shown in them once the session is loaded (`M.session_loaded`, #124).
+      if vim.g.SessionLoad ~= 1 then
+        show_in(vim.api.nvim_get_current_tabpage())
+      end
     end,
   })
   vim.api.nvim_create_autocmd('TabEnter', {
@@ -665,31 +701,43 @@ function M.name_taken(buf)
   if vim.g.SessionLoad ~= 1 or buf == state.buf then
     return
   end
-  vim.api.nvim_buf_set_name(buf, ('%s-restored-%d'):format(M.BUFFER_NAME, buf))
-  -- Renaming leaves the old name on a new unlisted, unloaded buffer, as `:file` does. It is wiped,
-  -- so that it is never taken over as the sidebar's.
-  for _, other in ipairs(vim.api.nvim_list_bufs()) do
-    local named = vim.api.nvim_buf_get_name(other) == M.BUFFER_NAME
-    if named and other ~= state.buf and not vim.api.nvim_buf_is_loaded(other) then
-      vim.api.nvim_buf_delete(other, { force = true })
-    end
-  end
+  rename(buf, ('%s-restored-%d'):format(M.BUFFER_NAME, buf))
   table.insert(restored, buf)
 end
 
----Called after a session was sourced (SessionLoadPost). When it made buffers in place of the
----sidebar (`M.name_taken`), closes their windows, wipes them and shows the sidebar, which was open
----when the session was saved. A tab whose only window is one of them keeps that window, emptied.
----No other window is touched. Does nothing when the session made none.
+---Called when a session starts being sourced, while the sidebar's own buffer may hold its name
+---(the sidebar was opened before). The buffer gives up the name for the length of the load, so the
+---session's first `file orca-term://sidebar` does not fail with E95 but names a buffer of its own,
+---which `M.name_taken` takes care of. `M.session_loaded` gives the name back. Calling it again
+---during the same load does nothing, and so does calling it outside a session.
+function M.session_loading()
+  local buf = M.buffer()
+  if vim.g.SessionLoad == 1 and buf and vim.api.nvim_buf_get_name(buf) == M.BUFFER_NAME then
+    rename(buf, LOADING_NAME)
+  end
+end
+
+---Whether `M.session_loaded` has already scheduled its work for the session just sourced.
+local scheduled = false
+
+---Called after a session was sourced (SessionLoadPost). Gives the sidebar's buffer its name back
+---(`M.session_loading`). When the session made buffers in place of the sidebar (`M.name_taken`),
+---closes their windows, wipes them and shows the sidebar, which was open when the session was
+---saved. A tab whose only window is one of them keeps that window, emptied. No other window is
+---touched. A sidebar open before the session is shown in every tab the session made, which it
+---waited for. Does nothing else when the session made none and the sidebar is closed.
 function M.session_loaded()
-  if #restored == 0 then
+  name_back()
+  if scheduled or (#restored == 0 and not state.open) then
     return
   end
-  local buffers = restored
-  restored = {}
+  scheduled = true
   -- SessionLoadPost runs once per buffer, some of them in a window of their own: the windows are
   -- changed once the session is over.
   vim.schedule(function()
+    scheduled = false
+    local buffers = restored
+    restored = {}
     for _, buf in ipairs(buffers) do
       for _, win in ipairs(vim.fn.win_findbuf(buf)) do
         hide(win)
