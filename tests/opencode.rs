@@ -316,6 +316,59 @@ fn an_error_fails_the_turn_and_esc_interrupts_it() {
     );
 }
 
+/// The plugin's line of the call `call` in the session `ses_1`, `touch <file>`, ended in `error`.
+fn tool_error(call: &str, file: &str, error: &str) -> Value {
+    json!({
+        "type": "tool-error", "session": "ses_1", "parent": null, "tool": "bash",
+        "input": {"command": format!("touch {file}")}, "call": call, "error": error
+    })
+}
+
+#[test]
+fn a_deny_rules_refusal_is_a_denial_and_the_persons_reject_is_not() {
+    let oc = OpenCodeRepo::new();
+    let wt = Started::new(&oc, "demo");
+    let mut driver = oc.driver("demo");
+    driver.event(&prompt("touch two files"));
+    driver.event(&json!({
+        "type": "tool", "session": "ses_1", "parent": null, "tool": "bash",
+        "input": {"command": "touch notes.txt"}
+    }));
+    wt.wait_for_state("working", "Bash: touch notes.txt");
+    // opencode 1.18.0's words for a call its deny rule refused, then for the person's Reject.
+    let refused = "The user has specified a rule which prevents you from using this specific tool \
+                   call. Here are some of the relevant rules \
+                   [{\"permission\":\"bash\",\"pattern\":\"touch *\",\"action\":\"deny\"}]";
+    driver.event(&tool_error("call_1", "notes.txt", refused));
+    wait_until("one denial", || wt.listed()["denials"] == 1);
+    let listed = wt.listed();
+    assert_eq!(
+        (&listed["state"], &listed["activity"]),
+        (&json!("working"), &json!("Bash: touch notes.txt")),
+        "a denial is never a state"
+    );
+    driver.event(&tool_error(
+        "call_2",
+        "b.txt",
+        "The user rejected permission to use this specific tool call.",
+    ));
+    driver.event(&idle("A rule denies it."));
+    wt.wait_for_state("finished", "A rule denies it.");
+    driver.detach();
+
+    assert_eq!(wt.listed()["denials"], 1, "the person's reject is not one");
+    let denial = json!([{"tool": "Bash", "text": "Bash: touch notes.txt"}]);
+    let detail: Value =
+        serde_json::from_str(&oc.ok(&["worktree", "detail", "demo", "--json"])).unwrap();
+    assert_eq!(detail["denials"], denial);
+    assert_eq!(wt.turns()[1]["denials"], denial);
+    let text = oc.ok(&["worktree", "detail", "demo"]);
+    assert!(
+        text.contains("denied 1 tool call in the latest turn:\n  Bash: touch notes.txt\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn esc_while_opencode_retries_its_provider_interrupts_the_turn_as_the_real_lines_say() {
     let oc = OpenCodeRepo::new();

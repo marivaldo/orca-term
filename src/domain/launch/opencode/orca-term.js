@@ -13,6 +13,8 @@
 //   {"type":"start"}                                   opencode started
 //   {"type":"prompt","session","parent","text"}        the person sent a message
 //   {"type":"tool","session","parent","tool","input"}  a tool is about to run
+//   {"type":"tool-error","session","parent","tool","input","call","error"}
+//                                                      a tool call ended in an error
 //   {"type":"permission","session","parent","permission","input"}
 //   {"type":"question","session","parent","question"}  opencode waits for the person
 //   {"type":"replied","session","parent"}              the person answered
@@ -27,6 +29,19 @@
 // opencode says nothing else when the person presses Esc while it waits to retry its provider
 // (measured on 1.18.0: no `session.error`, the message completed with neither), so this is how
 // orca-term tells an interrupted turn from a finished one.
+//
+// A tool-error line carries the call's id (`call`) and opencode's error text, which orca-term reads
+// to tell a deny rule's refusal from any other failure. opencode has no other signal for it (read
+// in 1.18.0's source): a `deny` rule in its `permission` config refuses the call inside the tool,
+// after `tool.execute.before` has fired, with a `PermissionDeniedError` and no `permission.asked`
+// (packages/opencode/src/permission/index.ts:72-79); `tool.execute.after` never fires and the
+// `permission.ask` hook is never called; the tool part just ends with `state.status` "error" and
+// `state.error` the error's message (packages/opencode/src/session/processor.ts:186-205), "The user
+// has specified a rule which prevents you from using this specific tool call. ..."
+// (packages/core/src/v1/permission.ts:21-27). The person's Reject at a permission prompt ends the
+// same way with "The user rejected permission to use this specific tool call." (:7-11), after a
+// `permission.asked` and its reply; a command the sandbox stopped is not even an error, just a
+// command that exited non-zero (packages/opencode/src/tool/shell.ts:586-594).
 
 import { writeSync } from "node:fs"
 
@@ -106,6 +121,20 @@ export const OrcaTerm = async () => {
             })
           }
           break
+        case "message.part.updated": {
+          const part = properties.part
+          if (part?.type === "tool" && part.state?.status === "error") {
+            send({
+              type: "tool-error",
+              ...where(part.sessionID),
+              tool: cut(part.tool),
+              input: pick(part.state.input),
+              call: cut(part.callID),
+              error: cut(part.state.error),
+            })
+          }
+          break
+        }
         case "permission.asked":
           send({
             type: "permission",

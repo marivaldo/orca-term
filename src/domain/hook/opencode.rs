@@ -7,6 +7,7 @@
 //! | `start`      | `SessionStart` (`startup`)          | closes a turn left open, interrupted |
 //! | `prompt`     | `UserPromptSubmit`                  | opens a turn, or queues the prompt   |
 //! | `tool`       | `PreToolUse`                        | working, on that tool                |
+//! | `tool-error` | `PostToolBatch` of that one call    | a denial, if a deny rule refused it  |
 //! | `permission` | `PermissionRequest`                 | waiting, for that tool               |
 //! | `question`   | `PermissionRequest` of a question   | waiting, showing the question        |
 //! | `replied`    | `PostToolUse`                       | working again                        |
@@ -32,11 +33,26 @@
 //! `SessionEnd` too. A provider being retried sends nothing, so the turn stays working until one
 //! of these ends it. `ContextOverflowError` is ignored: opencode compacts the session and carries
 //! on.
+//!
+//! A tool call refused by a `deny` rule in opencode's `permission` config is a denial, as claude's
+//! are. opencode reports it only as a tool call that ended in an error, by the error's text (there
+//! is no flag, measured in 1.18.0's source, the plugin's header says where): the plugin reports
+//! every such call as a `tool-error` line, read as claude's `PostToolBatch` of that one call with
+//! the error as its response, so `hook::is_denial` tells a refusal ([`DENIED_START`]) from the
+//! person's Reject (`The user rejected permission to use this specific tool call.`) and from any
+//! other failure, and the denial is recorded as claude's are: on the open turn, a subagent's too,
+//! once per call id, never changing the phase or the activity.
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::domain::hook::Payload;
+use crate::domain::hook::{Payload, ToolCall};
+
+/// How opencode's error begins when a `deny` rule refused the tool call, its
+/// `PermissionDeniedError` (opencode 1.18.0, `packages/core/src/v1/permission.ts`), which goes on
+/// with the rules: `... Here are some of the relevant rules [{"permission":"bash", ...}]`.
+pub(crate) const DENIED_START: &str =
+    "The user has specified a rule which prevents you from using this specific tool call.";
 
 /// The error opencode reports when the person stops a turn.
 const ABORTED: &str = "MessageAbortedError";
@@ -101,6 +117,18 @@ fn session_event(kind: &str, line: &Value, session: &str, parent: Option<&str>) 
             tool_name: text("tool").map(|tool| tool_name(&tool)),
             tool_input: tool_input(line.get("input")),
             ..base("PreToolUse")
+        }),
+        "tool-error" => Some(Payload {
+            // A subagent's denial counts only on the turn of the same prompt id, and the person's
+            // turn is named after the person's session.
+            prompt_id: parent.map(str::to_owned),
+            tool_calls: vec![ToolCall {
+                name: text("tool").map(|tool| tool_name(&tool)),
+                input: tool_input(line.get("input")),
+                id: text("call"),
+                response: text("error"),
+            }],
+            ..base("PostToolBatch")
         }),
         "permission" => Some(Payload {
             tool_name: text("permission").map(|tool| tool_name(&tool)),
@@ -204,7 +232,7 @@ mod tests {
     use super::*;
     use crate::domain::hook::{self, tool_preview};
     use crate::domain::launch::opencode::PLUGIN;
-    use crate::domain::turn::{Outcome, Phase, Status};
+    use crate::domain::turn::{Denial, Outcome, Phase, Status};
 
     fn read(line: &Value) -> Option<Payload> {
         payload(line.to_string().as_bytes()).unwrap()
@@ -528,6 +556,172 @@ mod tests {
         assert_eq!(status.latest, None);
     }
 
+    /// opencode's error for a call its deny rule `"bash": {"touch *": "deny"}` refused, as 1.18.0
+    /// words it.
+    const REFUSED: &str = "The user has specified a rule which prevents you from using this \
+                           specific tool call. Here are some of the relevant rules \
+                           [{\"permission\":\"*\",\"action\":\"allow\",\"pattern\":\"*\"},\
+                           {\"permission\":\"bash\",\"pattern\":\"touch *\",\"action\":\"deny\"}]";
+
+    /// opencode's error for a call the person rejected at its permission prompt.
+    const REJECTED: &str = "The user rejected permission to use this specific tool call.";
+
+    /// The tool-error line of the call `call` in the session `session` (a subagent's when
+    /// `parent` names the person's), `touch denied.txt`, which ended in `error`.
+    fn tool_error(session: &str, parent: Option<&str>, call: &str, error: &str) -> Value {
+        json!({
+            "type": "tool-error", "session": session, "parent": parent, "tool": "bash",
+            "input": {"command": "touch denied.txt"}, "call": call, "error": error
+        })
+    }
+
+    /// The tool line of `touch denied.txt` in the person's session.
+    fn touch() -> Value {
+        json!({
+            "type": "tool", "session": "ses_1", "parent": null, "tool": "bash",
+            "input": {"command": "touch denied.txt"}
+        })
+    }
+
+    /// The denial of `touch denied.txt`, the call `call`.
+    fn touch_denied(call: &str) -> Denial {
+        Denial {
+            tool: "Bash".to_owned(),
+            text: "Bash: touch denied.txt".to_owned(),
+            id: Some(call.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_tool_error_is_claudes_batch_of_that_one_call() {
+        let batch = event(&tool_error("ses_1", None, "call_1", REFUSED));
+        assert_eq!(batch.event, "PostToolBatch");
+        assert_eq!(batch.session_id.as_deref(), Some("ses_1"));
+        assert_eq!(batch.prompt_id, None, "never opens a turn");
+        assert_eq!(
+            batch.tool_calls,
+            [ToolCall {
+                name: Some("Bash".to_owned()),
+                input: json!({"command": "touch denied.txt"}),
+                id: Some("call_1".to_owned()),
+                response: Some(REFUSED.to_owned()),
+            }]
+        );
+        let subagents = event(&tool_error("ses_2", Some("ses_1"), "call_2", REFUSED));
+        assert_eq!(subagents.session_id.as_deref(), Some("ses_1"));
+        assert_eq!(subagents.agent_id.as_deref(), Some("ses_2"));
+        assert_eq!(
+            subagents.prompt_id.as_deref(),
+            Some("ses_1"),
+            "the person's turn, named after the person's session"
+        );
+    }
+
+    #[test]
+    fn a_deny_rules_refusal_is_a_denial_on_the_open_turn_and_never_a_state() {
+        let lines = [
+            json!({"type": "start"}),
+            json!({"type": "prompt", "session": "ses_1", "parent": null, "text": "touch it"}),
+            touch(),
+            tool_error("ses_1", None, "call_1", REFUSED),
+        ];
+        let (status, _) = replay(&lines);
+        let turn = status.turn.as_ref().unwrap();
+        assert_eq!(turn.denials, [touch_denied("call_1")]);
+        let (without, _) = replay(&lines[..3]);
+        let before = without.turn.as_ref().unwrap();
+        assert_eq!(
+            (turn.phase, &turn.activity),
+            (before.phase, &before.activity),
+            "the denial changes neither the phase nor the activity"
+        );
+        assert_eq!(turn.activity, "Bash: touch denied.txt");
+
+        let mut ended = lines.to_vec();
+        ended.push(finished("I could not run it: a rule denies it."));
+        let (status, records) = replay(&ended);
+        let latest = status.latest.as_ref().unwrap();
+        assert_eq!(latest.outcome, Outcome::Finished);
+        assert_eq!(latest.denials, [touch_denied("call_1")]);
+        let end = records.last().unwrap();
+        assert!(
+            end.contains(r#""denials":[{"tool":"Bash","text":"Bash: touch denied.txt"}]"#),
+            "{end}"
+        );
+    }
+
+    #[test]
+    fn the_persons_reject_and_a_failed_tool_are_not_denials() {
+        let corrected = "The user rejected permission to use this specific tool call with the \
+                         following feedback: use b.txt";
+        let (status, _) = replay(&[
+            json!({"type": "prompt", "session": "ses_1", "text": "touch it"}),
+            touch(),
+            json!({
+                "type": "permission", "session": "ses_1", "permission": "bash",
+                "input": {"command": "touch denied.txt"}
+            }),
+            json!({"type": "replied", "session": "ses_1"}),
+            tool_error("ses_1", None, "call_1", REJECTED),
+            tool_error("ses_1", None, "call_2", corrected),
+            tool_error("ses_1", None, "call_3", "EPERM: operation not permitted"),
+            tool_error("ses_1", None, "call_4", "Tool execution aborted"),
+            json!({
+                "type": "idle", "session": "ses_1", "text": null, "finish": "tool-calls",
+                "error": null
+            }),
+        ]);
+        let latest = status.latest.as_ref().unwrap();
+        assert_eq!(latest.outcome, Outcome::Finished);
+        assert_eq!(latest.denials, []);
+    }
+
+    #[test]
+    fn a_subagents_denial_counts_on_the_persons_turn() {
+        let (status, records) = replay(&[
+            json!({"type": "prompt", "session": "ses_1", "text": "look around"}),
+            json!({"type": "prompt", "session": "ses_2", "parent": "ses_1", "text": "explore"}),
+            json!({
+                "type": "tool", "session": "ses_2", "parent": "ses_1", "tool": "bash",
+                "input": {"command": "touch denied.txt"}
+            }),
+            tool_error("ses_2", Some("ses_1"), "call_1", REFUSED),
+        ]);
+        assert_eq!(records.len(), 1, "only the person's turn started");
+        let turn = status.turn.as_ref().unwrap();
+        assert_eq!(turn.denials, [touch_denied("call_1")]);
+        assert_eq!(turn.phase, Phase::Working);
+        assert_eq!(
+            turn.activity, "look around",
+            "a subagent's tool sets no activity"
+        );
+
+        let (status, records) = replay(&[tool_error("ses_2", Some("ses_1"), "call_1", REFUSED)]);
+        assert!(records.is_empty() && status.turn.is_none(), "no turn open");
+        let (status, _) = replay(&[
+            json!({"type": "prompt", "session": "ses_1", "text": "look around"}),
+            tool_error("ses_9", Some("ses_8"), "call_1", REFUSED),
+        ]);
+        assert_eq!(
+            status.turn.as_ref().unwrap().denials,
+            [],
+            "another session's subagent"
+        );
+    }
+
+    #[test]
+    fn a_refused_call_reported_twice_counts_once_and_none_counts_with_no_turn_open() {
+        let (status, _) = replay(&[
+            json!({"type": "prompt", "session": "ses_1", "text": "touch it"}),
+            tool_error("ses_1", None, "call_1", REFUSED),
+            tool_error("ses_1", None, "call_1", REFUSED),
+        ]);
+        assert_eq!(status.turn.as_ref().unwrap().denials.len(), 1);
+        let (status, records) = replay(&[tool_error("ses_1", None, "call_1", REFUSED)]);
+        assert!(records.is_empty(), "{records:?}");
+        assert_eq!(status.turn, None);
+    }
+
     #[test]
     fn a_start_closes_a_turn_left_open_by_an_agent_that_died() {
         let (status, _) = replay(&[
@@ -563,7 +757,8 @@ mod tests {
                 "question",
                 "replied",
                 "start",
-                "tool"
+                "tool",
+                "tool-error"
             ]
         );
         for kind in types {

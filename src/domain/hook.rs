@@ -22,7 +22,9 @@
 //! person's own refusal at a permission prompt is not a denial, nor is a command the sandbox
 //! stopped (ADR 0007): that is a failed command. Hooks give a lower bound: when the person
 //! refuses or presses Esc on one call of a batch, claude sends no `PostToolBatch` for it, and a
-//! rule denial in the same batch is lost.
+//! rule denial in the same batch is lost. opencode's plugin reports each tool call that ended in
+//! an error, read as a `PostToolBatch` of that one call (`hook/opencode.rs`), so a call one of its
+//! deny rules refused is a denial by the same rules.
 
 pub(crate) mod opencode;
 pub(crate) mod record;
@@ -146,12 +148,16 @@ impl ToolCall {
 /// a path (`... denied by your permission settings.`). Only the text tells: the match is on
 /// claude's own words, kept honest by the recorded payloads in `tests/fixtures/claude-hooks/`.
 /// The person's refusal (`The user doesn't want to proceed with this tool use.`) and a command
-/// the sandbox stopped (`Operation not permitted`) are not denials.
+/// the sandbox stopped (`Operation not permitted`) are not denials. opencode's error for a call a
+/// deny rule refused, which its plugin reports as the call's response, is one too: it starts with
+/// opencode's own words ([`opencode::DENIED_START`]), kept honest by its recording in
+/// `tests/fixtures/opencode-events/`.
 pub(crate) fn is_denial(response: &str) -> bool {
     (response.starts_with(DENIED_TOOL_START) && response.contains(" denied"))
         || DENIED_PHRASES
             .iter()
             .any(|phrase| response.contains(phrase))
+        || response.starts_with(opencode::DENIED_START)
 }
 
 impl Payload {
@@ -1184,6 +1190,25 @@ mod tests {
             "Permission to use Bash was granted.",
             "the file says: access denied",
             "",
+        ] {
+            assert!(!is_denial(not_denied), "{not_denied}");
+        }
+    }
+
+    #[test]
+    fn opencodes_refusal_by_a_deny_rule_is_a_denial_by_its_own_words() {
+        let denied = "The user has specified a rule which prevents you from using this specific \
+                      tool call. Here are some of the relevant rules \
+                      [{\"permission\":\"bash\",\"pattern\":\"touch *\",\"action\":\"deny\"}]";
+        assert!(is_denial(denied));
+        for not_denied in [
+            "The user rejected permission to use this specific tool call.",
+            "The user rejected permission to use this specific tool call with the following \
+             feedback: use the other file",
+            "EPERM: operation not permitted, open '/w/.git/orca-term/a.txt'",
+            "Tool execution aborted",
+            "a tool said: The user has specified a rule which prevents you from using this \
+             specific tool call.",
         ] {
             assert!(!is_denial(not_denied), "{not_denied}");
         }
