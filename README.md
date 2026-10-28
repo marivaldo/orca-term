@@ -34,9 +34,10 @@ agent will be stopped), `u` toggles its unseen
 mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
 its detail in a float beside the sidebar: its state and agent, its branch and how far it is ahead
 of and behind the local default branch (`↑2 ↓1 main`, never fetched), the whole error when it has
-one, the tool calls claude's permission rules denied in its latest turn, and the end of its setup's
-log. The float closes when the cursor moves, on `K` again, or on `q` once you enter it. At the
-end of a row's second line, `⊘N` counts the tool calls denied in the worktree's latest turn and
+one, the tool calls the agent's permission rules denied in its latest turn (claude's deny rules,
+or the `deny` rules of opencode's `permission` config), and the end of its setup's log. The float
+closes when the cursor moves, on `K` again, or on `q` once you enter it. At the end of a row's
+second line, `⊘N` counts the tool calls denied in the worktree's latest turn and
 `✎N` its notes waiting to be sent. These icons (`≠ ⊘N ✎N PR`) sit there, right-aligned, after what
 the line says, which is cut with `…` to leave them room; a worktree with icons and nothing to say
 gets a second line holding only them.
@@ -585,7 +586,7 @@ agents' config, but the agents run with your own login and settings, so claude k
 transcripts and remembers the temporary folders it was told to trust, as it always does.
 
 It costs real prompts on your account, each asking for a one-word answer or a few seconds of
-output. A full run is 10 prompts (8 of them claude's) and takes a few minutes:
+output. A full run is 11 prompts (8 of them claude's) and takes a few minutes:
 
 | Scenario | Agent | What the recording shows | Prompts |
 |---|---|---|---|
@@ -596,6 +597,7 @@ output. A full run is 10 prompts (8 of them claude's) and takes a few minutes:
 | `tui-sandbox` | claude | the sandbox stops a write into the worktree's admin directory, and the file is checked missing | 1 |
 | `opencode-hello` | opencode | a plain prompt finishes | 1 |
 | `opencode-esc` | opencode | Esc twice mid-turn interrupts it | 1 |
+| `opencode-deny` | opencode | a deny rule in the worktree's `opencode.json` refuses a command: the turn finishes with one denial, and the file is checked missing | 1 |
 | `tui-ask` | claude | a question waits for an answer; recorded by hand, `just record-live tui-ask` | 2 |
 
 Each recording is written in place, named after the agent's version:
@@ -612,7 +614,9 @@ opencode until `OPENCODE_TESTED` does: raise it and commit it with the recording
 
 A scenario is a small file in `tests/live/`: the agent, the recording's name, a timeout, the
 outcome of each turn the recording must replay to, then the keys to type and the hooks to wait for
-(`xtask/src/live/scenario.rs` documents the format). One that cannot be typed reliably, such as
+(`xtask/src/live/scenario.rs` documents the format). It can also write files into the worktree
+before the agent starts, such as the `opencode.json` holding the deny rule of `opencode-deny`, and
+say how many denials each turn must count. One that cannot be typed reliably, such as
 picking an answer in a menu, is marked `manual`: its comments are the procedure, and
 `just record-live <scenario>` attaches your terminal to the agent and writes the recording once you
 detach. The older recordings no scenario reproduces stay as they were made by hand: an API error

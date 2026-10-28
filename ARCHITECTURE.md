@@ -421,8 +421,10 @@ the adapters, and returns a domain value that `output` prints.
   already ended are ignored. Tools set the activity, permission requests and questions wait.
   `PostToolBatch` reports the tool calls denied (`is_denial`, by claude's words in a call's
   `tool_response`), recorded on the open turn its `prompt_id` names, a subagent's too, once per
-  `tool_use_id`, never touching the phase or the activity. A failed turn keeps the agent's whole
-  last message. A payload naming a session records the agent whose hook it is as the session's.
+  `tool_use_id`, never touching the phase or the activity; `is_denial` also knows opencode's words
+  for a call one of its deny rules refused (`hook/opencode.rs`). A failed turn keeps the agent's
+  whole last message. A payload naming a session records the agent whose hook it is as the
+  session's.
   `EVENTS_FD_VAR` names the events pipe of an agent whose hooks cannot run orca-term themselves.
 - `domain/hook/opencode.rs`: the lines opencode's plugin writes, each read as the payload claude's
   hook of the same meaning carries (#35), so `apply` makes the same transitions: `start`
@@ -435,7 +437,10 @@ the adapters, and returns a domain value that `output` prints.
   the person's Esc mid-stream, `MessageAbortedError`, as `SessionEnd`; `ContextOverflowError`
   ignored), `end` (`SessionEnd`); a subagent's session is reported under the person's, with an
   agent id; a line of no session changes nothing. A provider being retried sends nothing: the turn
-  stays working.
+  stays working. `tool-error`, a tool call that ended in an error (#126), is a `PostToolBatch` of
+  that one call with opencode's error as its response, so a call a deny rule refused is a denial
+  (`DENIED_START`, opencode's words) and the person's Reject or any other failure is not; a
+  subagent's carries the person's session as its prompt id, so it counts on the person's turn.
 - `domain/hook/record.rs`: the live checks' recording tap (#44): `RECORD_VAR`
   (`ORCA_TERM_RECORD`), the file it names (`target`, none when unset or empty), and the line a
   payload is recorded as (`line`): `<event> <payload>` for claude, the plugin's line for opencode,
@@ -812,7 +817,10 @@ validate"):
   (`The user doesn't want to proceed with this tool use.`) is not one, nor is a command the
   sandbox stopped, which is a failed command. Denials are recorded on their turn (`status.json`
   while it is open, the end line of `turns.jsonl` once it ends) and only counted: `worktree ls`
-  shows the latest turn's count as `denials`; the state and its derivation ignore them.
+  shows the latest turn's count as `denials`; the state and its derivation ignore them. opencode
+  reports a call its deny rule refused only as a tool call that ended in an error (#126), whose
+  error starts `The user has specified a rule which prevents you from using this specific tool
+  call.`; its plugin's `tool-error` line goes the same way as claude's batch.
 - **The unseen mark is the person's, derived on read.** A worktree is unseen when its latest
   ended turn (an open turn whose holder is gone counts as ended) is after `seen_through` in
   `seen.json`, whatever its outcome, or when the person marked it by hand. Only the person's
