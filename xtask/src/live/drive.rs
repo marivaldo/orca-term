@@ -4,9 +4,9 @@
 //! 1. a repository with one empty commit, its git config its own (as the test fixtures do, so the
 //!    person's signing and hooks stay out of it), and an `orca-term.yaml` override in its git
 //!    common dir putting the worktrees beside it, never under the person's home;
-//! 2. `orca-term worktree new live`, then `orca-term agent start live` with `ORCA_TERM_RECORD`
-//!    naming the tap's file, so every hook claude runs, or every line opencode's plugin writes, is
-//!    appended to it as received;
+//! 2. `orca-term worktree new live`, the scenario's `file`s written into it, then `orca-term agent
+//!    start live` with `ORCA_TERM_RECORD` naming the tap's file, so every hook claude runs, or
+//!    every line opencode's plugin writes, is appended to it as received;
 //! 3. `orca-term agent attach live` on a pseudo-terminal, which types the scenario's keys and waits
 //!    for the hooks it names (or this terminal, for a scenario recorded by hand);
 //! 4. `orca-term agent stop live`, then the files that must be missing, then the tap's file,
@@ -59,6 +59,7 @@ pub(crate) fn record(orca_term: &Path, scenario: &Scenario) -> Result<String, St
 fn record_in(place: &Place, orca_term: &Path, scenario: &Scenario) -> Result<String> {
     place.make_repository()?;
     let worktree = place.new_worktree(orca_term)?;
+    write_files(&worktree, &scenario.files)?;
     let denied = place.admin_dir(&worktree)?;
     let worktree = path_text(&worktree)?;
     let denied = path_text(&denied)?;
@@ -89,6 +90,19 @@ fn record_in(place: &Place, orca_term: &Path, scenario: &Scenario) -> Result<Str
         (&tasks, "{{tasks}}"),
     ]);
     Ok(recording::normalise(&tapped, &placeholders))
+}
+
+/// Writes the scenario's `files` into `worktree`, each at its path there, before the agent starts.
+fn write_files(worktree: &Path, files: &[(String, String)]) -> Result<()> {
+    for (path, text) in files {
+        let file = worktree.join(path);
+        if let Some(dir) = file.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&file, format!("{text}\n"))
+            .with_context(|| format!("could not write {}", file.display()))?;
+    }
+    Ok(())
 }
 
 /// Types the steps of `scenario` through `attach`, waiting for what they wait for, all within the
