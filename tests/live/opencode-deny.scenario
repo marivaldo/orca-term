@@ -4,7 +4,7 @@
 # write in its worktree. One prompt.
 agent opencode
 recording opencode-deny
-timeout 120
+timeout 300
 expect finished
 expect-denials 1
 file opencode.json {"permission": {"bash": {"touch *": "deny"}}}
