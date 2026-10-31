@@ -8,7 +8,11 @@
 //! recording p-hello            the recording's name: <name>-<version>.log
 //! timeout 120                  seconds the whole scenario may take
 //! expect finished              the outcome of each turn the recording must replay to
+//! expect-denials 1             how many denials each turn must count, in the same order; the
+//!                              counts are not checked when the line is left out
 //! check-missing {{denied}}/x   a file that must not exist once the agent stopped
+//! file opencode.json {"a": 1}  a file written into the worktree before the agent starts: its
+//!                              path in the worktree, then its whole text on the same line
 //! manual                       recorded by hand (`just record-live <name>`), never by check-live
 //!
 //! sleep 2                      waits, in seconds (`0.5` too)
@@ -20,7 +24,11 @@
 //!
 //! `{{worktree}}` and `{{denied}}` in a typed text or a `check-missing` path stand for the
 //! scenario's worktree and for a directory the sandbox denies (the worktree's admin directory).
+//! A `file`'s text is written as is, such as a project config the agent reads from its worktree.
+//! The suite that replays the recordings (`tests/recordings.rs`) checks the outcomes and the
+//! denials; this runner only checks that they are well formed.
 
+use std::path::{Component, Path};
 use std::time::Duration;
 
 /// The longest timeout a scenario may ask for: an hour.
@@ -137,6 +145,9 @@ pub(crate) struct Scenario {
     pub(crate) expect: Vec<String>,
     /// Files that must not exist once the agent stopped, placeholders unexpanded.
     pub(crate) check_missing: Vec<String>,
+    /// Files written into the worktree before the agent starts: each one's path in the worktree
+    /// and its text.
+    pub(crate) files: Vec<(String, String)>,
     /// Recorded by hand rather than by `check-live`.
     pub(crate) manual: bool,
     /// The comment lines the file starts with, without their `#`.
@@ -150,7 +161,9 @@ pub(crate) fn parse(name: &str, text: &str) -> Result<Scenario, String> {
     let mut recording = None;
     let mut timeout = None;
     let mut expect = Vec::new();
+    let mut expect_denials = None;
     let mut check_missing = Vec::new();
+    let mut files = Vec::new();
     let mut manual = false;
     let mut steps = Vec::new();
     for (number, line) in text.lines().enumerate() {
@@ -166,7 +179,9 @@ pub(crate) fn parse(name: &str, text: &str) -> Result<Scenario, String> {
             "recording" => recording = Some(recording_name(rest).map_err(at)?),
             "timeout" => timeout = Some(timeout_secs(rest).map_err(at)?),
             "expect" => expect = outcomes(rest).map_err(at)?,
+            "expect-denials" => expect_denials = Some(denial_counts(rest).map_err(at)?),
             "check-missing" if !rest.is_empty() => check_missing.push(rest.to_owned()),
+            "file" => files.push(file(rest).map_err(at)?),
             "manual" if rest.is_empty() => manual = true,
             _ => steps.push(step(word, rest).map_err(at)?),
         }
@@ -177,6 +192,7 @@ pub(crate) fn parse(name: &str, text: &str) -> Result<Scenario, String> {
     if expect.is_empty() {
         return Err("no `expect` line".to_owned());
     }
+    check_denial_counts(&expect, expect_denials.as_deref())?;
     if manual && !steps.is_empty() {
         return Err("a manual scenario has no steps: its comments are the procedure".to_owned());
     }
@@ -190,10 +206,54 @@ pub(crate) fn parse(name: &str, text: &str) -> Result<Scenario, String> {
         timeout,
         expect,
         check_missing,
+        files,
         manual,
         about: about(text),
         steps,
     })
+}
+
+/// The denial counts of `expect-denials`, one whole number per turn.
+fn denial_counts(text: &str) -> Result<Vec<u64>, String> {
+    let counts: Option<Vec<u64>> = text.split_whitespace().map(|n| n.parse().ok()).collect();
+    match counts {
+        Some(counts) if !counts.is_empty() => Ok(counts),
+        _ => Err(format!(
+            "`expect-denials {text}`: give a whole number for each turn"
+        )),
+    }
+}
+
+/// Checks that `expect-denials`, when given, counts as many turns as `expect` names.
+fn check_denial_counts(expect: &[String], counts: Option<&[u64]>) -> Result<(), String> {
+    match counts {
+        Some(counts) if counts.len() != expect.len() => Err(format!(
+            "`expect-denials` counts {} turns, but `expect` names {}",
+            counts.len(),
+            expect.len()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The file of `file <path> <text>`: a path inside the worktree (relative, with no `..`), and
+/// the text, which may not be empty.
+fn file(rest: &str) -> Result<(String, String), String> {
+    let (path, text) = rest.split_once(' ').unwrap_or((rest, ""));
+    let text = text.trim();
+    let inside = !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)));
+    if !inside {
+        return Err(format!(
+            "`file {path}`: give a path inside the worktree, relative and with no `..`"
+        ));
+    }
+    if text.is_empty() {
+        return Err(format!("`file {path}`: give its text after the path"));
+    }
+    Ok((path.to_owned(), text.to_owned()))
 }
 
 /// The step `word rest`.
@@ -369,6 +429,62 @@ wait-for Stop
             "line 4: `recording P_hello`: a name is lowercase letters, digits and dashes"
         );
         assert_eq!(bad("agent claude-code\n", ""), "no `agent` line");
+    }
+
+    #[test]
+    fn a_scenario_may_write_files_into_the_worktree_and_expect_denials() {
+        let config = r#"{"permission": {"bash": {"touch *": "deny"}}}"#;
+        let text = HELLO.replace(
+            "expect finished\n",
+            &format!(
+                "expect finished\nexpect-denials 1\nfile opencode.json {config}\n\
+                 file .opencode/notes.txt two  words\n"
+            ),
+        );
+        let scenario = parse("x", &text).unwrap();
+        assert_eq!(
+            scenario.files,
+            [
+                ("opencode.json".to_owned(), config.to_owned()),
+                (".opencode/notes.txt".to_owned(), "two  words".to_owned())
+            ]
+        );
+        assert_eq!(parse("p-hello", HELLO).unwrap().files, []);
+    }
+
+    #[test]
+    fn a_wrong_file_or_denial_count_is_named() {
+        let wrong = |line: &str| {
+            parse(
+                "x",
+                &HELLO.replace("expect finished\n", &format!("expect finished\n{line}\n")),
+            )
+            .unwrap_err()
+        };
+        assert_eq!(
+            wrong("expect-denials 1 0"),
+            "`expect-denials` counts 2 turns, but `expect` names 1"
+        );
+        assert_eq!(
+            wrong("expect-denials one"),
+            "line 7: `expect-denials one`: give a whole number for each turn"
+        );
+        assert_eq!(
+            wrong("expect-denials"),
+            "line 7: `expect-denials `: give a whole number for each turn"
+        );
+        for outside in ["/etc/x.json", "../x.json", "a/../../x.json", "./x.json"] {
+            assert_eq!(
+                wrong(&format!("file {outside} {{}}")),
+                format!(
+                    "line 7: `file {outside}`: give a path inside the worktree, relative and with no `..`"
+                )
+            );
+        }
+        assert_eq!(
+            wrong("file opencode.json"),
+            "line 7: `file opencode.json`: give its text after the path"
+        );
     }
 
     #[test]

@@ -1,0 +1,17 @@
+# A command a deny rule of opencode's refuses: the worktree's own opencode.json denies `touch`, so
+# opencode refuses the call without asking, and the turn still finishes, with one denial. The file
+# must not exist afterwards: the rule stopped the command, not the sandbox, which lets the agent
+# write in its worktree. One prompt.
+agent opencode
+recording opencode-deny
+timeout 300
+expect finished
+expect-denials 1
+file opencode.json {"permission": {"bash": {"touch *": "deny"}}}
+check-missing {{worktree}}/notes.txt
+
+wait-for start
+sleep 3
+type run exactly this shell command and nothing else, then reply with the single word ok: touch notes.txt
+press enter
+wait-for idle

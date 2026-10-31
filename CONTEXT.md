@@ -63,9 +63,9 @@ mark on the worktree, independent of its state, and opening the worktree's revie
 _Avoid_: unread, new, unacknowledged
 
 **Denial**:
-A tool call the agent's permission rules refused, as claude reports it. Denials are counted on the
-turn they happened in and shown as that count, never as a state: a turn with denials still ends
-finished, failed or interrupted. A command the sandbox stopped is a failed command, not a denial,
+A tool call the agent's permission rules refused, as claude or opencode reports it. Denials are
+counted on the turn they happened in and shown as that count, never as a state: a turn with
+denials still ends finished, failed or interrupted. A command the sandbox stopped is a failed command, not a denial,
 and the person's own refusal of a tool call is not one either.
 _Avoid_: rejection, permission error, violation
 

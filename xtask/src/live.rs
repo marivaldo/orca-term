@@ -434,6 +434,7 @@ mod tests {
             "tui-sandbox",
             "opencode-hello",
             "opencode-esc",
+            "opencode-deny",
         ] {
             assert!(names.contains(&name), "{name} is missing from {names:?}");
         }

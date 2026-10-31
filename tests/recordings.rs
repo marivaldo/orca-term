@@ -7,7 +7,8 @@
 //! `tests/fixtures/opencode-events/`. This suite replays every version of every scenario's
 //! recording through the real `orca-term hook`, as the agent drives it, and reads the outcomes from
 //! the turn log, so a new version of an agent that behaves differently makes it fail, naming the
-//! recording. A scenario with no recording yet has nothing to replay.
+//! recording. A scenario that says how many denials each turn counts (`expect-denials 1`) has them
+//! read from the turn log too. A scenario with no recording yet has nothing to replay.
 
 #![expect(
     clippy::unwrap_used,
@@ -45,13 +46,16 @@ const SCENARIOS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/live");
 /// Where the recordings are.
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-/// What this suite reads of a scenario: its agent, its recording and the outcomes it expects.
+/// What this suite reads of a scenario: its agent, its recording, the outcomes it expects and,
+/// when it says, the denials each turn counts.
 #[derive(Debug)]
 struct Scenario {
     name: String,
     agent: String,
     recording: String,
     expect: Vec<String>,
+    /// How many denials each turn counts, in order; empty when the scenario does not say.
+    expect_denials: Vec<usize>,
 }
 
 impl Scenario {
@@ -63,6 +67,7 @@ impl Scenario {
             agent: String::new(),
             recording: String::new(),
             expect: Vec::new(),
+            expect_denials: Vec::new(),
         };
         for line in text.lines() {
             match line.split_once(' ') {
@@ -70,6 +75,12 @@ impl Scenario {
                 Some(("recording", recording)) => recording.clone_into(&mut scenario.recording),
                 Some(("expect", outcomes)) => {
                     scenario.expect = outcomes.split_whitespace().map(str::to_owned).collect();
+                }
+                Some(("expect-denials", counts)) => {
+                    scenario.expect_denials = counts
+                        .split_whitespace()
+                        .map(|count| count.parse().unwrap())
+                        .collect();
                 }
                 _ => {}
             }
@@ -118,9 +129,9 @@ fn scenarios() -> Vec<Scenario> {
 }
 
 /// Replays the recording at `path` of `scenario` in a worktree of its own, running
-/// `orca-term hook <agent> --admin <dir>` for each hook as the agent does, and returns the outcome
-/// of each turn the turn log holds, in order (`open` for one with no end).
-fn replay(fx: &AgentRepo, scenario: &Scenario, path: &Path, n: usize) -> Vec<String> {
+/// `orca-term hook <agent> --admin <dir>` for each hook as the agent does, and returns the
+/// worktree's admin directory, whose turn log holds the turns it replayed to.
+fn replay(fx: &AgentRepo, scenario: &Scenario, path: &Path, n: usize) -> PathBuf {
     let name = format!("r{n}");
     let worktree = fx.new_worktree(&name);
     let admin = fx.admin_dir(&worktree);
@@ -142,7 +153,7 @@ fn replay(fx: &AgentRepo, scenario: &Scenario, path: &Path, n: usize) -> Vec<Str
             fire(command, payload);
         }
     }
-    outcomes(&admin)
+    admin
 }
 
 /// Runs the hook `command` with `stdin` on its standard input; a hook exits 0 and prints nothing.
@@ -160,8 +171,8 @@ fn fire(mut command: Command, stdin: &str) {
     assert!(out.stdout.is_empty() && out.stderr.is_empty());
 }
 
-/// The outcome of each turn in the turn log of `admin`, in order: its end line's, or `open`.
-fn outcomes(admin: &Path) -> Vec<String> {
+/// Each turn in the turn log of `admin`, in order: its end line, or `None` while it is open.
+fn turns(admin: &Path) -> Vec<Option<Value>> {
     let text = fs::read_to_string(admin.join("turns.jsonl")).unwrap_or_default();
     let lines: Vec<Value> = text
         .lines()
@@ -174,8 +185,32 @@ fn outcomes(admin: &Path) -> Vec<String> {
             lines
                 .iter()
                 .find(|line| line["kind"] == "end" && line["turn"] == start["turn"])
+                .cloned()
+        })
+        .collect()
+}
+
+/// The outcome of each turn in the turn log of `admin`, in order: its end line's, or `open`.
+fn outcomes(admin: &Path) -> Vec<String> {
+    turns(admin)
+        .iter()
+        .map(|end| {
+            end.as_ref()
                 .map_or("open", |end| end["outcome"].as_str().unwrap())
                 .to_owned()
+        })
+        .collect()
+}
+
+/// How many denials each turn in the turn log of `admin` counts, in order: its end line's, none
+/// while it is open.
+fn denial_counts(admin: &Path) -> Vec<usize> {
+    turns(admin)
+        .iter()
+        .map(|end| {
+            end.as_ref()
+                .and_then(|end| end["denials"].as_array())
+                .map_or(0, Vec::len)
         })
         .collect()
 }
@@ -193,13 +228,20 @@ fn every_recording_replays_to_the_turns_its_scenario_expects() {
         );
         for path in scenario.recordings() {
             replayed += 1;
-            let got = replay(&fx, &scenario, &path, replayed);
+            let admin = replay(&fx, &scenario, &path, replayed);
+            let file = path.file_name().unwrap().to_str().unwrap();
+            let got = outcomes(&admin);
             if got != scenario.expect {
                 diverged.push(format!(
-                    "{}: its turns ended {got:?}, but the scenario {} expects {:?}",
-                    path.file_name().unwrap().to_str().unwrap(),
-                    scenario.name,
-                    scenario.expect
+                    "{file}: its turns ended {got:?}, but the scenario {} expects {:?}",
+                    scenario.name, scenario.expect
+                ));
+            }
+            let denials = denial_counts(&admin);
+            if !scenario.expect_denials.is_empty() && denials != scenario.expect_denials {
+                diverged.push(format!(
+                    "{file}: its turns counted {denials:?} denials, but the scenario {} expects {:?}",
+                    scenario.name, scenario.expect_denials
                 ));
             }
         }
@@ -215,6 +257,7 @@ fn a_recording_belongs_to_its_scenario_by_name_and_version_only() {
         agent: "claude-code".to_owned(),
         recording: "tui-esc".to_owned(),
         expect: Vec::new(),
+        expect_denials: Vec::new(),
     };
     let names: Vec<String> = scenario
         .recordings()
