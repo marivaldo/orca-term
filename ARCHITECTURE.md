@@ -51,8 +51,10 @@ the adapters, and returns a domain value that `output` prints.
   holder runs for every line opencode's plugin writes), and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
-  `doctor [--json]` needs no repository; every other command but the hidden `hook` and `agent
-  holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
+  `open`, and no command at all, open Neovim with the sidebar (#148), or print the usage (clap's
+  help on stderr, exit 2) when no command runs inside Neovim or without a terminal.
+  `doctor [--json]` needs no repository; every other command but `open`, the hidden `hook` and
+  `agent holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
   git as the typed `prerequisite` before anything else runs. `pr refresh [<worktree>...]` (#87)
   asks the GitHub CLI about each worktree's pull request. `pr compose <worktree>` (#132) prints
   the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
@@ -324,6 +326,11 @@ the adapters, and returns a domain value that `output` prints.
   registry (idempotent; creating the file is the only write, so no lock).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
   one not recorded is not an error.
+- `ops/open.rs`: `open` and `orca-term` with no arguments (#148): find the Neovim to open
+  (`ORCA_TERM_NVIM`, a path as it is or a name on PATH, else `nvim` on PATH; missing is the typed
+  `prerequisite`) and replace the process with it running `-c 'OrcaTerm sidebar'`. With no
+  arguments it opens only at a terminal outside Neovim, and otherwise returns for `cli` to print
+  the usage; `open` opens without a terminal too, and refuses inside Neovim.
 - `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
   none is named; a named one whose directory is gone, the primary checkout or an unknown one is
   refused), find gh on PATH, run `gh pr view <branch> --json
@@ -420,11 +427,15 @@ the adapters, and returns a domain value that `output` prints.
   four XDG base directories, `TMPDIR`); the recording tap's file (`record_file`:
   `ORCA_TERM_RECORD`, `None` when unset or empty, #44); and the ssh agent's socket
   (`ssh_auth_sock`: `SSH_AUTH_SOCK`, `None` when unset or empty, never printed, #105).
+  `inside_nvim` says whether `NVIM` is set and not empty, and `nvim_override` reads
+  `ORCA_TERM_NVIM` (#148).
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
   sessions or gpgconf for gpg-agent's socket (`listed_by`, #41, #105), with an empty stdin; both
   only read. `run_within` (#87) runs a
   program with an empty stdin and a time limit, reading its stdout and stderr on threads of their
   own, and kills it past the limit (`Finished::TimedOut`); `pr refresh` runs gh through it.
+  `replace_with` (#148) replaces orca-term with a program (`exec`), keeping the terminal, the
+  directory and the environment; `orca-term open` and no arguments open Neovim through it.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
   the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
@@ -464,7 +475,8 @@ the adapters, and returns a domain value that `output` prints.
   every `SIGWINCH`, what is typed forwarded as input (Ctrl-\ detaches unless `--no-detach-key`),
   the holder's output written to stdout. Without a terminal it only moves bytes, and the end of
   its input detaches. `is_interactive` says whether stdin and stderr are both terminals, so a
-  setup script can be approved at a prompt.
+  setup script can be approved at a prompt. `stdin_and_stdout_are_terminals` says whether a
+  person typed `orca-term` at a terminal, so no arguments may open Neovim (#148).
 
 ### domain
 
@@ -491,6 +503,11 @@ the adapters, and returns a domain value that `output` prints.
   `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`; a rebase wins), and a rebase's step from the
   texts of `msgnum`/`end` (or `next`/`last`). `ops::derive_state` checks the markers in the
   admin dir's parent, with no git run; `worktree detail` reads the step. Never a state.
+- `domain/open.rs`: opening the person's Neovim with the sidebar (#148): when `orca-term` with no
+  arguments opens it (`opens_with_no_arguments`: at a terminal and outside Neovim), the program
+  `ORCA_TERM_NVIM` names (`Program`: a path when it holds a `/`, else a name on PATH, `nvim` when
+  unset), the arguments `-c 'OrcaTerm sidebar'`, the `prerequisite` for a missing Neovim and the
+  refusal of `open` inside Neovim.
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
@@ -812,7 +829,8 @@ validate"):
   `adapters/script.rs` starts the setup script, only `adapters/holder.rs` starts the holder (and
   only `adapters/holder/process.rs` starts an agent, on a PTY, and only `adapters/holder/events.rs`
   runs the hook for each event an agent reports through its pipe), only `adapters/program.rs` runs a
-  program for its version (or opencode for its list of sessions, gpgconf for gpg-agent's socket), only `adapters/fs.rs` reads or writes files, and only
+  program for its version (or opencode for its list of sessions, gpgconf for gpg-agent's socket)
+  and replaces orca-term with Neovim (#148), only `adapters/fs.rs` reads or writes files, and only
   `adapters/env.rs` reads the environment.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
   Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
