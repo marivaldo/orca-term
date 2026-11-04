@@ -338,17 +338,40 @@ impl Attach {
         String::from_utf8_lossy(&self.stdout.lock().unwrap()).into_owned()
     }
 
-    /// Waits until `marker` has been printed, failing the test with what was seen otherwise.
+    /// Waits until `marker` has been printed, failing the test with the end of what was seen
+    /// otherwise. Each look searches only the bytes not searched yet, in place, so a flood of
+    /// output (megabytes) costs no more than reading it once (#144).
     pub(crate) fn wait_for(&self, marker: &str) {
         let start = Instant::now();
-        while !self.output().contains(marker) {
+        let mut searched = 0;
+        while !self.printed_since(marker.as_bytes(), &mut searched) {
             assert!(
                 start.elapsed() < WAIT,
-                "`{marker}` never appeared; the attach printed:\n{}",
-                self.output()
+                "`{marker}` never appeared; the attach printed, ending with:\n{}",
+                self.output_tail()
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Whether `marker` was printed from byte `*from` on. Moves `*from` to where the next look
+    /// starts: the end, less the marker's length but one, so a marker split between two reads is
+    /// still found.
+    fn printed_since(&self, marker: &[u8], from: &mut usize) -> bool {
+        let out = self.stdout.lock().unwrap();
+        let found = out[*from..]
+            .windows(marker.len())
+            .any(|window| window == marker);
+        *from = (*from).max(out.len().saturating_sub(marker.len().saturating_sub(1)));
+        found
+    }
+
+    /// The last few thousand characters the attach printed, for a failure message.
+    fn output_tail(&self) -> String {
+        const TAIL: usize = 4000;
+        let out = self.stdout.lock().unwrap();
+        let start = out.len().saturating_sub(TAIL);
+        String::from_utf8_lossy(&out[start..]).into_owned()
     }
 
     /// Types `text` into the agent.
