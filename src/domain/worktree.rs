@@ -167,6 +167,10 @@ pub(crate) enum KeptReason {
     NoDefaultBranch(String),
     /// Git refused to delete it, for the reason given.
     DeleteFailed(String),
+    /// It was to be deleted as merged, but its tip moved past the commit that was checked while
+    /// the agent stopped (#140): the new commits are in neither the default branch nor the pull
+    /// request, so deleting it would lose them.
+    MovedWhileStopping,
 }
 
 /// The reason as `worktree rm` prints it, after `kept branch <branch>: `.
@@ -177,6 +181,7 @@ impl fmt::Display for KeptReason {
             Self::NotMerged { into } => write!(f, "not merged into {into}"),
             Self::NoDefaultBranch(reason) => write!(f, "{reason}"),
             Self::DeleteFailed(reason) => write!(f, "could not delete it: {reason}"),
+            Self::MovedWhileStopping => write!(f, "it moved while the agent stopped"),
         }
     }
 }

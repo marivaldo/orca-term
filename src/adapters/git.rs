@@ -196,14 +196,14 @@ pub(crate) fn push_branch(worktree: &Path, branch: &Branch) -> Result<Pushed> {
     Ok(Pushed::Failed(stderr.trim().to_owned()))
 }
 
-/// Whether `branch` is merged into `into` (`git merge-base --is-ancestor`).
+/// Whether the commit `tip` is merged into `into` (`git merge-base --is-ancestor`).
 pub(crate) fn is_merged(
     primary: &PrimaryCheckout,
-    branch: &Branch,
+    tip: &Commit,
     into: &StartPoint,
 ) -> Result<bool> {
     let into = into.to_string();
-    let args = ["merge-base", "--is-ancestor", branch.as_str(), &into];
+    let args = ["merge-base", "--is-ancestor", tip.as_str(), &into];
     Ok(probe(&primary.path, &args)?.is_some())
 }
 
@@ -351,6 +351,23 @@ pub(crate) fn worktree_prune(primary: &PrimaryCheckout) -> Result<()> {
 /// `git branch -D`: deletes `branch`, merged or not.
 pub(crate) fn delete_branch(primary: &PrimaryCheckout, branch: &Branch) -> Result<()> {
     output(&primary.path, &["branch", "-D", branch.as_str()])?;
+    Ok(())
+}
+
+/// Deletes `branch` only if its tip is still `tip`: `git update-ref -d refs/heads/<branch> <tip>`,
+/// which git refuses atomically when the branch moved. Then drops the branch's config section
+/// (its upstream), as `git branch -D` does; a branch with none has nothing to drop.
+pub(crate) fn delete_branch_at(
+    primary: &PrimaryCheckout,
+    branch: &Branch,
+    tip: &Commit,
+) -> Result<()> {
+    let name = format!("refs/heads/{branch}");
+    output(&primary.path, &["update-ref", "-d", &name, tip.as_str()])?;
+    // The branch is gone whatever happens here, and git exits non-zero when there is no section,
+    // so the outcome is not checked.
+    let section = format!("branch.{branch}");
+    let _ = probe(&primary.path, &["config", "--remove-section", &section]);
     Ok(())
 }
 

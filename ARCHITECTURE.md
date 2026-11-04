@@ -215,6 +215,11 @@ the adapters, and returns a domain value that `output` prints.
   reads the worktree's `pr.json` before the removal deletes it (#137): when git does not see the
   branch merged into the default branch, a cached `merged` pull request whose head is exactly the
   branch's tip deletes it as `DeletedMergedPr`, `merged as PR #N`. It never runs gh.
+  A branch deleted as merged is deleted only at the tip the checks read (#140): `PlannedBranch`
+  carries that `checked_tip`, and `git::delete_branch_at` runs `git update-ref -d
+  refs/heads/<branch> <tip>`, which git refuses atomically when an agent committed while
+  stopping; the branch is then `Kept` as `MovedWhileStopping`, `it moved while the agent
+  stopped`. `--force` deletes with `git branch -D` whatever the tip.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it

@@ -1877,6 +1877,15 @@ mod tests {
             (by_pr.status, by_pr.reason.as_deref()),
             ("deleted", Some("merged as PR #12"))
         );
+        let outcome = BranchOutcome::Kept {
+            branch: Branch::new("fix"),
+            reason: KeptReason::MovedWhileStopping,
+        };
+        let moved = removed_branch_view(&outcome);
+        assert_eq!(
+            (moved.status, moved.reason.as_deref()),
+            ("kept", Some("it moved while the agent stopped"))
+        );
     }
 
     #[test]

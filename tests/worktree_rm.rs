@@ -102,6 +102,24 @@ fn a_branch_merged_into_main_is_deleted() {
 }
 
 #[test]
+fn a_merged_branch_is_deleted_with_its_upstream_config_as_git_branch_d_does() {
+    let repo = Repo::new();
+    worktree(&repo, "worktrees/docs", "docs");
+    repo.git(&["config", "branch.docs.remote", "origin"]);
+    repo.git(&["config", "branch.docs.merge", "refs/heads/docs"]);
+
+    rm(&repo, &["docs"])
+        .success()
+        .stdout(predicate::str::contains(
+            "deleted branch docs (merged into main)",
+        ));
+    assert!(!has_branch(&repo, "docs"));
+    // Deleted at its checked tip with `update-ref -d` (#140), which leaves the config alone.
+    let config = repo.git(&["config", "--list", "--local"]);
+    assert!(!config.contains("branch.docs."), "{config}");
+}
+
+#[test]
 fn a_dirty_worktree_needs_force() {
     let repo = Repo::new();
     let wip = worktree(&repo, "worktrees/wip", "wip");

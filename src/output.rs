@@ -2076,6 +2076,14 @@ mod tests {
             })),
             "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged as PR #12)"
         );
+        assert_eq!(
+            render_worktree_removed(&removed(BranchOutcome::Kept {
+                branch: Branch::new("fix"),
+                reason: KeptReason::MovedWhileStopping,
+            })),
+            "removed worktree fix\npath:   /l/repo/fix\n\
+             kept branch fix: it moved while the agent stopped"
+        );
     }
 
     #[test]

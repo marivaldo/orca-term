@@ -2,7 +2,8 @@
 //! `claude` and fake sandbox tools on an isolated PATH (seam 1): the agent is stopped as
 //! `agent stop` stops it, then the worktree is removed, its unmerged branch kept. A refused
 //! removal (dirty, or a held lock) never stops the agent; files the agent writes while stopping
-//! refuse the removal as `dirty`, the agent staying stopped.
+//! refuse the removal as `dirty`, the agent staying stopped. A merged branch the agent commits to
+//! while stopping is kept with its new commit (#140).
 
 #![expect(
     clippy::unwrap_used,
@@ -190,5 +191,44 @@ fn files_the_agent_writes_while_stopping_refuse_the_removal_as_dirty_leaving_it_
         stdout(&out).starts_with("removed worktree fix\n"),
         "nothing left to stop: {}",
         stdout(&out)
+    );
+}
+
+#[test]
+fn a_merged_branch_the_agent_commits_to_while_stopping_is_kept_with_its_commit() {
+    let fx = AgentRepo::new();
+    // On SIGHUP the fake agent commits onto its branch, its files unchanged, then ends: the
+    // branch moves past the tip `worktree rm` checked as merged (#140). `commit-tree` never signs.
+    let git = fx.bin.join("git");
+    let git = git.display();
+    fx.write_claude(
+        "2.1.296 (Claude Code)",
+        &format!(
+            "trap 'c=$({git} -c user.name=Agent -c user.email=agent@example.invalid commit-tree \
+             -p HEAD -m late HEAD^{{tree}}); {git} update-ref HEAD \"$c\"; exit 129' HUP"
+        ),
+    );
+    let worktree = fx.new_worktree("fix");
+    start_agent(&fx, "fix");
+    assert!(has_branch(&fx, "fix"));
+
+    let out = fx.run(&["worktree", "rm", "fix"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report = stdout(&out);
+    assert!(
+        report.starts_with("stopped the agent of worktree fix\nremoved worktree fix\n"),
+        "{report}"
+    );
+    assert!(
+        report.ends_with("kept branch fix: it moved while the agent stopped\n"),
+        "{report}"
+    );
+    assert!(!worktree.exists(), "the worktree is gone");
+    assert!(has_branch(&fx, "fix"), "the moved branch is kept");
+    assert_eq!(
+        fx.repo.git(&["log", "-1", "--format=%s", "fix"]).trim(),
+        "late",
+        "the commit made while stopping is still on the branch"
     );
 }
