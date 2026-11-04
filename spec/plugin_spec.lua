@@ -23,6 +23,7 @@ describe('loading the client', function()
       'pr-create',
       'pr-merge',
       'pr-refresh',
+      'push',
       'review',
       'sessions',
       'sidebar',
@@ -46,6 +47,7 @@ describe('loading the client', function()
       '<Plug>(OrcaTermSessions)',
       '<Plug>(OrcaTermCreatePr)',
       '<Plug>(OrcaTermMergePr)',
+      '<Plug>(OrcaTermPush)',
     }
     for n = 1, 9 do
       table.insert(wanted, ('<Plug>(OrcaTermWorktree%d)'):format(n))

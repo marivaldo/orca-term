@@ -463,7 +463,8 @@ on GitHub (`not a GitHub remote`), the worktree's pull request is unavailable, w
 the command still succeeds.
 
 orca-term runs gh only in `pr refresh`, `pr create` and `pr merge`, `git push` only in `pr
-create`, and `git fetch` only in `worktree rebase` ([Rebase](#rebase)). No other command touches
+create` and `worktree push` ([Push](#push)), and `git fetch` only in `worktree rebase`
+([Rebase](#rebase)). No other command touches
 the network, `pr compose` included, and the Neovim client never
 runs gh at all.
 
@@ -627,6 +628,44 @@ operation is in progress (not at all when the repository has no default branch o
 During a rebase it offers `Resolve conflicts with the agent` and `Abort rebase` instead, and
 `Abort rebase` asks first. Each runs through the core without blocking Neovim, tells the result
 and reads the sidebar again; a rebase that stops on conflicts warns with the files in conflict.
+
+## Push
+
+On macOS a worktree's agent cannot push from inside claude's sandbox, so orca-term pushes for it,
+from the core, as Orca's **Push** and its separate **Force push with lease** do.
+`orca-term worktree push <worktree>` runs `git push -u origin <branch>`, which sets the upstream
+the first time and never forces. git never prompts for credentials there.
+
+```text
+demo: pushed to origin/demo
+```
+
+When `origin` already has the branch as it is, it says `demo: origin/demo is already up to date`.
+Files with changes not committed do not stop it: they are left out, and a second line says how
+many. After a push it reads the worktree's pull request again, as `pr refresh` does, so the row's
+checks show the new run. With `--json` it prints the worktree's `name` and `path`, its `branch`,
+the `remote` (`origin/demo`), the `outcome` (`pushed` or `up_to_date`), `with_lease`,
+`uncommitted` and the `pr`.
+
+When git rejects the push because the branch diverged from `origin/<branch>` (after a
+`worktree rebase`, for example), it fails as `push_diverged` (exit code 21), says so, and pushes
+nothing. Only `--force-with-lease` replaces the remote branch:
+`orca-term worktree push <worktree> --force-with-lease` runs `git push
+--force-with-lease=<branch>:<sha> -u origin <branch>`, where `<sha>` is what
+`refs/remotes/origin/<branch>` holds, the commit git last saw there. git refuses when someone else
+pushed since; that refusal, like any other failure, is `push_failed` (exit code 12), with git's
+own words. There is never an automatic force.
+
+It refuses, pushing nothing, a worktree on no branch (detached, or in the middle of a rebase) and
+a repository with no `origin` remote. `worktree ls --json` says whether there is one in
+`has_origin`.
+
+In the sidebar, `.` on a worktree offers `Push` when the worktree is on a branch and the
+repository has `origin`. When git rejects the push because the branch diverged, it asks
+`Push rejected: demo diverged from origin/demo (after a rebase?)` with `Force push (with lease)`
+and `Cancel`. Each runs through the core without blocking Neovim, tells the result and reads the
+sidebar again. `:OrcaTerm push` (`<Plug>(OrcaTermPush)`) does the same for the worktree under the
+cursor in the sidebar, or for the worktree whose tab you are in.
 
 ## Status strip
 

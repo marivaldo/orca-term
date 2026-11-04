@@ -300,7 +300,8 @@ end
 local function worktree_menu()
   local worktree = worktree_under_cursor()
   if worktree then
-    actions.menu(worktree, primary_path(), state.fleet and state.fleet.remote_base)
+    local fleet = state.fleet
+    actions.menu(worktree, primary_path(), fleet and fleet.remote_base, fleet and fleet.has_origin)
   end
 end
 
@@ -793,6 +794,21 @@ function M.merge_pr_here()
   local worktree = worktree_under_cursor()
   if worktree then
     require('orca-term.actions').merge_pr(worktree, primary_path())
+  end
+  return true
+end
+
+---`:OrcaTerm push` in the sidebar: pushes the branch of the worktree under the cursor
+---(`actions.push`). `false`, doing nothing, when the current buffer is not the sidebar's; `true`,
+---doing nothing, on a line that is no worktree.
+---@return boolean
+function M.push_here()
+  if vim.api.nvim_get_current_buf() ~= M.buffer() then
+    return false
+  end
+  local worktree = worktree_under_cursor()
+  if worktree then
+    require('orca-term.actions').push(worktree, primary_path())
   end
   return true
 end

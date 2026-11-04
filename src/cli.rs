@@ -27,7 +27,8 @@ use crate::ops::{
     check_git, doctor, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register,
     nvim_unregister, pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new,
     session_resume, turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new,
-    worktree_prune, worktree_rebase, worktree_review, worktree_rm, worktree_seen, worktree_setup,
+    worktree_prune, worktree_push, worktree_rebase, worktree_review, worktree_rm, worktree_seen,
+    worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -250,6 +251,21 @@ enum WorktreeCommand {
     },
     /// Clean the worktrees whose directory is gone (`git worktree prune`). Nothing else prunes.
     Prune,
+    /// Push a worktree's branch to origin, setting its upstream. Never forces: a branch that
+    /// diverged from origin (after a rebase, for example) is refused, unless `--force-with-lease`
+    /// is given. Refuses a worktree on no branch or in the middle of a rebase, and a repository
+    /// with no origin. Files with changes not committed are left out.
+    Push {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Replace the branch on origin, but only while it still holds the commit git last saw
+        /// there (`refs/remotes/origin/<branch>`): git refuses when someone else pushed since.
+        #[arg(long = "force-with-lease")]
+        lease: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Rebase a worktree's branch onto the default branch on origin, fetched first. Refuses an
     /// agent in a turn, changes not committed, an operation already in progress and a repository
     /// with no default branch on origin. A rebase that stops on conflicts stays in progress, for
@@ -562,6 +578,7 @@ impl Cli {
                 | WorktreeCommand::New { json, .. }
                 | WorktreeCommand::Setup { json, .. }
                 | WorktreeCommand::Rm { json, .. }
+                | WorktreeCommand::Push { json, .. }
                 | WorktreeCommand::Rebase { json, .. }
                 | WorktreeCommand::Seen { json, .. }
                 | WorktreeCommand::Unseen { json, .. }
@@ -723,6 +740,9 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             output::worktrees_pruned(&worktree_prune::run()?);
             Ok(ExitCode::SUCCESS)
         }
+        WorktreeCommand::Push {
+            worktree, lease, ..
+        } => run_worktree_push(worktree, *lease, format),
         WorktreeCommand::Rebase {
             worktree, abort, ..
         } => run_worktree_rebase(worktree, *abort, format),
@@ -790,6 +810,13 @@ fn run_worktree_new(
         (None, Format::Text) => {}
     }
     Ok(exit_code(&created.setup))
+}
+
+/// Runs `worktree push` of `worktree`, with a lease when `lease` (`--force-with-lease`), and
+/// prints what it did.
+fn run_worktree_push(worktree: &Target, lease: bool, format: Format) -> Result<ExitCode> {
+    output::worktree_pushed(&worktree_push::run(worktree, lease)?, format)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Runs `worktree rebase` of `worktree`, or its `--abort` when `abort`, and prints what it did.

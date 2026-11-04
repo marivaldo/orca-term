@@ -27,6 +27,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Checks, Found, PrState, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::push::Pushed;
 use crate::domain::rebase::{Aborted, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -764,6 +765,16 @@ fn render_pr_merged(merged: &PrMerged) -> String {
     }
 }
 
+/// Prints what `worktree push` did: `demo: pushed to origin/demo`, or `demo: origin/demo is
+/// already up to date`, with a second line when files with uncommitted changes were left out.
+pub(crate) fn worktree_pushed(pushed: &Pushed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&pushed.text()),
+        Format::Json => out(&json::pushed(pushed)?),
+    }
+    Ok(())
+}
+
 /// Prints what `worktree rebase` did: `demo: rebased onto origin/main (3 commits replayed)`, or
 /// `demo: already up to date with origin/main`.
 pub(crate) fn worktree_rebased(rebased: &Rebased, format: Format) -> anyhow::Result<()> {
@@ -1443,6 +1454,7 @@ mod tests {
             },
             worktrees,
             remote_base: None,
+            has_origin: false,
         }
     }
 

@@ -16,6 +16,7 @@ use crate::domain::branch::{Branch, StartPoint};
 use crate::domain::fleet::{PrimaryCheckout, WorktreeEntry};
 use crate::domain::note::BlobId;
 use crate::domain::porcelain;
+use crate::domain::push::{self, PushRun};
 use crate::domain::review::Commit;
 use crate::domain::snapshot::Identity;
 use crate::domain::state::{ADMIN_DIR_NAME, AdminDir};
@@ -167,33 +168,47 @@ pub(crate) fn uncommitted_status(worktree: &Path) -> Result<Vec<u8>> {
     )
 }
 
-/// What `git push` did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Pushed {
-    /// The branch is on `origin`, set as its upstream.
-    Done,
-    /// git refused or failed, saying why on stderr.
-    Failed(String),
+/// How a push may replace the branch on `origin` (#146).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PushMode<'a> {
+    /// Never: git refuses a branch that diverged from `origin/<branch>`.
+    Plain,
+    /// With a lease: the branch on `origin` is replaced only while it still holds `expected`, the
+    /// commit git last saw there, or only while it does not exist when `expected` is `None`.
+    WithLease { expected: Option<&'a Commit> },
 }
 
-/// `git push -u origin <branch>` in the worktree at `worktree`, never forced: only `pr create`
-/// pushes (#132, `cargo xtask gh-guard`). git never prompts (`GIT_TERMINAL_PROMPT=0`, no input):
-/// a push that needs credentials it cannot find fails with git's words instead of waiting for an
-/// answer nobody sees, as in Neovim. Fails only when git cannot be started.
-pub(crate) fn push_branch(worktree: &Path, branch: &Branch) -> Result<Pushed> {
+/// `git push -u origin <branch>` in the worktree at `worktree`, or `git push
+/// --force-with-lease=<branch>:<expected> -u origin <branch>` with a lease: only `pr create` and
+/// `worktree push` push (#132, #146, `cargo xtask gh-guard`), and this is the only code that may
+/// name the lease. git never prompts (`GIT_TERMINAL_PROMPT=0`, no input): a push that needs
+/// credentials it cannot find fails with git's words instead of waiting for an answer nobody sees,
+/// as in Neovim. Its messages are in English (`LC_ALL=C`), so [`push::classify`] can read them.
+/// Fails only when git cannot be started.
+pub(crate) fn push_branch(worktree: &Path, branch: &Branch, mode: PushMode) -> Result<PushRun> {
+    let mut args = vec!["push".to_owned()];
+    if let PushMode::WithLease { expected } = mode {
+        let expected = expected.map_or("", Commit::as_str);
+        args.push(format!("--force-with-lease={branch}:{expected}"));
+    }
+    args.extend(["-u".to_owned(), "origin".to_owned(), branch.to_string()]);
     let out = Command::new("git")
         .arg("-C")
         .arg(worktree)
-        .args(["push", "-u", "origin", branch.as_str()])
+        .args(&args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .output()
         .context("could not run git; is it installed and on PATH?")?;
-    if out.status.success() {
-        return Ok(Pushed::Done);
-    }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    Ok(Pushed::Failed(stderr.trim().to_owned()))
+    Ok(push::classify(out.status.success(), &stderr))
+}
+
+/// Whether the repository of `primary` has a remote named `origin` (`remote.origin.url` is set).
+/// Never reaches the network.
+pub(crate) fn has_origin(primary: &PrimaryCheckout) -> Result<bool> {
+    Ok(config_value(&primary.path, "remote.origin.url")?.is_some())
 }
 
 /// What `git fetch` did.
@@ -232,7 +247,7 @@ pub(crate) fn remote_default_branch(primary: &PrimaryCheckout) -> Result<Option<
     let Some(default) = find_default_branch(primary)? else {
         return Ok(None);
     };
-    if config_value(&primary.path, "remote.origin.url")?.is_none() {
+    if !has_origin(primary)? {
         return Ok(None);
     }
     let tracked = has_ref(&primary.path, &format!("refs/remotes/origin/{default}"))?;
@@ -472,7 +487,9 @@ pub(crate) fn untracked_files(worktree: &Path) -> Result<Vec<u8>> {
     )
 }
 
-/// `git worktree remove`, with `--force` when the removal is forced.
+/// `git worktree remove`, with `-f`, git's short `--force`, when the removal is forced: the long
+/// spelling is never written, so only a push with lease names a force (#146, `cargo xtask
+/// gh-guard`).
 pub(crate) fn worktree_remove(
     primary: &PrimaryCheckout,
     path: &Path,
@@ -480,7 +497,7 @@ pub(crate) fn worktree_remove(
 ) -> Result<()> {
     let mut args = vec![OsStr::new("worktree"), OsStr::new("remove")];
     if removal == Removal::Forced {
-        args.push(OsStr::new("--force"));
+        args.push(OsStr::new("-f"));
     }
     args.push(path.as_os_str());
     output(&primary.path, &args)?;

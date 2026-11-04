@@ -204,6 +204,24 @@ pub(crate) enum TypedError {
         path.display()
     )]
     ResolveNoHolder { name: String, path: PathBuf },
+    /// `worktree push` of the worktree's branch failed, for `reason`, git's own words (#146): any
+    /// failure but a diverged branch, the refusal of a lease included. Its kind and exit code are
+    /// `push_failed`'s.
+    #[error("could not push branch {branch} of worktree {name} to origin: {reason}")]
+    WorktreePushFailed {
+        name: String,
+        branch: String,
+        reason: String,
+    },
+    /// git refused a plain push of the worktree's branch because it diverged from
+    /// `origin/<branch>`, after a rebase for example (#146). A plain push never forces; only one
+    /// asked for with `--force-with-lease` replaces the remote branch. Nothing was pushed.
+    #[error(
+        "branch {branch} of worktree {name} diverged from origin/{branch} (after a rebase?), so \
+         git refused the push; `orca-term worktree push {name} --force-with-lease` would replace \
+         origin/{branch} with it (nothing was pushed)"
+    )]
+    PushDiverged { name: String, branch: String },
 }
 
 /// What was asked of a rebase that is not in progress (#141).
@@ -466,7 +484,7 @@ impl TypedError {
             Self::Untrusted { .. } => "untrusted",
             Self::NoCommits { .. } => "no_commits",
             Self::PrExists { .. } => "pr_exists",
-            Self::PushFailed { .. } => "push_failed",
+            Self::PushFailed { .. } | Self::WorktreePushFailed { .. } => "push_failed",
             Self::NoOpenPr { .. } => "no_open_pr",
             Self::PrDraft { .. } => "pr_draft",
             Self::PrConflicting { .. } => "pr_conflicting",
@@ -475,6 +493,7 @@ impl TypedError {
             Self::NoRemoteBase { .. } => "no_remote_base",
             Self::RebaseConflict { .. } => "rebase_conflict",
             Self::NoRebase { .. } => "no_rebase",
+            Self::PushDiverged { .. } => "push_diverged",
         }
     }
 
@@ -492,7 +511,7 @@ impl TypedError {
             Self::Untrusted { .. } => 8,
             Self::NoCommits { .. } => 10,
             Self::PrExists { .. } => 11,
-            Self::PushFailed { .. } => 12,
+            Self::PushFailed { .. } | Self::WorktreePushFailed { .. } => 12,
             Self::NoOpenPr { .. } => 13,
             Self::PrDraft { .. } => 14,
             Self::PrConflicting { .. } => 15,
@@ -501,6 +520,7 @@ impl TypedError {
             Self::NoRemoteBase { .. } => 18,
             Self::RebaseConflict { .. } => 19,
             Self::NoRebase { .. } => 20,
+            Self::PushDiverged { .. } => 21,
         }
     }
 }
@@ -1022,6 +1042,32 @@ mod tests {
             7,
             "worktree demo at /w/demo has no running agent to resolve the conflicts; start it \
              with `orca-term agent start demo`, then try again (the rebase stays in progress)",
+        );
+    }
+
+    #[test]
+    fn the_push_refusals_have_their_kinds_and_exit_codes() {
+        assert_typed(
+            TypedError::PushDiverged {
+                name: "demo".to_owned(),
+                branch: "demo".to_owned(),
+            },
+            "push_diverged",
+            21,
+            "branch demo of worktree demo diverged from origin/demo (after a rebase?), so git \
+             refused the push; `orca-term worktree push demo --force-with-lease` would replace \
+             origin/demo with it (nothing was pushed)",
+        );
+        assert_typed(
+            TypedError::WorktreePushFailed {
+                name: "demo".to_owned(),
+                branch: "demo".to_owned(),
+                reason: "! [rejected] demo -> demo (stale info)".to_owned(),
+            },
+            "push_failed",
+            12,
+            "could not push branch demo of worktree demo to origin: ! [rejected] demo -> demo \
+             (stale info)",
         );
     }
 

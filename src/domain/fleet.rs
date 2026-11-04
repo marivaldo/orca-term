@@ -89,6 +89,9 @@ pub(crate) struct Fleet {
     /// The default branch when it is on `origin`, which a worktree is rebased onto (#141); `None`
     /// when the repository has none, or it was not looked for (only `worktree ls` looks).
     pub(crate) remote_base: Option<Branch>,
+    /// Whether the repository has a remote named `origin`, which a worktree is pushed to (#146);
+    /// `false` when it has none, or it was not looked for (only `worktree ls` looks).
+    pub(crate) has_origin: bool,
 }
 
 impl Fleet {
@@ -121,6 +124,7 @@ impl Fleet {
             primary: PrimaryCheckout::from_entry(primary),
             worktrees,
             remote_base: None,
+            has_origin: false,
         })
     }
 

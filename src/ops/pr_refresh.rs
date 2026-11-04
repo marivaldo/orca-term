@@ -2,7 +2,8 @@
 //! (#87) and keeps the answer in the worktree's `pr.json` (`domain/pr.rs`), for `worktree ls` and
 //! `worktree detail` to show. gh runs only from here and from `pr create` and `pr merge`, which
 //! find it, ask about a branch and keep the answer through this module's functions (`cargo xtask
-//! gh-guard`).
+//! gh-guard`). `worktree push` reads a worktree's pull request again after a push through
+//! [`refresh`], here (#146).
 //!
 //! gh runs in every worktree at once, one thread each, each stopped after 10 seconds, so a fleet
 //! takes about as long as its slowest answer. Each `pr.json` is replaced whole with no lock, the
@@ -60,6 +61,20 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
         });
     }
     Ok(refreshed)
+}
+
+/// Asks gh about the pull request of `worktree` again and keeps the answer, as `pr refresh` of
+/// that worktree alone does. `worktree push` calls it after a push, so the row's checks show the
+/// new run (#146). gh missing or not logged in is an answer too: this fails only when the answer
+/// cannot be written.
+pub(crate) fn refresh(worktree: &Worktree) -> Result<PrFacts> {
+    let found = ask(find_gh().as_deref(), worktree);
+    let facts = PrFacts {
+        fetched_at: env::now_millis(),
+        found,
+    };
+    keep(worktree, &facts)?;
+    Ok(facts)
 }
 
 /// gh as found on PATH, or `None` when it is not there. `pr create` and `pr merge` find it here

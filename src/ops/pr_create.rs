@@ -1,6 +1,7 @@
 //! Ops: `pr create`, which pushes a worktree's branch and creates its pull request on GitHub
 //! through the GitHub CLI, from the core and outside any agent's sandbox (#132,
-//! `domain/pr/create.rs`). The only code that pushes (`cargo xtask gh-guard`).
+//! `domain/pr/create.rs`). One of the two ops that push, with `worktree push` (`cargo xtask
+//! gh-guard`).
 //!
 //! It refuses first, pushing nothing: an empty title, a branch with no commits ahead of the base
 //! (`no_commits`), a branch whose pull request is already open (`pr_exists`, asked of gh as
@@ -15,13 +16,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::adapters::git::{self, Pushed};
+use crate::adapters::git::{self, PushMode};
 use crate::adapters::{env, fs, program};
 use crate::domain::branch::Branch;
 use crate::domain::error::TypedError;
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::create::{self, Body, PrCreated, Readiness};
 use crate::domain::pr::{Found, GH_MISSING, PrFacts};
+use crate::domain::push::PushRun;
 use crate::domain::worktree::Target;
 use crate::ops::{find_target, pr_compose, pr_refresh, read_fleet};
 
@@ -96,9 +98,9 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
 /// Pushes `branch` of `worktree` to `origin`, setting its upstream, never forced. A push git
 /// refuses is the typed `push_failed`, with git's words.
 fn push(worktree: &Worktree, branch: &Branch) -> Result<()> {
-    match git::push_branch(&worktree.path, branch)? {
-        Pushed::Done => Ok(()),
-        Pushed::Failed(reason) => Err(TypedError::PushFailed {
+    match git::push_branch(&worktree.path, branch, PushMode::Plain)? {
+        PushRun::Pushed | PushRun::UpToDate => Ok(()),
+        PushRun::Diverged(reason) | PushRun::Failed(reason) => Err(TypedError::PushFailed {
             name: worktree.name.clone(),
             branch: branch.to_string(),
             reason,
