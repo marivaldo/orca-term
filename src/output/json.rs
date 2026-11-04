@@ -9,7 +9,7 @@ use crate::domain::agent::{
     Agent, HolderStatus, StartOutcome, Started, StopOutcome, Stopped, Swapped,
 };
 use crate::domain::blame::{Blame, Source};
-use crate::domain::branch::Branch;
+use crate::domain::branch::{Branch, StartPoint};
 use crate::domain::contract::{CONTRACT, VERSION};
 use crate::domain::detail::{Detail, SetupProgress};
 use crate::domain::error::{self, TypedError};
@@ -22,6 +22,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::rebase::{Aborted, Outcome as RebaseOutcome, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::session::{Discarded, Resumed, Session, SessionList};
@@ -40,11 +41,14 @@ struct Envelope<'a, T: Serialize> {
     body: T,
 }
 
-/// `worktree ls --json`.
+/// `worktree ls --json`: the primary checkout, every worktree, and `remote_base`, the default
+/// branch on `origin` a worktree is rebased onto (`origin/main`; null when the repository has
+/// none, #141).
 #[derive(Debug, Serialize)]
 struct FleetView<'a> {
     primary: PrimaryView<'a>,
     worktrees: Vec<ListedWorktreeView<'a>>,
+    remote_base: Option<String>,
 }
 
 /// A worktree as `worktree ls` and `worktree detail` print it: the worktree object, then `pr`,
@@ -142,6 +146,38 @@ struct PrMergedView<'a> {
     pr: PrView<'a>,
     method: &'a str,
     merged: bool,
+}
+
+/// `worktree rebase --json` (#141): the worktree's `name` and `path`, the `base` it was rebased
+/// onto (`origin/main`), the `outcome` (`rebased`, or `up_to_date` when the branch already held
+/// the base and nothing was done), and how many of its commits were `replayed` (0 when up to
+/// date).
+#[derive(Debug, Serialize)]
+struct RebasedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    base: &'a str,
+    outcome: &'static str,
+    replayed: usize,
+}
+
+/// `worktree rebase --abort --json` (#141): the worktree's `name` and `path`, and `aborted`
+/// (always true: an abort that failed is an error).
+#[derive(Debug, Serialize)]
+struct RebaseAbortedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    aborted: bool,
+}
+
+/// `agent resolve --json` (#141): the worktree's `name` and `path`, the `prompt` typed into its
+/// agent, and the `files` in conflict it names.
+#[derive(Debug, Serialize)]
+struct ResolveSentView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    prompt: &'a str,
+    files: &'a [String],
 }
 
 #[derive(Debug, Serialize)]
@@ -519,7 +555,8 @@ struct ErrorView<'a> {
 
 /// An error: its `kind` and `message`; `untrusted` also carries `what` was not approved
 /// (`setup` or `sandbox`), the setup `script` or the `writable` paths as written, and the
-/// committed file they come from (`source`), so the client can show them.
+/// committed file they come from (`source`), so the client can show them. A `dirty` refusal of
+/// `worktree rebase` and a `rebase_conflict` carry the `files` they name (#141).
 #[derive(Debug, Serialize)]
 struct ErrorBody<'a> {
     kind: &'static str,
@@ -532,6 +569,8 @@ struct ErrorBody<'a> {
     writable: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files: Option<&'a [String]>,
 }
 
 /// `doctor --json`: every check in order, and, when one is missing or too old, the `prerequisite`
@@ -569,6 +608,10 @@ pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
     document(FleetView {
         primary: primary_view(&fleet.primary),
         worktrees: fleet.worktrees.iter().map(listed_worktree_view).collect(),
+        remote_base: fleet
+            .remote_base
+            .as_ref()
+            .map(|branch| StartPoint::Remote(branch.clone()).to_string()),
     })
 }
 
@@ -618,6 +661,40 @@ pub(crate) fn merged_pr(merged: &PrMerged) -> serde_json::Result<String> {
         pr: pr_view(&merged.facts),
         method: merged.method.name(),
         merged: merged.is_merged(),
+    })
+}
+
+/// What `worktree rebase` did, as one JSON document.
+pub(crate) fn rebased(rebased: &Rebased) -> serde_json::Result<String> {
+    let replayed = match rebased.outcome {
+        RebaseOutcome::Rebased { replayed } => replayed,
+        RebaseOutcome::UpToDate => 0,
+    };
+    document(RebasedView {
+        name: &rebased.name,
+        path: &rebased.path,
+        base: &rebased.base,
+        outcome: rebased.outcome.name(),
+        replayed,
+    })
+}
+
+/// What `worktree rebase --abort` did, as one JSON document.
+pub(crate) fn rebase_aborted(aborted: &Aborted) -> serde_json::Result<String> {
+    document(RebaseAbortedView {
+        name: &aborted.name,
+        path: &aborted.path,
+        aborted: true,
+    })
+}
+
+/// What `agent resolve` typed, as one JSON document.
+pub(crate) fn resolve_sent(sent: &ResolveSent) -> serde_json::Result<String> {
+    document(ResolveSentView {
+        name: &sent.name,
+        path: &sent.path,
+        prompt: &sent.prompt,
+        files: &sent.files,
     })
 }
 
@@ -1035,14 +1112,21 @@ fn error_body(err: &anyhow::Error) -> ErrorBody<'_> {
         script: None,
         writable: None,
         source: None,
+        files: None,
     };
-    if let Some(TypedError::Untrusted { subject, file, .. }) = error::typed(err) {
-        body.what = Some(subject.kind().name());
-        body.source = Some(file.as_path());
-        match subject {
-            Subject::Setup { script } => body.script = Some(script.as_str()),
-            Subject::Sandbox { writable } => body.writable = Some(writable.as_slice()),
+    match error::typed(err) {
+        Some(TypedError::Untrusted { subject, file, .. }) => {
+            body.what = Some(subject.kind().name());
+            body.source = Some(file.as_path());
+            match subject {
+                Subject::Setup { script } => body.script = Some(script.as_str()),
+                Subject::Sandbox { writable } => body.writable = Some(writable.as_slice()),
+            }
         }
+        Some(TypedError::RebaseDirty { files, .. } | TypedError::RebaseConflict { files, .. }) => {
+            body.files = Some(files.as_slice());
+        }
+        _ => {}
     }
     body
 }
@@ -1186,7 +1270,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":null}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -1308,6 +1392,7 @@ mod tests {
                     branch: None,
                 },
                 worktrees: vec![listed],
+                remote_base: None,
             })
             .unwrap();
             assert!(
@@ -1373,10 +1458,11 @@ mod tests {
         }])
         .unwrap();
         fleet.worktrees.push(worktree);
+        fleet.remote_base = Some(Branch::new("main"));
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}]}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main"}}"#
             )
         );
     }

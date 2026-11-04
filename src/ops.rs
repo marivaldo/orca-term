@@ -6,6 +6,7 @@
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
+pub(crate) mod agent_resolve;
 pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
 pub(crate) mod agent_swap;
@@ -32,6 +33,7 @@ pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
+pub(crate) mod worktree_rebase;
 pub(crate) mod worktree_review;
 pub(crate) mod worktree_rm;
 pub(crate) mod worktree_seen;
@@ -207,7 +209,7 @@ fn read_last_activity(admin: &AdminDir) -> Option<u64> {
 /// The git operation (a merge, a rebase, a cherry-pick or a revert) the worktree whose admin
 /// directory is `admin` is in the middle of, from the markers git leaves in the worktree's git
 /// dir, which holds `admin`. Only looks at which files are there: it runs no git and never fails.
-fn read_operation(admin: &AdminDir) -> Option<Operation> {
+pub(crate) fn read_operation(admin: &AdminDir) -> Option<Operation> {
     let git_dir = admin.git_dir()?;
     operation::detect(|marker| fs::exists(&git_dir.join(marker)))
 }

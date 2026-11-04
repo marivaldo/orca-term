@@ -196,6 +196,151 @@ pub(crate) fn push_branch(worktree: &Path, branch: &Branch) -> Result<Pushed> {
     Ok(Pushed::Failed(stderr.trim().to_owned()))
 }
 
+/// What `git fetch` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Fetched {
+    /// The ref asked for holds what `origin` has.
+    Done,
+    /// git refused or failed, saying why on stderr.
+    Failed(String),
+}
+
+/// `git fetch --no-tags origin <refspec>` in the worktree at `worktree`: the only fetch the core
+/// makes, and only `worktree rebase` makes it (#141, `cargo xtask gh-guard`). git never prompts
+/// (`GIT_TERMINAL_PROMPT=0`, no input), as [`push_branch`] does. Fails only when git cannot be
+/// started.
+pub(crate) fn fetch_into(worktree: &Path, refspec: &str) -> Result<Fetched> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["fetch", "--quiet", "--no-tags", "origin", refspec])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .context("could not run git; is it installed and on PATH?")?;
+    if out.status.success() {
+        return Ok(Fetched::Done);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Ok(Fetched::Failed(stderr.trim().to_owned()))
+}
+
+/// The repository's default branch when it is on `origin`: the remote `origin` is configured and
+/// git keeps a copy of the branch from it (`refs/remotes/origin/<default>`). `None` otherwise.
+/// Never fetches.
+pub(crate) fn remote_default_branch(primary: &PrimaryCheckout) -> Result<Option<Branch>> {
+    let Some(default) = find_default_branch(primary)? else {
+        return Ok(None);
+    };
+    if config_value(&primary.path, "remote.origin.url")?.is_none() {
+        return Ok(None);
+    }
+    let tracked = has_ref(&primary.path, &format!("refs/remotes/origin/{default}"))?;
+    Ok(tracked.then_some(default))
+}
+
+/// Whether the commit `ancestor` is an ancestor of `HEAD` in the worktree at `worktree`, or `HEAD`
+/// itself (`git merge-base --is-ancestor <ancestor> HEAD`).
+pub(crate) fn is_ancestor_of_head(worktree: &Path, ancestor: &str) -> Result<bool> {
+    let args = ["merge-base", "--is-ancestor", ancestor, "HEAD"];
+    Ok(probe(worktree, &args)?.is_some())
+}
+
+/// Where the worktree's `HEAD` forked from the ref `upstream`, judged from `upstream`'s reflog
+/// (`git merge-base --fork-point <upstream> HEAD`), so commits the base dropped since are not
+/// replayed. `None` when git finds none.
+pub(crate) fn fork_point(worktree: &Path, upstream: &str) -> Result<Option<Commit>> {
+    match probe(worktree, &["merge-base", "--fork-point", upstream, "HEAD"])? {
+        Some(bytes) => Commit::parse(String::from_utf8_lossy(&bytes).trim_end()).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// How many commits `HEAD` of the worktree at `worktree` has that `base` does not
+/// (`git rev-list --count <base>..HEAD`).
+pub(crate) fn count_ahead_of(worktree: &Path, base: &str) -> Result<usize> {
+    let range = format!("{base}..HEAD");
+    let count = text(worktree, &["rev-list", "--count", &range])?;
+    count
+        .trim()
+        .parse()
+        .with_context(|| format!("git rev-list --count printed {count:?}"))
+}
+
+/// What `git rebase` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RebaseRun {
+    /// The rebase went through.
+    Done,
+    /// git stopped or failed, saying why on stderr (and stdout, where it reports conflicts).
+    Stopped(String),
+}
+
+/// `git rebase --no-autostash --onto <onto> <fork_point>` in the worktree at `worktree`, or
+/// `git rebase --no-autostash <onto>` with no fork point. Never stashes, never prompts
+/// (`GIT_TERMINAL_PROMPT=0`, no input) and never opens an editor (`GIT_EDITOR=true`). Fails only
+/// when git cannot be started.
+pub(crate) fn rebase_onto(
+    worktree: &Path,
+    onto: &str,
+    fork_point: Option<&Commit>,
+) -> Result<RebaseRun> {
+    let mut args = vec!["rebase", "--no-autostash"];
+    match fork_point {
+        Some(fork_point) => args.extend(["--onto", onto, fork_point.as_str()]),
+        None => args.push(onto),
+    }
+    let out = quiet_git(worktree, &args)?;
+    if out.status.success() {
+        return Ok(RebaseRun::Done);
+    }
+    let said = [out.stderr.as_slice(), out.stdout.as_slice()].concat();
+    Ok(RebaseRun::Stopped(
+        String::from_utf8_lossy(&said).trim().to_owned(),
+    ))
+}
+
+/// `git rebase --abort` in the worktree at `worktree`: puts the branch back where it was before
+/// the rebase. Never prompts.
+pub(crate) fn rebase_abort(worktree: &Path) -> Result<()> {
+    let args = ["rebase", "--abort"];
+    let out = quiet_git(worktree, &args)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {} failed: {}", display_args(&args), stderr.trim());
+    }
+    Ok(())
+}
+
+/// The files of the worktree at `worktree` left in conflict, NUL-separated and relative to its
+/// root (`git diff --name-only -z --diff-filter=U`). Writes nothing.
+pub(crate) fn conflicted_files(worktree: &Path) -> Result<Vec<u8>> {
+    output(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-ext-diff",
+            "--diff-filter=U",
+        ],
+    )
+}
+
+/// Runs `git -C <dir> <args>` with no input, no prompt for credentials and no editor, as the
+/// rebase does: nobody could answer them.
+fn quiet_git(dir: &Path, args: &[&str]) -> Result<Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        .stdin(Stdio::null())
+        .output()
+        .context("could not run git; is it installed and on PATH?")
+}
+
 /// Whether the commit `tip` is merged into `into` (`git merge-base --is-ancestor`).
 pub(crate) fn is_merged(
     primary: &PrimaryCheckout,

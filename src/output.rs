@@ -27,6 +27,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Checks, Found, PrState, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::rebase::{Aborted, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
 use crate::domain::session::{self, Discarded, Resumed, SessionList};
@@ -763,6 +764,40 @@ fn render_pr_merged(merged: &PrMerged) -> String {
     }
 }
 
+/// Prints what `worktree rebase` did: `demo: rebased onto origin/main (3 commits replayed)`, or
+/// `demo: already up to date with origin/main`.
+pub(crate) fn worktree_rebased(rebased: &Rebased, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&rebased.line()),
+        Format::Json => out(&json::rebased(rebased)?),
+    }
+    Ok(())
+}
+
+/// Prints what `worktree rebase --abort` did.
+pub(crate) fn rebase_aborted(aborted: &Aborted, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!(
+            "{}: aborted the rebase; the branch is back where it was",
+            aborted.name
+        )),
+        Format::Json => out(&json::rebase_aborted(aborted)?),
+    }
+    Ok(())
+}
+
+/// Prints what `agent resolve` did: the prompt typed into the agent, then what it was sent for.
+pub(crate) fn resolve_sent(sent: &ResolveSent, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!(
+            "{}\n\n{}: sent the agent the conflicts to resolve",
+            sent.prompt, sent.name
+        )),
+        Format::Json => out(&json::resolve_sent(sent)?),
+    }
+    Ok(())
+}
+
 /// What was found about a pull request, in a few words: `PR #12 open, checks passing`, `no PR`
 /// or `PR unavailable: <reason>`.
 fn pr_text(found: &Found) -> String {
@@ -1407,6 +1442,7 @@ mod tests {
                 branch: Some(Branch::new("main")),
             },
             worktrees,
+            remote_base: None,
         }
     }
 

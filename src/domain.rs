@@ -20,6 +20,7 @@ pub(crate) mod porcelain;
 pub(crate) mod pr;
 pub(crate) mod prerequisite;
 pub(crate) mod protocol;
+pub(crate) mod rebase;
 pub(crate) mod review;
 pub(crate) mod sandbox;
 pub(crate) mod seen;
