@@ -75,7 +75,7 @@ pub(crate) fn opencode_dirs_env() -> DirsEnv {
     }
 }
 
-/// `HOME` and `XDG_CONFIG_HOME`, each `None` when unset or empty.
+/// `HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME`, each `None` when unset or empty.
 pub(crate) fn config_env() -> Env {
     let var = |name| {
         std::env::var_os(name)
@@ -85,6 +85,7 @@ pub(crate) fn config_env() -> Env {
     Env {
         home: var("HOME"),
         xdg_config_home: var("XDG_CONFIG_HOME"),
+        xdg_state_home: var("XDG_STATE_HOME"),
     }
 }
 

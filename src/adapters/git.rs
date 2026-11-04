@@ -36,6 +36,23 @@ pub(crate) fn primary_checkout(dir: &Path) -> Result<PrimaryCheckout> {
     }
 }
 
+/// The primary checkout of the repository containing `dir`, or `None` when `dir` is not inside
+/// a git repository (#149). From a linked worktree or a subdirectory, it is still the primary
+/// checkout. Never writes.
+pub(crate) fn repository_of(dir: &Path) -> Result<Option<PrimaryCheckout>> {
+    let args = ["worktree", "list", "--porcelain", "-z"];
+    let out = invoke(dir, &args)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("not a git repository") {
+            return Ok(None);
+        }
+        bail!("git {} failed: {}", display_args(&args), stderr.trim());
+    }
+    let primary = porcelain::parse(&out.stdout).into_iter().next();
+    Ok(primary.map(PrimaryCheckout::from_entry))
+}
+
 /// The repository's common git directory, absolute.
 pub(crate) fn common_dir(primary: &PrimaryCheckout) -> Result<PathBuf> {
     let dir = text(

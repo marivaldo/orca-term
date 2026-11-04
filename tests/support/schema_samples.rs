@@ -9,6 +9,8 @@
 //! - `git/`: the repository's `.git` directory (git refuses a directory named `.git` in a tree):
 //!   `git/orca-term-trust.json` is the approvals' file, and `git/worktrees/demo/orca-term/` the
 //!   admin directory of the worktree `demo`.
+//! - `state/`: orca-term's state directory as `$XDG_STATE_HOME` holds it, outside every
+//!   repository: `state/orca-term/projects.json` is the project list (#149).
 //!
 //! The samples were written by the real binary against the fake agents, then their local paths
 //! replaced by placeholders, which the builder fills back in: `{{transcripts}}` is where claude's
@@ -69,6 +71,40 @@ pub(crate) fn build(fx: &AgentRepo, schema: u64) -> Sampled {
     let git_dir = fx.repo.root.join(".git");
     let files = copy_tree(&samples.join("git"), &git_dir, &placeholders);
     Sampled { worktree, files }
+}
+
+/// Copies the project list of `schema` (`state/`, laid out as `$XDG_STATE_HOME`, #149) into the
+/// fixture's state directory, `~/.local/state` of its `HOME` (the agent fixture unsets
+/// `XDG_STATE_HOME`). Its placeholders: `{{repo}}` is the fixture's primary checkout, `{{gone}}` a
+/// directory that does not exist.
+pub(crate) fn build_projects(fx: &AgentRepo, schema: u64) -> SampledProjects {
+    let gone = fx.repo.tmp.path().join("gone");
+    let state = fx.repo.home.join(".local").join("state");
+    fs::create_dir_all(&state).unwrap();
+    let placeholders = [
+        ("{{repo}}", fx.repo.root.to_str().unwrap()),
+        ("{{gone}}", gone.to_str().unwrap()),
+    ];
+    let files = copy_tree(&samples_dir(schema).join("state"), &state, &placeholders);
+    SampledProjects { gone, files }
+}
+
+/// The project list copied from the samples: the gone project's path, and the files written with
+/// their bytes.
+pub(crate) struct SampledProjects {
+    pub(crate) gone: PathBuf,
+    pub(crate) files: Vec<(PathBuf, Vec<u8>)>,
+}
+
+impl SampledProjects {
+    /// The files whose bytes are no longer the ones the builder wrote.
+    pub(crate) fn changed_files(&self) -> Vec<PathBuf> {
+        self.files
+            .iter()
+            .filter(|(path, bytes)| fs::read(path).ok().as_ref() != Some(bytes))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
 }
 
 /// Copies every file under `from` to the same place under `to`, each placeholder replaced by its

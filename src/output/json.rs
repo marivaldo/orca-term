@@ -22,6 +22,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::project::{self, ListedProject, ProjectAdded, ProjectFleet, ProjectRemoved};
 use crate::domain::push::Pushed;
 use crate::domain::rebase::{Aborted, Outcome as RebaseOutcome, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
@@ -563,6 +564,53 @@ struct LineAuthorView<'a> {
     text: &'a str,
 }
 
+/// `project add --json` (#149): the project's `name` (its directory's basename) and `path` (its
+/// primary checkout), and whether it was `added`: `false` when it was on the list already.
+#[derive(Debug, Serialize)]
+struct ProjectAddedView<'a> {
+    name: String,
+    path: &'a Path,
+    added: bool,
+}
+
+/// `project rm --json` (#149): the `name` and `path` of the project taken off the list.
+#[derive(Debug, Serialize)]
+struct ProjectRemovedView<'a> {
+    name: String,
+    path: &'a Path,
+}
+
+/// `project ls --json` (#149): every project, in the order they were added.
+#[derive(Debug, Serialize)]
+struct ProjectsView<'a> {
+    projects: Vec<ListedProjectView<'a>>,
+}
+
+/// One project: its `name`, its `path`, and whether its directory is `gone`.
+#[derive(Debug, Serialize)]
+struct ListedProjectView<'a> {
+    name: String,
+    path: &'a Path,
+    gone: bool,
+}
+
+/// `fleets --json` (#149): every project, in the list's order, with its fleet.
+#[derive(Debug, Serialize)]
+struct FleetsView<'a> {
+    projects: Vec<ProjectFleetView<'a>>,
+}
+
+/// One project's fleet: the project as `project ls` prints it, then `fleet`, the document
+/// `worktree ls --json` prints for it without `contract` and `version` (null when it could not be
+/// read), and `error`, why not, as any command's error prints it (null when it was read).
+#[derive(Debug, Serialize)]
+struct ProjectFleetView<'a> {
+    #[serde(flatten)]
+    project: ListedProjectView<'a>,
+    fleet: Option<FleetView<'a>>,
+    error: Option<ErrorBody<'a>>,
+}
+
 /// `nvim register --json` and `nvim unregister --json`: nothing beyond `contract` and `version`.
 #[derive(Debug, Serialize)]
 struct DoneView {}
@@ -576,7 +624,8 @@ struct ErrorView<'a> {
 /// An error: its `kind` and `message`; `untrusted` also carries `what` was not approved
 /// (`setup` or `sandbox`), the setup `script` or the `writable` paths as written, and the
 /// committed file they come from (`source`), so the client can show them. A `dirty` refusal of
-/// `worktree rebase` and a `rebase_conflict` carry the `files` they name (#141).
+/// `worktree rebase` and a `rebase_conflict` carry the `files` they name (#141), and an
+/// `ambiguous_project` the paths of the projects sharing the name (`candidates`, #149).
 #[derive(Debug, Serialize)]
 struct ErrorBody<'a> {
     kind: &'static str,
@@ -591,6 +640,8 @@ struct ErrorBody<'a> {
     source: Option<&'a Path>,
     #[serde(skip_serializing_if = "Option::is_none")]
     files: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidates: Option<&'a [PathBuf]>,
 }
 
 /// `doctor --json`: every check in order, and, when one is missing or too old, the `prerequisite`
@@ -625,7 +676,11 @@ fn document<T: Serialize>(body: T) -> serde_json::Result<String> {
 
 /// The fleet as one JSON document.
 pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
-    document(FleetView {
+    document(fleet_view(fleet))
+}
+
+fn fleet_view(fleet: &Fleet) -> FleetView<'_> {
+    FleetView {
         primary: primary_view(&fleet.primary),
         worktrees: fleet.worktrees.iter().map(listed_worktree_view).collect(),
         remote_base: fleet
@@ -633,7 +688,57 @@ pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
             .as_ref()
             .map(|branch| StartPoint::Remote(branch.clone()).to_string()),
         has_origin: fleet.has_origin,
+    }
+}
+
+/// What `project add` did, as one JSON document.
+pub(crate) fn project_added(added: &ProjectAdded) -> serde_json::Result<String> {
+    document(ProjectAddedView {
+        name: project::name_of(&added.path),
+        path: &added.path,
+        added: added.added,
     })
+}
+
+/// What `project rm` took off the list, as one JSON document.
+pub(crate) fn project_removed(removed: &ProjectRemoved) -> serde_json::Result<String> {
+    document(ProjectRemovedView {
+        name: project::name_of(&removed.path),
+        path: &removed.path,
+    })
+}
+
+/// The project list, as one JSON document.
+pub(crate) fn projects(projects: &[ListedProject]) -> serde_json::Result<String> {
+    document(ProjectsView {
+        projects: projects.iter().map(listed_project_view).collect(),
+    })
+}
+
+/// Every project's fleet, as one JSON document.
+pub(crate) fn fleets(fleets: &[ProjectFleet]) -> serde_json::Result<String> {
+    document(FleetsView {
+        projects: fleets
+            .iter()
+            .map(|read| ProjectFleetView {
+                project: ListedProjectView {
+                    name: project::name_of(&read.path),
+                    path: &read.path,
+                    gone: read.gone,
+                },
+                fleet: read.fleet.as_ref().ok().map(fleet_view),
+                error: read.fleet.as_ref().err().map(error_body),
+            })
+            .collect(),
+    })
+}
+
+fn listed_project_view(listed: &ListedProject) -> ListedProjectView<'_> {
+    ListedProjectView {
+        name: project::name_of(&listed.path),
+        path: &listed.path,
+        gone: listed.gone,
+    }
 }
 
 /// What `pr refresh` found, as one JSON document.
@@ -1148,6 +1253,7 @@ fn error_body(err: &anyhow::Error) -> ErrorBody<'_> {
         writable: None,
         source: None,
         files: None,
+        candidates: None,
     };
     match error::typed(err) {
         Some(TypedError::Untrusted { subject, file, .. }) => {
@@ -1160,6 +1266,9 @@ fn error_body(err: &anyhow::Error) -> ErrorBody<'_> {
         }
         Some(TypedError::RebaseDirty { files, .. } | TypedError::RebaseConflict { files, .. }) => {
             body.files = Some(files.as_slice());
+        }
+        Some(TypedError::AmbiguousProject { candidates, .. }) => {
+            body.candidates = Some(candidates.as_slice());
         }
         _ => {}
     }
