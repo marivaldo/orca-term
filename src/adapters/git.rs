@@ -177,9 +177,18 @@ pub(crate) enum Pushed {
 }
 
 /// `git push -u origin <branch>` in the worktree at `worktree`, never forced: only `pr create`
-/// pushes (#132, `cargo xtask gh-guard`). Fails only when git cannot be started.
+/// pushes (#132, `cargo xtask gh-guard`). git never prompts (`GIT_TERMINAL_PROMPT=0`, no input):
+/// a push that needs credentials it cannot find fails with git's words instead of waiting for an
+/// answer nobody sees, as in Neovim. Fails only when git cannot be started.
 pub(crate) fn push_branch(worktree: &Path, branch: &Branch) -> Result<Pushed> {
-    let out = invoke(worktree, &["push", "-u", "origin", branch.as_str()])?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["push", "-u", "origin", branch.as_str()])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .context("could not run git; is it installed and on PATH?")?;
     if out.status.success() {
         return Ok(Pushed::Done);
     }

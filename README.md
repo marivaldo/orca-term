@@ -473,12 +473,14 @@ sandbox can run neither gh nor a push over HTTPS). It first refuses, pushing not
 
 - a branch with no commits ahead of the base (`no_commits`, exit code 10);
 - a branch that already has an open pull request, which it names (`pr_exists`, exit code 11);
-- gh missing or not logged in (`prerequisite`, exit code 9), in the words `pr refresh` uses.
+- gh missing or not logged in (`prerequisite`, exit code 9), in the words `pr refresh` uses;
+- a `--body-file` that does not exist.
 
 Then it pushes the branch with `git push -u origin <branch>`, never forced (a push that fails is
 `push_failed`, exit code 12, with git's own words), and runs `gh pr create --base <base> --head
 <branch> --title <title> --body-file <file> [--draft]`. The base is the default branch unless you
-pass `--base`, and a missing or empty body file means an empty body. Last it asks gh about the
+pass `--base`, and no body file, or an empty one, means an empty body. git never prompts for
+credentials there: a push that needs ones it cannot find fails instead. Last it asks gh about the
 pull request as `pr refresh` does and keeps the answer, so `worktree ls` shows it at once:
 
 ```text

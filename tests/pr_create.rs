@@ -531,3 +531,27 @@ fn an_empty_title_is_refused_before_anything_runs() {
     assert_eq!(repo.gh_calls(), Vec::<String>::new());
     assert_eq!(repo.origin_has("demo"), None);
 }
+
+#[test]
+fn a_body_file_that_does_not_exist_is_refused_before_the_push() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+
+    let args = [
+        "pr",
+        "create",
+        "demo",
+        "--title",
+        "Fix it",
+        "--body-file",
+        "/nonexistent/body.md",
+    ];
+    let error = repo.error_of(&args, 1);
+
+    assert_eq!(
+        error["message"],
+        "the body file /nonexistent/body.md does not exist (nothing was pushed)"
+    );
+    assert_eq!(repo.origin_has("demo"), None, "nothing pushed");
+}

@@ -54,8 +54,8 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
     };
     create::check_no_open_pr(&worktree.name, &pr_refresh::ask(Some(&gh), worktree))?;
 
-    push(worktree, &composed.branch)?;
     let body = body_of(&cwd, wanted.body_file.as_deref())?;
+    push(worktree, &composed.branch)?;
     let args = create::create_args(
         &composed.base,
         &composed.branch,
@@ -108,7 +108,8 @@ fn push(worktree: &Worktree, branch: &Branch) -> Result<()> {
 }
 
 /// The body for gh: the file given (made absolute against `cwd`, since gh runs in the worktree)
-/// when it exists and holds something, else no body.
+/// when it holds something, no body when it is empty or none is given. A file that does not exist
+/// is refused, so a mistyped path never opens a pull request with an empty body.
 fn body_of(cwd: &Path, body_file: Option<&Path>) -> Result<Body> {
     let Some(file) = body_file else {
         return Ok(Body::Empty);
@@ -116,7 +117,11 @@ fn body_of(cwd: &Path, body_file: Option<&Path>) -> Result<Body> {
     let file = create::absolute(cwd, file);
     match fs::read_optional(&file)? {
         Some(bytes) if !bytes.is_empty() => Ok(Body::File(file)),
-        Some(_) | None => Ok(Body::Empty),
+        Some(_) => Ok(Body::Empty),
+        None => bail!(
+            "the body file {} does not exist (nothing was pushed)",
+            file.display()
+        ),
     }
 }
 
