@@ -6,8 +6,8 @@
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
--- `resume`, `new`) and `pr refresh` are not waited for, and hand their
--- result to a callback in Neovim's main loop. `nvim register` tells the core where this Neovim listens, so it
+-- `resume`, `new`), `pr refresh` and `pr create` are not waited for, and hand their
+-- result to a callback in Neovim's main loop; `pr compose` only reads git, and is waited for. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
 -- `agent attach` is the one command run without `--json`: it runs in a terminal buffer the caller
@@ -583,6 +583,83 @@ local PR_REFRESH_TIMEOUT_SECONDS = 30
 function M.pr_refresh(targets, cwd, on_done)
   local args = vim.list_extend({ 'pr', 'refresh' }, targets)
   run_async(args, cwd, on_done, PR_REFRESH_TIMEOUT_SECONDS)
+end
+
+---What `pr compose --json` prints: the message a new pull request of a worktree starts from.
+---@class orca_term.Composed
+---@field contract integer
+---@field version string
+---@field title string
+---@field body string `''` when there is no body
+---@field base string the branch the pull request goes into, the default branch
+---@field branch string the worktree's branch
+---@field commits integer how many commits the branch has ahead of the base
+---@field uncommitted integer how many files have changes not committed
+
+---What `pr create --json` prints: the worktree, its new pull request as `pr refresh` shows it, and
+---how many files with changes not committed were left out of it.
+---@class orca_term.PrCreated
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field pr orca_term.Pr
+---@field pushed boolean always `true`: a push that failed is an error
+---@field uncommitted integer
+
+---The message a new pull request of the worktree `target` (its name or its path) starts from,
+---waited for (10 seconds at most): `orca-term pr compose <target> --json`. It only reads git: it
+---runs no gh and pushes nothing.
+---@param target string
+---@param cwd string
+---@return orca_term.Composed? composed
+---@return orca_term.Error? err
+function M.pr_compose(target, cwd)
+  return run({ 'pr', 'compose', target }, cwd)
+end
+
+---How long `pr create` may take: it pushes the branch, then gives gh a minute to create the pull
+---request, then asks gh about it again.
+local PR_CREATE_TIMEOUT_SECONDS = 120
+
+---Pushes the branch of the worktree `target` (its name or its path) and creates its pull request
+---into the default branch, without waiting: `orca-term pr create <target> --title=<title>
+---[--body-file <file>] [--draft] --json`. The body is written to a temporary file for
+---`--body-file`, removed once the core finishes; an empty body passes no file. The core refuses a
+---branch with no commits ahead (`no_commits`), one whose pull request is open (`pr_exists`), gh
+---missing or not logged in (`prerequisite`), and a push that fails (`push_failed`); a gh that fails
+---after the push is `other`, saying the branch was pushed.
+---@param target string
+---@param title string
+---@param body string
+---@param draft boolean
+---@param cwd string
+---@param on_done fun(created: orca_term.PrCreated?, err: orca_term.Error?)
+function M.pr_create(target, title, body, draft, cwd, on_done)
+  local args = { 'pr', 'create', target, '--title=' .. title }
+  if draft then
+    table.insert(args, '--draft')
+  end
+  if body == '' then
+    run_async(args, cwd, on_done, PR_CREATE_TIMEOUT_SECONDS)
+    return
+  end
+  local body_file = vim.fn.tempname()
+  -- `b` writes the lines with no newline after the last one, so the body is kept as it is.
+  local written, problem =
+    pcall(vim.fn.writefile, vim.split(body, '\n', { plain = true }), body_file, 'b')
+  if not written then
+    local err = failure('failed', ('could not write the body to %s: %s'):format(body_file, problem))
+    vim.schedule(function()
+      on_done(nil, err)
+    end)
+    return
+  end
+  vim.list_extend(args, { '--body-file', body_file })
+  run_async(args, cwd, function(created, err)
+    vim.fn.delete(body_file)
+    on_done(created, err)
+  end, PR_CREATE_TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a

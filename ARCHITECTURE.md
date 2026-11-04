@@ -1285,7 +1285,11 @@ what they print.
   snapshots, ...), oldest first; it is the turn review's only source. `pr_refresh(targets, cwd,
   on_done)` (#87) runs `pr refresh [<target>...]` without waiting (30 s at most), typed as
   `orca_term.PrRefreshed`; each worktree of `worktree ls` and `worktree detail` carries `pr`
-  (`orca_term.Pr`, `nil` when never fetched).
+  (`orca_term.Pr`, `nil` when never fetched). `pr_compose(target, cwd)` (#133) waits for `pr
+  compose` (10 s at most, it only reads git), typed as `orca_term.Composed`; `pr_create(target,
+  title, body, draft, cwd, on_done)` runs `pr create <target> --title=<title> [--draft]` without
+  waiting (120 s at most), the body written to a `vim.fn.tempname()` file for `--body-file` (none
+  for an empty body) and removed once the core ends, typed as `orca_term.PrCreated`.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1550,6 +1554,24 @@ what they print.
   `_reset()` forgets it all, for the specs. In a turn review it draws nothing and lists nothing: its
   buffers get only a `gn` (normal and visual) that says `notes go on the worktree's files: add them
   from its review (d)`, taken off with the other keys.
+- `lua/orca-term/compose.lua` (#133): the pull request composer, like fugitive's buffer for a
+  commit message. `open(worktree, primary, draft)` runs `pr compose` (waited for: it only reads
+  git) and shows its message in a buffer named `orca-term://pr/<worktree>` (`PREFIX`), filetype
+  `markdown`, `buftype=acwrite`, `bufhidden=wipe`, in a split along the whole bottom of the tab:
+  the title, a blank line, then the body (`lines`), with no comment lines. `:w` (`BufWriteCmd`)
+  takes the first line, trimmed, as the title and the lines after it, blank lines at both ends left
+  out, as the body (`parse`); an empty title is refused (`EMPTY_TITLE`) before anything runs. It
+  then runs `pr create` without blocking (`core.pr_create`, which writes the body to a temporary
+  file for `--body-file` and removes it once the core ends; the base is the default branch). On
+  success the buffer is wiped, `created PR #N: <url>` (`(draft)` after the number for a draft) is
+  told, a warning says how many files with uncommitted changes were left out when there were some,
+  and the sidebar reads the fleet again, so its row shows `PR`. On a refusal or a failure the
+  buffer stays with its text and the core's message is told. A second `:w` while the core works
+  only says so. `:q!` or `:bwipeout` creates nothing. A composer already open for the worktree is
+  shown again, its text kept. `actions.lua` opens it from the menu (`Create pull request`, `Create
+  draft pull request`) and from `:OrcaTerm pr-create` and `<Plug>(OrcaTermCreatePr)`
+  (`create_pr_current`: the worktree under the cursor in the sidebar, through
+  `sidebar.create_pr_here`, else the current tab's worktree, as `:OrcaTerm sessions` finds it).
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
@@ -1610,8 +1632,8 @@ Its rules:
   `install.lua`, which runs the build hook's git, curl, tar, sha256 tool and cargo, never the core;
   every other module calls `core.lua`. `cargo xtask client-boundary` refuses a process started
   anywhere else in `lua/`, `plugin/` or `build.lua`.
-- **Only `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua` and `notes.lua`
-  touch windows, tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
+- **Only `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua`, `notes.lua` and
+  `compose.lua` touch windows, tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
   functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
   moves between tabs only through `tabs.lua`, opens terminals only through `terminal.lua`, reviews
   only through `review.lua`, the one module that calls diffview.nvim (`notes.lua` asks it what a

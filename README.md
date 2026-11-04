@@ -514,6 +514,19 @@ the sidebar is open and some checks are pending. The colours are the groups `Orc
 and `OrcaTermPrPending`, linked by default to `DiagnosticOk`, `Constant`, `Comment` and
 `Diagnostic*`.
 
+To create a pull request from the sidebar, press `.` on a worktree and choose `Create pull
+request` or `Create draft pull request`. `:OrcaTerm pr-create` (`<Plug>(OrcaTermCreatePr)`) does
+the same for the worktree under the cursor in the sidebar, or for the worktree whose tab you are
+in, and creates a pull request that is not a draft. A buffer named `orca-term://pr/<worktree>`
+opens in a split, filled from `pr compose` and written like a commit message: the first line is the
+title, then a blank line, then the body, in Markdown. `:w` creates the pull request into the
+default branch through the core (`pr create`), without blocking Neovim. Once it is created the
+buffer closes, a message says `created PR #12: <url>` (and warns of the files with uncommitted
+changes left out, if any), and the row shows `PR`. When the core refuses, for example because the
+branch has no commits ahead or already has an open pull request, or when the push or gh fails, the
+buffer stays open with your text and the reason is shown. An empty first line is refused before
+anything runs. `:q!` closes the buffer and creates nothing.
+
 ## Status strip
 
 The status strip shows the fleet's health while the sidebar is closed: how many worktrees are in

@@ -5,8 +5,8 @@
 //!   the core, install.lua what the build hook needs (curl, tar, cargo); every other file reaches
 //!   the core through core.lua;
 //! - only `lua/orca-term/sidebar.lua`, `lua/orca-term/detail.lua`, `lua/orca-term/tabs.lua`,
-//!   `lua/orca-term/terminal.lua`, `lua/orca-term/review.lua` and `lua/orca-term/notes.lua` touch
-//!   windows, tabs and buffers;
+//!   `lua/orca-term/terminal.lua`, `lua/orca-term/review.lua`, `lua/orca-term/notes.lua` and
+//!   `lua/orca-term/compose.lua` touch windows, tabs and buffers;
 //! - `lua/orca-term/fleet.lua` and `lua/orca-term/render.lua` are pure: no `vim.api`, no `vim.cmd`.
 //!
 //! The check is textual, like the layers lint: `--` comments are skipped, and each line of each Lua
@@ -43,7 +43,8 @@ const PROCESS_CALLS: &[&str] = &[
 ];
 
 /// The files allowed to touch windows, tabs and buffers: the sidebar, its detail float, the
-/// worktrees' tabs, the agents' terminals, the review tabs and the notes drawn in them.
+/// worktrees' tabs, the agents' terminals, the review tabs, the notes drawn in them and the pull
+/// request composer.
 const WINDOW_MODULES: &[&str] = &[
     "lua/orca-term/sidebar.lua",
     "lua/orca-term/detail.lua",
@@ -51,12 +52,13 @@ const WINDOW_MODULES: &[&str] = &[
     "lua/orca-term/terminal.lua",
     "lua/orca-term/review.lua",
     "lua/orca-term/notes.lua",
+    "lua/orca-term/compose.lua",
 ];
 
 /// The same files, as the findings name them.
 const WINDOW_MODULES_TEXT: &str = "lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, \
-     lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and \
-     lua/orca-term/notes.lua";
+     lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua, \
+     lua/orca-term/notes.lua and lua/orca-term/compose.lua";
 
 /// Calls that open, change or read windows, tabs and buffers. A prefix such as `nvim_win_` stands
 /// for every API function that starts with it (`nvim_set_current_` covers the window, the tab and
@@ -287,11 +289,11 @@ mod tests {
         assert_eq!(problems.len(), 7, "{problems:#?}");
         assert_eq!(
             problems[0],
-            "lua/orca-term/actions.lua:1: `vim.cmd` opens, closes or moves a tab; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
+            "lua/orca-term/actions.lua:1: `vim.cmd` opens, closes or moves a tab; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua, lua/orca-term/notes.lua and lua/orca-term/compose.lua may"
         );
         assert_eq!(
             problems[4],
-            "lua/orca-term/actions.lua:5: `nvim_set_current_` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
+            "lua/orca-term/actions.lua:5: `nvim_set_current_` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua, lua/orca-term/notes.lua and lua/orca-term/compose.lua may"
         );
     }
 
@@ -312,11 +314,11 @@ mod tests {
         assert_eq!(problems.len(), 9, "{problems:#?}");
         assert_eq!(
             problems[0],
-            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may"
+            "plugin/orca-term.lua:1: `nvim_open_win` touches windows or buffers; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua, lua/orca-term/notes.lua and lua/orca-term/compose.lua may"
         );
         assert_eq!(
             problems[7],
-            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua and lua/orca-term/notes.lua may open windows"
+            "plugin/orca-term.lua:8: `vim.cmd` opens a split; only lua/orca-term/sidebar.lua, lua/orca-term/detail.lua, lua/orca-term/tabs.lua, lua/orca-term/terminal.lua, lua/orca-term/review.lua, lua/orca-term/notes.lua and lua/orca-term/compose.lua may open windows"
         );
     }
 

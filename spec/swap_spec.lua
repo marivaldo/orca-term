@@ -124,7 +124,7 @@ describe('Swap agent', function()
 
     local opencodes = wait_for_terminal_showing(demo, 'fake opencode ready')
     assert.are.same({
-      { 'Re-run setup', 'Copy path', 'Swap agent', 'New session', 'Remove worktree' },
+      require('orca-term.actions').MENU,
       { 'opencode' },
     }, ui.shown)
     assert.are.equal('Swap the agent of demo for', ui.prompts[2])

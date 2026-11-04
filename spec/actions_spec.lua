@@ -202,10 +202,17 @@ describe('the worktree actions', function()
       press_on('.', '· beta')
 
       assert.are.same({ 'Worktree beta' }, ui.prompts)
-      assert.are.same(
-        { { 'Re-run setup', 'Copy path', 'Swap agent', 'New session', 'Remove worktree' } },
-        ui.shown
-      )
+      assert.are.same({
+        {
+          'Re-run setup',
+          'Copy path',
+          'Swap agent',
+          'New session',
+          'Create pull request',
+          'Create draft pull request',
+          'Remove worktree',
+        },
+      }, ui.shown)
     end)
 
     it('runs the setup again', function()
