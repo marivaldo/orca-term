@@ -43,6 +43,12 @@ pub(crate) fn is_interactive() -> bool {
     termios::isatty(io::stdin().as_fd()) && termios::isatty(io::stderr().as_fd())
 }
 
+/// Whether a person runs orca-term at a terminal: both stdin and stdout are terminals, as when
+/// they type `orca-term` in a shell, and not a pipe or a file (#148).
+pub(crate) fn stdin_and_stdout_are_terminals() -> bool {
+    termios::isatty(io::stdin().as_fd()) && termios::isatty(io::stdout().as_fd())
+}
+
 /// The size of the terminal on stdin, when stdin is one.
 pub(crate) fn stdin_size() -> Option<Size> {
     let stdin = io::stdin();

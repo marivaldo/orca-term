@@ -19,6 +19,7 @@ pub(crate) mod note_rm;
 pub(crate) mod note_send;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
+pub(crate) mod open;
 pub(crate) mod pr_compose;
 pub(crate) mod pr_create;
 pub(crate) mod pr_merge;

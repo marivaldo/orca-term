@@ -1114,6 +1114,13 @@ pub fn error(err: &anyhow::Error, format: Format) -> ExitCode {
     ExitCode::from(error::exit_code(err))
 }
 
+/// Prints clap's usage error `err` as clap prints it (the help, on stderr) and returns its exit
+/// code, 2: what `orca-term` with no arguments prints when it does not open Neovim (#148).
+pub(crate) fn usage(err: &clap::Error) -> ExitCode {
+    let _ = err.print();
+    ExitCode::from(u8::try_from(err.exit_code()).unwrap_or(2))
+}
+
 /// The characters of a snapshot's id a table shows.
 const SHORT_ID: usize = 7;
 

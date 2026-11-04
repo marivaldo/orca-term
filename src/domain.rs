@@ -15,6 +15,7 @@ pub(crate) mod include;
 pub(crate) mod launch;
 pub(crate) mod note;
 pub(crate) mod nvim;
+pub(crate) mod open;
 pub(crate) mod operation;
 pub(crate) mod porcelain;
 pub(crate) mod pr;

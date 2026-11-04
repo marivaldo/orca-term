@@ -78,8 +78,8 @@ tab instead of opening a second one, and the sidebar marks the current tab's wor
 The agent's terminal is not restored. Without `terminal` in `'sessionoptions'` (LazyVim's
 persistence.nvim leaves it out), its window is not saved, and the first `<CR>` on the worktree
 opens the agent's terminal in the restored tab. With `terminal` (Neovim's default), the session
-brings back a `term://` buffer that runs `orca-term` with no arguments: it prints the usage and
-ends, and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
+brings back a `term://` buffer that runs `orca-term` with no arguments: inside Neovim it prints
+the usage and ends, so it opens no second Neovim (see [Start](#start)) and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
 scrollback replayed; the ended buffer goes with `:bwipeout`.
 
 With `blank` in `'sessionoptions'` (Neovim's default), a session saved while the sidebar is open
@@ -128,6 +128,23 @@ creating the directory, and says where:
 `orca-term: linked /home/you/.local/bin/orca-term -> /home/you/.local/share/nvim/lazy/orca-term/bin/orca-term`.
 It warns when that directory is not on your `PATH`, and refuses to replace anything there that is
 not a symlink.
+
+## Start
+
+Run `orca-term` with no arguments in a repository, from a terminal, and it replaces itself with
+your own Neovim, opened in that directory with the sidebar showing:
+`nvim -c 'OrcaTerm sidebar'`. It uses your Neovim config, which must have the plugin installed
+(see [Install](#install)); without it, Neovim says
+`E492: Not an editor command: OrcaTerm sidebar`. `$EDITOR` is not used. To open another Neovim,
+set `ORCA_TERM_NVIM` to its path (a name without a `/` is looked up on `PATH`).
+
+`orca-term` with no arguments prints the usage instead, as before, when it runs inside Neovim
+(`$NVIM` is set, as in a Neovim terminal) or when its stdin or stdout is not a terminal (a pipe,
+a script). `orca-term open` opens Neovim the same way even without a terminal, for scripts and
+terminal launchers; inside Neovim it refuses with
+`orca-term: already inside Neovim; run :OrcaTerm sidebar` and exits 1. When `nvim` (or the
+program `ORCA_TERM_NVIM` names) is not there, both fail with the error `prerequisite` (exit code
+9). `orca-term doctor` does not check Neovim or its config.
 
 ## Setup
 

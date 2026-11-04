@@ -1,13 +1,15 @@
 //! Adapter: asking a program, found on PATH by the fs adapter, what version it is, asking
 //! opencode which sessions it keeps (#41) and gpgconf where gpg-agent's socket is (#105), and
 //! running a program with a time limit, which `pr refresh` runs gh with (#87). All only read: none
-//! spends anything.
+//! spends anything. It also replaces orca-term with the person's Neovim, which `orca-term` with no
+//! arguments and `orca-term open` do (#148).
 #![expect(
     clippy::disallowed_types,
     reason = "this adapter is the one place that runs a program for what it reports"
 )]
 
 use std::io::Read;
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
@@ -52,6 +54,13 @@ pub(crate) fn listed_by(program: &Path, args: &[&str], dir: &Path) -> Result<Vec
         );
     }
     Ok(out.stdout)
+}
+
+/// Replaces this process with `program` (by its absolute path) run with `args`, keeping the
+/// terminal, the current directory and the environment: `exec`, so orca-term is gone once it
+/// runs. It returns only when the program could not be started, with the reason.
+pub(crate) fn replace_with(program: &Path, args: &[&str]) -> std::io::Error {
+    Command::new(program).args(args).exec()
 }
 
 /// What a program run with a time limit did.
