@@ -18,6 +18,7 @@ use crate::domain::history::{History, LoggedTurn, Progress, TurnDiff};
 use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::operation::Operation;
+use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
@@ -102,6 +103,31 @@ struct RefreshedWorktreeView<'a> {
     name: &'a str,
     path: &'a Path,
     pr: PrView<'a>,
+}
+
+/// `pr compose --json` (#132): the message a new pull request starts from (`title`, `body`), the
+/// branch it goes into (`base`, the default branch), the worktree's `branch`, how many `commits`
+/// it has ahead of the base, and how many files have changes not committed (`uncommitted`).
+#[derive(Debug, Serialize)]
+struct ComposedView<'a> {
+    title: &'a str,
+    body: &'a str,
+    base: &'a str,
+    branch: &'a str,
+    commits: usize,
+    uncommitted: usize,
+}
+
+/// `pr create --json` (#132): the worktree's `name` and `path`, its new pull request as
+/// `pr refresh` shows it (`pr`), `pushed` (always true: a push that failed is an error), and how
+/// many files with changes not committed were left out (`uncommitted`).
+#[derive(Debug, Serialize)]
+struct PrCreatedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    pr: PrView<'a>,
+    pushed: bool,
+    uncommitted: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -544,6 +570,29 @@ pub(crate) fn refreshed(refreshed: &Refreshed) -> serde_json::Result<String> {
                 pr: pr_view(&worktree.facts),
             })
             .collect(),
+    })
+}
+
+/// The message `pr compose` made, as one JSON document.
+pub(crate) fn composed(composed: &Composed) -> serde_json::Result<String> {
+    document(ComposedView {
+        title: &composed.message.title,
+        body: &composed.message.body,
+        base: composed.base.as_str(),
+        branch: composed.branch.as_str(),
+        commits: composed.commits,
+        uncommitted: composed.uncommitted,
+    })
+}
+
+/// What `pr create` made, as one JSON document.
+pub(crate) fn created_pr(created: &PrCreated) -> serde_json::Result<String> {
+    document(PrCreatedView {
+        name: &created.name,
+        path: &created.path,
+        pr: pr_view(&created.facts),
+        pushed: true,
+        uncommitted: created.uncommitted,
     })
 }
 
@@ -1113,6 +1162,52 @@ mod tests {
         listed.worktrees[0].unseen = true;
         let doc: serde_json::Value = serde_json::from_str(&fleet(&listed).unwrap()).unwrap();
         assert_eq!(doc["worktrees"][0]["unseen"], true);
+    }
+
+    #[test]
+    fn compose_and_create_keep_their_shapes() {
+        use crate::domain::branch::Branch;
+        use crate::domain::pr::create::Message;
+        use crate::domain::pr::{Checks, PrState, PullRequest};
+        let composed_doc = composed(&Composed {
+            message: Message {
+                title: "Fix the login".to_owned(),
+                body: "- One\n- Two".to_owned(),
+            },
+            base: Branch::new("main"),
+            branch: Branch::new("fix"),
+            commits: 2,
+            uncommitted: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            composed_doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","title":"Fix the login","body":"- One\n- Two","base":"main","branch":"fix","commits":2,"uncommitted":1}}"#
+            )
+        );
+        let created_doc = created_pr(&PrCreated {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            facts: PrFacts {
+                fetched_at: 1_700_000_000_000,
+                found: Found::Pr(PullRequest {
+                    number: 12,
+                    title: "Fix the login".to_owned(),
+                    state: PrState::Draft,
+                    url: "https://github.com/o/r/pull/12".to_owned(),
+                    checks: Checks::None,
+                }),
+            },
+            uncommitted: 0,
+        })
+        .unwrap();
+        assert_eq!(
+            created_doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","pr":{{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"draft","url":"https://github.com/o/r/pull/12","checks":"none"}},"pushed":true,"uncommitted":0}}"#
+            )
+        );
     }
 
     #[test]

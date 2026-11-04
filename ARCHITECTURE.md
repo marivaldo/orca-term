@@ -54,7 +54,9 @@ the adapters, and returns a domain value that `output` prints.
   `doctor [--json]` needs no repository; every other command but the hidden `hook` and `agent
   holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
   git as the typed `prerequisite` before anything else runs. `pr refresh [<worktree>...]` (#87)
-  asks the GitHub CLI about each worktree's pull request.
+  asks the GitHub CLI about each worktree's pull request. `pr compose <worktree>` (#132) prints
+  the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
+  <f>] [--base <b>] [--draft]` pushes the branch and creates it.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -78,7 +80,10 @@ the adapters, and returns a domain value that `output` prints.
   missing or too old, the whole report comes first, then the `prerequisite` error as any command
   prints it, and its exit code. `pr refresh` prints one line per worktree (#87): `<name>: PR #12
   open, checks pending` (`no checks` when there are none), `<name>: no PR` or `<name>: PR
-  unavailable: <reason>`.
+  unavailable: <reason>`. `pr compose` prints the title, a blank line and the body (the title
+  alone when the body is empty); `pr create` prints `<name>: created PR #12 (draft): <url>`
+  (without `(draft)` when it is not one), then, when files had uncommitted changes, `1 file with
+  uncommitted changes was left out of the pull request` (`N files ... were`, #132).
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm` (with `stopped_agent`, whether its agent was stopped first, #94), `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
   null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
@@ -129,7 +134,10 @@ the adapters, and returns a domain value that `output` prints.
   worktree changed against its merge base with the start point, committed or not, untracked files
   git does not ignore included (`fleet::count_changed_files`), null when it cannot be counted or
   the worktree is broken or setting up. The text `worktree detail` adds `3 files changed` before
-  the drift when there are some; the text `worktree ls` is unchanged.
+  the drift when there are some; the text `worktree ls` is unchanged. `pr compose` (#132) prints
+  `title`, `body`, `base` (the default branch), `branch`, `commits` (ahead of the base) and
+  `uncommitted` (files with changes not committed); `pr create` prints `name`, `path`, `pr` as
+  `pr refresh` shows it, `pushed` (always `true`) and `uncommitted`.
 
 ### ops
 
@@ -296,8 +304,26 @@ the adapters, and returns a domain value that `output` prints.
   number,title,state,isDraft,url,statusCheckRollup` in every worktree at once (one thread each,
   `program::run_within`, 10 s each), turn each answer into a finding (`domain/pr.rs`), then write
   each `pr.json` whole with no lock (never over a newer schema) and notify only for a worktree whose
-  finding changed. A worktree on no branch has no pull request and runs no gh. The only file that
-  names gh.
+  finding changed. A worktree on no branch has no pull request and runs no gh. With
+  `ops/pr_create.rs`, the only file that names gh; `pr create` finds gh, asks about a branch and
+  keeps the answer through its `find_gh`, `ask` and `keep`.
+- `ops/pr_compose.rs`: `pr compose` (#132): find the target (refusing a worktree whose directory
+  is gone and one on no branch), the base (the default branch, or `--base` for `pr create`)
+  counted from the local branch or else `origin/<base>` (`git::base_point`), the commits ahead
+  (`git log -z --reverse --format=%s%x1f%b <base>..HEAD`), the pull request template on disk
+  (the first `pull_request_template*` in `.github/`, the root, `docs/`, any case) and the files
+  with changes not committed (`git status --porcelain -z --untracked-files=all`), then the
+  message (`domain/pr/create.rs`). Only reads: no gh, no push. `prepare` is what `pr create`
+  reuses.
+- `ops/pr_create.rs`: `pr create` (#132): refuse an empty title, then `prepare` as `pr compose`,
+  refuse no commits ahead (`no_commits`), gh not on PATH (`prerequisite`), and, asking gh as
+  `pr refresh` asks (`gh pr view <branch>`), an open or draft pull request (`pr_exists`) or gh
+  unable to say (`prerequisite`, with its reason); then `git push -u origin <branch>`
+  (`git::push_branch`, never forced; a failure is `push_failed` with git's words), then `gh pr
+  create --base --head --title --body-file <file>|--body "" [--draft]` (60 s at most), then ask gh
+  again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`, notifying);
+  when gh does not show the new pull request yet, the record is made from the address `gh pr
+  create` printed. The only code that pushes (`cargo xtask gh-guard`).
 
 ### adapters
 
@@ -306,9 +332,11 @@ the adapters, and returns a domain value that `output` prints.
   drift's `rev-list --left-right --count`), `changed_paths` and `untracked_files` (the changed
   files' `diff --name-only --merge-base` and `ls-files --others --exclude-standard`), `blob_id` of some content, `diff_files` between two
   files, `index_path`, `config_value`, `read_ref`, `refs_under`, `commit_exists`, `has_file`, the
-  turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, ...) or change (`worktree_add`,
+  turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, `pr compose`'s
+  `base_point`, `commits_ahead` and `uncommitted_status`, ...) or change (`worktree_add`,
   `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
-  `update_ref`, `delete_ref`, ...).
+  `update_ref`, `delete_ref`, `push_branch`, `pr create`'s `git push -u origin <branch>`,
+  ...).
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
@@ -550,6 +578,14 @@ the adapters, and returns a domain value that `output` prints.
   (`{"schema": 1, "fetched_at", "pr": {...} | null, "unavailable": null | "<reason>"}`, read from
   any schema, never written over a newer one, an unusable one read as never fetched), and whether
   a finding `changed`.
+- `domain/pr/create.rs`: a new pull request (#132): the commits ahead read from `git log`
+  (`parse_log`), the template's name (`is_template_name`, `TEMPLATE_DIRS`), the message as `gh pr
+  create --fill` makes it (`compose`: the only commit's subject, else the branch name; the
+  template, else the only commit's body, else `- <subject>` per commit, oldest first), the files
+  with changes not committed (`count_uncommitted`, a rename counted once), gh's arguments
+  (`create_args`, `Body`, `Readiness`) and time limit, the refusals (`check_title`,
+  `check_has_commits`, `check_no_open_pr`), the pull request read from the address gh printed
+  (`created_pr`), and what `pr compose` and `pr create` report (`Composed`, `PrCreated`).
 
 ### Domain types
 
@@ -590,6 +626,10 @@ validate"):
 - `PrState`, `Checks`, `PullRequest`, `Found`, `PrFacts`, `GhRun`, `PrRead`, `Refreshed`
   (`domain/pr.rs`): a pull request's state and checks, the pull request, what asking gh found and
   when, what running gh did, what reading `pr.json` found, and what `pr refresh` reports.
+- `CommitMessage`, `Message`, `Composed`, `Readiness`, `Body`, `PrCreated`
+  (`domain/pr/create.rs`, #132): a commit's subject and body, a new pull request's title and body,
+  what `pr compose` reports, whether it is `Ready` or a `Draft` (the `--draft` flag), its body for
+  gh (a `File` or `Empty`), and what `pr create` reports.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -878,7 +918,7 @@ validate"):
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
   the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `untrusted`,
-  `prerequisite`) or `other`. The error of `untrusted` also carries `what` (`setup` or
+  `prerequisite`, and since #132 `no_commits`, `pr_exists`, `push_failed`) or `other`. The error of `untrusted` also carries `what` (`setup` or
   `sandbox`), the `script` or the `writable` paths as written, and `source` (the committed file).
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
@@ -890,7 +930,11 @@ validate"):
   running; 8 for `untrusted`, a setup script or writable list from a committed `orca-term.yaml`
   not approved, so `worktree new` or `worktree setup` did not run the script, or `agent start` did
   not start; 9 for `prerequisite`, a program the command needs (git, claude, opencode) that is missing or
-  too old, and for `doctor` when any check is.
+  too old, and for `doctor` when any check is. Since #132: 9 also for `pr create` when gh is
+  missing or cannot say (not logged in, not a GitHub remote; `GhUnavailable`, kind
+  `prerequisite`, whose message names gh's own fix since `doctor` does not check gh); 10 for
+  `no_commits`, a branch with no commits ahead of the base; 11 for `pr_exists`, a branch whose
+  pull request is open; 12 for `push_failed`, a `git push` that failed.
 
 ## State and schema
 

@@ -135,6 +135,58 @@ pub(crate) fn start_point(primary: &PrimaryCheckout) -> Result<StartPoint> {
     }
 }
 
+/// Where a pull request into `base` is counted from (#132): the local branch `base`, else
+/// `origin/<base>`, as [`start_point`] prefers them.
+pub(crate) fn base_point(primary: &PrimaryCheckout, base: &Branch) -> Result<StartPoint> {
+    if has_ref(&primary.path, &format!("refs/heads/{base}"))? {
+        Ok(StartPoint::Local(base.clone()))
+    } else if has_ref(&primary.path, &format!("refs/remotes/origin/{base}"))? {
+        Ok(StartPoint::Remote(base.clone()))
+    } else {
+        bail!("the base branch `{base}` exists neither locally nor as origin/{base}")
+    }
+}
+
+/// The messages of the commits of the worktree at `worktree` that `base` does not have, oldest
+/// first: `git log -z --reverse --format=%s%x1f%b <base>..HEAD`, each subject and body split by
+/// the unit separator (`domain/pr/create.rs` reads them). Writes nothing.
+pub(crate) fn commits_ahead(worktree: &Path, base: &StartPoint) -> Result<Vec<u8>> {
+    let range = format!("{base}..HEAD");
+    output(
+        worktree,
+        &["log", "-z", "--reverse", "--format=%s%x1f%b", &range, "--"],
+    )
+}
+
+/// Every file of the worktree at `worktree` with changes not committed, untracked ones included:
+/// `git status --porcelain -z --untracked-files=all`. Writes nothing.
+pub(crate) fn uncommitted_status(worktree: &Path) -> Result<Vec<u8>> {
+    output(
+        worktree,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )
+}
+
+/// What `git push` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Pushed {
+    /// The branch is on `origin`, set as its upstream.
+    Done,
+    /// git refused or failed, saying why on stderr.
+    Failed(String),
+}
+
+/// `git push -u origin <branch>` in the worktree at `worktree`, never forced: only `pr create`
+/// pushes (#132, `cargo xtask gh-guard`). Fails only when git cannot be started.
+pub(crate) fn push_branch(worktree: &Path, branch: &Branch) -> Result<Pushed> {
+    let out = invoke(worktree, &["push", "-u", "origin", branch.as_str()])?;
+    if out.status.success() {
+        return Ok(Pushed::Done);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Ok(Pushed::Failed(stderr.trim().to_owned()))
+}
+
 /// Whether `branch` is merged into `into` (`git merge-base --is-ancestor`).
 pub(crate) fn is_merged(
     primary: &PrimaryCheckout,

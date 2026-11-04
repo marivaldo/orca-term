@@ -452,8 +452,43 @@ check failed, errored, was cancelled or timed out, else `pending` while any is q
 else `passing` when any succeeded, else `none`. It runs `gh pr view <branch>` in every worktree at
 once and gives each 10 seconds. When gh is not installed, not logged in or the repository is not
 on GitHub (`not a GitHub remote`), the worktree's pull request is unavailable, with the reason;
-the command still succeeds. orca-term never runs gh anywhere else, and the Neovim client never
-runs it at all.
+the command still succeeds.
+
+orca-term runs gh only in `pr refresh` and `pr create`, and `git push` only in `pr create`. No
+other command touches the network, `pr compose` included, and the Neovim client never runs gh at
+all.
+
+`orca-term pr compose <worktree>` prints the message a new pull request of the worktree starts
+from, without writing anything: the title, a blank line, then the body. The title is the subject
+of the branch's only commit ahead of the default branch, or the branch name when there are none or
+several, as `gh pr create --fill` makes it. The body is the repository's pull request template when
+it has one (`pull_request_template.md` in `.github/`, the root or `docs/`, in any case), else the
+only commit's body, else the list of the commits' subjects (`- First`, `- Second`). With `--json`
+it prints `title`, `body`, `base` (the default branch), `branch`, `commits` (how many are ahead of
+the base) and `uncommitted` (how many files have changes not committed).
+
+`orca-term pr create <worktree> --title <title> [--body-file <file>] [--base <branch>] [--draft]`
+creates the worktree's pull request from the core, outside the agent's sandbox (on macOS claude's
+sandbox can run neither gh nor a push over HTTPS). It first refuses, pushing nothing:
+
+- a branch with no commits ahead of the base (`no_commits`, exit code 10);
+- a branch that already has an open pull request, which it names (`pr_exists`, exit code 11);
+- gh missing or not logged in (`prerequisite`, exit code 9), in the words `pr refresh` uses.
+
+Then it pushes the branch with `git push -u origin <branch>`, never forced (a push that fails is
+`push_failed`, exit code 12, with git's own words), and runs `gh pr create --base <base> --head
+<branch> --title <title> --body-file <file> [--draft]`. The base is the default branch unless you
+pass `--base`, and a missing or empty body file means an empty body. Last it asks gh about the
+pull request as `pr refresh` does and keeps the answer, so `worktree ls` shows it at once:
+
+```text
+demo: created PR #12 (draft): https://github.com/o/r/pull/12
+1 file with uncommitted changes was left out of the pull request
+```
+
+Files with uncommitted changes do not stop it: the second line says how many were left out. With
+`--json` it prints the worktree's `name` and `path`, its `pr` as `pr refresh` shows it, `pushed`
+(`true`) and `uncommitted`.
 
 `worktree ls --json` and `worktree detail --json` show what the last refresh found as each
 worktree's `pr`: `null` when it never ran, else `fetched_at` (milliseconds since the Unix epoch)
