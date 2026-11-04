@@ -1,7 +1,7 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
 -- again, copy its path, swap its agent, start a new session, create its pull request, a draft or
--- not, through `compose.lua`, remove it), toggle its unseen mark
+-- not, through `compose.lua`, merge its open pull request, remove it), toggle its unseen mark
 -- (`u`), open its review (`d`, `:OrcaTerm review`), list its sessions to resume one (`s`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
@@ -34,6 +34,20 @@ M.MENU = {
   'Create pull request',
   'Create draft pull request',
   'Remove worktree',
+}
+
+---The menu entry that merges a worktree's pull request, offered only while its cached pull request
+---is open or a draft, before `Remove worktree` (#136).
+M.MERGE_PR = 'Merge pull request'
+
+---The answers offered before a pull request is merged, squash first as Orca offers them.
+M.MERGE_METHODS = { 'Squash and merge', 'Create a merge commit', 'Rebase and merge', 'Cancel' }
+
+---The core's method for each answer of `M.MERGE_METHODS` but `Cancel`.
+local METHOD_OF = {
+  ['Squash and merge'] = 'squash',
+  ['Create a merge commit'] = 'merge',
+  ['Rebase and merge'] = 'rebase',
 }
 
 ---Every agent a worktree can run, as the core names them.
@@ -581,11 +595,89 @@ function M.remove(worktree, primary)
   end)
 end
 
+---Whether the pull request `pr refresh` last found for `worktree` is open or a draft.
+---@param worktree orca_term.Worktree
+---@return boolean
+local function has_open_pr(worktree)
+  local pr = worktree.pr
+  return pr ~= nil and (pr.state == 'open' or pr.state == 'draft')
+end
+
+---The entries of the menu of `worktree`, in the order shown: `M.MENU`, with `Merge pull request`
+---before `Remove worktree` while its cached pull request is open or a draft.
+---@param worktree orca_term.Worktree
+---@return string[]
+function M.menu_items(worktree)
+  local items = {}
+  for _, item in ipairs(M.MENU) do
+    if item == 'Remove worktree' and has_open_pr(worktree) then
+      table.insert(items, M.MERGE_PR)
+    end
+    table.insert(items, item)
+  end
+  return items
+end
+
+---What the person is warned of when gh accepted the merge of `merged`'s pull request but GitHub
+---still shows it open, as a merge queue or a required check may hold it: the core's text words.
+---@param merged orca_term.PrMerged
+---@return string
+function M.held_message(merged)
+  local pr = merged.pr or {}
+  return (
+    'gh accepted the merge of PR #%d (%s), but GitHub still shows it %s: a merge queue or a '
+    .. 'required check may be holding it; run orca-term pr refresh %s later'
+  ):format(pr.number or 0, merged.method, pr.state or 'open', merged.name)
+end
+
+---`Merge pull request` in the menu: asks how, then merges the open pull request of `worktree`
+---through the core (`pr merge`, without blocking). On success it says `merged PR #N: <url>` and
+---reads the sidebar again, so the row shows the pull request merged; when gh accepted the merge
+---but GitHub still shows it open, it warns so (`held_message`) instead; on a refusal it tells the
+---core's reason. `Cancel` merges nothing. A worktree whose cached pull request is not open or a
+---draft only says so.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.merge_pr(worktree, primary)
+  if not has_open_pr(worktree) then
+    vim.notify(
+      ('orca-term: worktree %s has no open pull request to merge; R in the sidebar reads it again from GitHub'):format(
+        worktree.name
+      ),
+      levels.ERROR
+    )
+    return
+  end
+  local number = worktree.pr.number
+  local prompt = ('Merge PR #%d of %s?'):format(number, worktree.name)
+  vim.ui.select(M.MERGE_METHODS, { prompt = prompt }, function(choice)
+    local method = METHOD_OF[choice]
+    if not method then
+      return
+    end
+    info(('merging PR #%d of %s'):format(number, worktree.name))
+    core.pr_merge(worktree.path, method, primary, function(merged, err)
+      if not merged then
+        fail(err)
+        return
+      end
+      local pr = merged.pr or {}
+      if merged.merged == false then
+        warn(M.held_message(merged))
+      else
+        info(('merged PR #%d: %s'):format(pr.number or number, pr.url or ''))
+      end
+      refresh_sidebar()
+    end)
+  end)
+end
+
 ---The menu of what can be done with `worktree`.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 function M.menu(worktree, primary)
-  vim.ui.select(M.MENU, { prompt = 'Worktree ' .. worktree.name }, function(choice)
+  local items = M.menu_items(worktree)
+  vim.ui.select(items, { prompt = 'Worktree ' .. worktree.name }, function(choice)
     if choice == 'Re-run setup' then
       M.run_setup(worktree, primary)
     elseif choice == 'Copy path' then
@@ -598,6 +690,8 @@ function M.menu(worktree, primary)
       compose.open(worktree, primary, false)
     elseif choice == 'Create draft pull request' then
       compose.open(worktree, primary, true)
+    elseif choice == M.MERGE_PR then
+      M.merge_pr(worktree, primary)
     elseif choice == 'Remove worktree' then
       M.remove(worktree, primary)
     end
@@ -929,6 +1023,28 @@ function M.create_pr_current()
   for _, worktree in ipairs(fleet.worktrees) do
     if worktree.path == path then
       compose.open(worktree, fleet.primary.path, false)
+      return
+    end
+  end
+end
+
+---`:OrcaTerm pr-merge`: in the sidebar, merges the pull request of the worktree under the cursor;
+---anywhere else, of the current tab's worktree, the worktree whose tab is current, or the worktree a
+---review tab or a turn review reviews (`M.merge_pr`, which asks how first). Anywhere else it says
+---what it needs.
+function M.merge_pr_current()
+  if require('orca-term.sidebar').merge_pr_here() then
+    return
+  end
+  local path, fleet = current_worktree(
+    "merging needs a worktree's tab or its review; go to one, or press . on a worktree in the sidebar"
+  )
+  if not (path and fleet) then
+    return
+  end
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.path == path then
+      M.merge_pr(worktree, fleet.primary.path)
       return
     end
   end

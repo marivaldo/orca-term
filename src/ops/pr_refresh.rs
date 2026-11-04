@@ -1,7 +1,8 @@
 //! Ops: `pr refresh`, which asks the GitHub CLI about each worktree's pull request and its checks
 //! (#87) and keeps the answer in the worktree's `pr.json` (`domain/pr.rs`), for `worktree ls` and
-//! `worktree detail` to show. gh runs only from here and from `pr create`, which finds it, asks
-//! about a branch and keeps the answer through this module's functions (`cargo xtask gh-guard`).
+//! `worktree detail` to show. gh runs only from here and from `pr create` and `pr merge`, which
+//! find it, ask about a branch and keep the answer through this module's functions (`cargo xtask
+//! gh-guard`).
 //!
 //! gh runs in every worktree at once, one thread each, each stopped after 10 seconds, so a fleet
 //! takes about as long as its slowest answer. Each `pr.json` is replaced whole with no lock, the
@@ -61,7 +62,8 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
     Ok(refreshed)
 }
 
-/// gh as found on PATH, or `None` when it is not there. `pr create` finds it here too.
+/// gh as found on PATH, or `None` when it is not there. `pr create` and `pr merge` find it here
+/// too.
 pub(crate) fn find_gh() -> Option<PathBuf> {
     fs::executable_in(&env::path_dirs(), GH)
 }
@@ -90,27 +92,29 @@ pub(crate) fn ask(gh: Option<&Path>, worktree: &Worktree) -> Found {
     let Some(branch) = &worktree.branch else {
         return Found::NoPr;
     };
-    let run = match gh {
-        None => GhRun::Missing,
-        Some(gh) => {
-            let args = pr::view_args(branch.as_str());
-            match program::run_within(gh, &args, &worktree.path, pr::GH_TIMEOUT) {
-                Ok(program::Finished::Exited {
-                    success,
-                    stdout,
-                    stderr,
-                }) => GhRun::Exited {
-                    success,
-                    stdout,
-                    stderr,
-                },
-                Ok(program::Finished::TimedOut) => GhRun::TimedOut,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => GhRun::Missing,
-                Err(err) => GhRun::NotStarted(err.to_string()),
-            }
-        }
+    pr::found(&view(gh, &pr::view_args(branch.as_str()), worktree))
+}
+
+/// Runs gh, found at `gh` (`None` when it is not on PATH), with `args` (a `gh pr view`) in
+/// `worktree`, stopped after [`pr::GH_TIMEOUT`]. `pr merge` asks through it too, for more fields.
+pub(crate) fn view(gh: Option<&Path>, args: &[String], worktree: &Worktree) -> GhRun {
+    let Some(gh) = gh else {
+        return GhRun::Missing;
     };
-    pr::found(&run)
+    match program::run_within(gh, args, &worktree.path, pr::GH_TIMEOUT) {
+        Ok(program::Finished::Exited {
+            success,
+            stdout,
+            stderr,
+        }) => GhRun::Exited {
+            success,
+            stdout,
+            stderr,
+        },
+        Ok(program::Finished::TimedOut) => GhRun::TimedOut,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => GhRun::Missing,
+        Err(err) => GhRun::NotStarted(err.to_string()),
+    }
 }
 
 /// Writes `facts` to the `pr.json` of `worktree`, never over a newer schema, and tells the running

@@ -24,6 +24,7 @@ use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
 use crate::domain::operation::{Operation, RebaseStep};
 use crate::domain::pr::create::{Composed, PrCreated};
+use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Checks, Found, PrState, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
@@ -727,6 +728,38 @@ fn render_pr_created(created: &PrCreated) -> String {
     text
 }
 
+/// Prints what `pr merge` merged:
+///
+/// ```text
+/// demo: merged PR #12 (squash): https://github.com/o/r/pull/12
+/// ```
+pub(crate) fn pr_merged(merged: &PrMerged, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_pr_merged(merged)),
+        Format::Json => out(&json::merged_pr(merged)?),
+    }
+    Ok(())
+}
+
+fn render_pr_merged(merged: &PrMerged) -> String {
+    let method = merged.method.name();
+    let name = &merged.name;
+    match merged.pr() {
+        Some(pr) if merged.is_merged() => {
+            format!("{name}: merged PR #{} ({method}): {}", pr.number, pr.url)
+        }
+        // gh accepted the merge, but GitHub holds the pull request: never say it is merged.
+        Some(pr) => format!(
+            "{name}: gh accepted the merge of PR #{} ({method}), but GitHub still shows it {}: a \
+             merge queue or a required check may be holding it; run orca-term pr refresh {name} \
+             later",
+            pr.number,
+            pr.state.name()
+        ),
+        None => format!("{name}: merged its PR ({method})"),
+    }
+}
+
 /// What was found about a pull request, in a few words: `PR #12 open, checks passing`, `no PR`
 /// or `PR unavailable: <reason>`.
 fn pr_text(found: &Found) -> String {
@@ -1301,6 +1334,41 @@ mod tests {
             render_pr_created(&created(PrState::Open, 3)),
             "demo: created PR #12: https://github.com/o/r/pull/12\n3 files with uncommitted \
              changes were left out of the pull request"
+        );
+    }
+
+    #[test]
+    fn merge_says_the_pull_request_and_the_method() {
+        use crate::domain::pr::merge::Method;
+        use crate::domain::pr::{PrFacts, PullRequest};
+        let merged = |method, state| PrMerged {
+            name: "demo".to_owned(),
+            path: PathBuf::from("/l/demo"),
+            facts: PrFacts {
+                fetched_at: 1,
+                found: Found::Pr(PullRequest {
+                    number: 12,
+                    title: "Fix".to_owned(),
+                    state,
+                    url: "https://github.com/o/r/pull/12".to_owned(),
+                    checks: Checks::Passing,
+                }),
+            },
+            method,
+        };
+        assert_eq!(
+            render_pr_merged(&merged(Method::Squash, PrState::Merged)),
+            "demo: merged PR #12 (squash): https://github.com/o/r/pull/12"
+        );
+        assert_eq!(
+            render_pr_merged(&merged(Method::Rebase, PrState::Merged)),
+            "demo: merged PR #12 (rebase): https://github.com/o/r/pull/12"
+        );
+        assert_eq!(
+            render_pr_merged(&merged(Method::Squash, PrState::Open)),
+            "demo: gh accepted the merge of PR #12 (squash), but GitHub still shows it open: a \
+             merge queue or a required check may be holding it; run orca-term pr refresh demo \
+             later"
         );
     }
 

@@ -16,6 +16,7 @@ use crate::domain::branch::Branch;
 use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
 use crate::domain::pr::create::Readiness;
+use crate::domain::pr::merge::Method;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::state::AdminDir;
@@ -24,8 +25,8 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
     hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
-    pr_compose, pr_create, pr_refresh, session_ls, session_new, session_resume, turn_blame,
-    turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
+    pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new, session_resume,
+    turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
     worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
@@ -142,6 +143,26 @@ enum PrCommand {
         /// Create the pull request as a draft.
         #[arg(long)]
         draft: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Merge the worktree's open pull request on GitHub through gh, squashing its commits unless
+    /// told otherwise. Refuses no open pull request, a draft, a conflict with the base, a review
+    /// that requested changes or still needs an approval, and gh missing or not logged in. The
+    /// branch is never deleted: the worktree and its local branch stay as they are.
+    Merge {
+        /// The worktree's name, or its path when several worktrees share a name.
+        worktree: Target,
+        /// Squash the commits into one (the default).
+        #[arg(long, conflicts_with_all = ["merge", "rebase"])]
+        squash: bool,
+        /// Make a merge commit.
+        #[arg(long, conflicts_with = "rebase")]
+        merge: bool,
+        /// Rebase the commits onto the base branch.
+        #[arg(long)]
+        rebase: bool,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -549,7 +570,8 @@ impl Cli {
             Command::Pr { command } => match command {
                 PrCommand::Refresh { json, .. }
                 | PrCommand::Compose { json, .. }
-                | PrCommand::Create { json, .. } => *json,
+                | PrCommand::Create { json, .. }
+                | PrCommand::Merge { json, .. } => *json,
             },
             Command::Doctor { json } => *json,
             Command::Hook { .. } => false,
@@ -959,6 +981,22 @@ fn run_pr(command: &PrCommand, format: Format) -> Result<ExitCode> {
                 },
             };
             output::pr_created(&pr_create::run(worktree, &wanted)?, format)?;
+        }
+        PrCommand::Merge {
+            worktree,
+            merge,
+            rebase,
+            ..
+        } => {
+            // clap lets at most one of the three through; squash is the default.
+            let method = if *merge {
+                Method::Merge
+            } else if *rebase {
+                Method::Rebase
+            } else {
+                Method::Squash
+            };
+            output::pr_merged(&pr_merge::run(worktree, method)?, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

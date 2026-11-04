@@ -6,7 +6,7 @@
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
--- `resume`, `new`), `pr refresh` and `pr create` are not waited for, and hand their
+-- `resume`, `new`), `pr refresh`, `pr create` and `pr merge` are not waited for, and hand their
 -- result to a callback in Neovim's main loop; `pr compose` only reads git, and is waited for. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
@@ -660,6 +660,36 @@ function M.pr_create(target, title, body, draft, cwd, on_done)
     vim.fn.delete(body_file)
     on_done(created, err)
   end, PR_CREATE_TIMEOUT_SECONDS)
+end
+
+---What `pr merge --json` prints: the worktree, its pull request as `pr refresh` shows it, the
+---method used, and whether it is merged.
+---@class orca_term.PrMerged
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field pr orca_term.Pr
+---@field method string `squash`, `merge` or `rebase`
+---@field merged boolean `false` when gh accepted the merge but GitHub still shows the pull request
+---open, as a merge queue or a required check may hold it
+
+---How long `pr merge` may take: it asks gh about the pull request, gives gh a minute to merge it,
+---then asks gh about it again.
+local PR_MERGE_TIMEOUT_SECONDS = 90
+
+---Merges the open pull request of the worktree `target` (its name or its path) with `method`
+---(`squash`, `merge` or `rebase`), without waiting:
+---`orca-term pr merge <target> --<method> --json`. The core refuses no open pull request
+---(`no_open_pr`), a draft (`pr_draft`), a conflict with the base (`pr_conflicting`), a review that
+---blocks it (`not_approved`) and gh missing or not logged in (`prerequisite`); anything else
+---GitHub refuses is `other`, in gh's words. The branch is never deleted.
+---@param target string
+---@param method string
+---@param cwd string
+---@param on_done fun(merged: orca_term.PrMerged?, err: orca_term.Error?)
+function M.pr_merge(target, method, cwd, on_done)
+  run_async({ 'pr', 'merge', target, '--' .. method }, cwd, on_done, PR_MERGE_TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a

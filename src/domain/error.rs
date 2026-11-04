@@ -117,6 +117,90 @@ pub(crate) enum TypedError {
          and log in with `gh auth login`, then try again (nothing was pushed)"
     )]
     GhUnavailable { name: String, reason: String },
+    /// The worktree's branch has no open pull request for `pr merge` to merge: none at all, or one
+    /// already merged or closed, as gh says (#136). Nothing was merged.
+    #[error("{}", no_open_pr_message(name, *found))]
+    NoOpenPr { name: String, found: NotOpen },
+    /// The worktree's pull request `number` is a draft, which GitHub does not merge (#136).
+    /// Nothing was merged.
+    #[error(
+        "PR #{number} of worktree {name} is a draft; mark it ready for review first (nothing was \
+         merged)"
+    )]
+    PrDraft { name: String, number: u64 },
+    /// GitHub reports the worktree's pull request `number` as conflicting with its base branch
+    /// (`mergeable` is `CONFLICTING`, #136). Nothing was merged.
+    #[error(
+        "PR #{number} of worktree {name} conflicts with its base branch on GitHub; update the \
+         branch first (nothing was merged)"
+    )]
+    PrConflicting { name: String, number: u64 },
+    /// The review of the worktree's pull request `number` does not allow a merge yet: changes were
+    /// requested, or an approving review is required (`reviewDecision`, #136). Nothing was merged.
+    #[error("{}", not_approved_message(name, *number, *review))]
+    NotApproved {
+        name: String,
+        number: u64,
+        review: Review,
+    },
+    /// gh cannot merge the worktree's pull request, for `reason`, in the words `pr refresh` keeps.
+    /// Its kind and exit code are `prerequisite`'s, and its message names gh's fix as
+    /// [`TypedError::GhUnavailable`] does for `pr create` (#136). Nothing was merged.
+    #[error(
+        "cannot merge the pull request of worktree {name}: {reason}; install the GitHub CLI (gh) \
+         and log in with `gh auth login`, then try again (nothing was merged)"
+    )]
+    MergeGhUnavailable { name: String, reason: String },
+}
+
+/// Why a worktree has no open pull request to merge (#136).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotOpen {
+    /// Its branch has no pull request at all (or it is on no branch).
+    None,
+    /// Its pull request `number` is merged already.
+    Merged(u64),
+    /// Its pull request `number` was closed without a merge.
+    Closed(u64),
+}
+
+/// A review decision that blocks a merge (#136).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Review {
+    /// A reviewer requested changes (`CHANGES_REQUESTED`).
+    ChangesRequested,
+    /// The base branch needs an approving review, and there is none yet (`REVIEW_REQUIRED`).
+    Required,
+}
+
+/// The message of [`TypedError::NoOpenPr`].
+fn no_open_pr_message(name: &str, found: NotOpen) -> String {
+    match found {
+        NotOpen::None => format!(
+            "worktree {name} has no pull request to merge; create one first with `orca-term pr \
+             create {name}` (nothing was merged)"
+        ),
+        NotOpen::Merged(number) => {
+            format!("PR #{number} of worktree {name} is merged already; there is nothing to merge")
+        }
+        NotOpen::Closed(number) => format!(
+            "PR #{number} of worktree {name} is closed; reopen it on GitHub first (nothing was \
+             merged)"
+        ),
+    }
+}
+
+/// The message of [`TypedError::NotApproved`].
+fn not_approved_message(name: &str, number: u64, review: Review) -> String {
+    match review {
+        Review::ChangesRequested => format!(
+            "PR #{number} of worktree {name} has changes requested in its review; address them \
+             and get it approved first (nothing was merged)"
+        ),
+        Review::Required => format!(
+            "PR #{number} of worktree {name} needs an approving review first (nothing was merged)"
+        ),
+    }
 }
 
 /// The message of [`TypedError::Untrusted`], naming the command that asks.
@@ -263,11 +347,17 @@ impl TypedError {
             Self::Dirty { .. } => "dirty",
             Self::SessionGone { .. } => "session_gone",
             Self::NoHolder { .. } => "no_holder",
-            Self::Prerequisite { .. } | Self::GhUnavailable { .. } => "prerequisite",
+            Self::Prerequisite { .. }
+            | Self::GhUnavailable { .. }
+            | Self::MergeGhUnavailable { .. } => "prerequisite",
             Self::Untrusted { .. } => "untrusted",
             Self::NoCommits { .. } => "no_commits",
             Self::PrExists { .. } => "pr_exists",
             Self::PushFailed { .. } => "push_failed",
+            Self::NoOpenPr { .. } => "no_open_pr",
+            Self::PrDraft { .. } => "pr_draft",
+            Self::PrConflicting { .. } => "pr_conflicting",
+            Self::NotApproved { .. } => "not_approved",
         }
     }
 
@@ -279,11 +369,17 @@ impl TypedError {
             Self::Dirty { .. } => 6,
             Self::SessionGone { .. } => 4,
             Self::NoHolder { .. } => 7,
-            Self::Prerequisite { .. } | Self::GhUnavailable { .. } => 9,
+            Self::Prerequisite { .. }
+            | Self::GhUnavailable { .. }
+            | Self::MergeGhUnavailable { .. } => 9,
             Self::Untrusted { .. } => 8,
             Self::NoCommits { .. } => 10,
             Self::PrExists { .. } => 11,
             Self::PushFailed { .. } => 12,
+            Self::NoOpenPr { .. } => 13,
+            Self::PrDraft { .. } => 14,
+            Self::PrConflicting { .. } => 15,
+            Self::NotApproved { .. } => 16,
         }
     }
 }
@@ -617,6 +713,97 @@ mod tests {
             "cannot create a pull request for worktree demo: GitHub CLI is unavailable; install \
              the GitHub CLI (gh) and log in with `gh auth login`, then try again (nothing was \
              pushed)"
+        );
+    }
+
+    /// Checks that `typed` has the kind `wanted_kind`, the exit code `code` and says `message`.
+    fn assert_typed(typed: TypedError, wanted_kind: &str, code: u8, message: &str) {
+        let err = anyhow::Error::new(typed);
+        assert_eq!((kind(&err), exit_code(&err)), (wanted_kind, code));
+        assert_eq!(err.to_string(), message);
+    }
+
+    #[test]
+    fn no_open_pull_request_to_merge_has_its_own_kind_and_exit_code() {
+        let no_open = |found| TypedError::NoOpenPr {
+            name: "demo".to_owned(),
+            found,
+        };
+        assert_typed(
+            no_open(NotOpen::None),
+            "no_open_pr",
+            13,
+            "worktree demo has no pull request to merge; create one first with `orca-term pr \
+             create demo` (nothing was merged)",
+        );
+        assert_typed(
+            no_open(NotOpen::Merged(12)),
+            "no_open_pr",
+            13,
+            "PR #12 of worktree demo is merged already; there is nothing to merge",
+        );
+        assert_typed(
+            no_open(NotOpen::Closed(12)),
+            "no_open_pr",
+            13,
+            "PR #12 of worktree demo is closed; reopen it on GitHub first (nothing was merged)",
+        );
+    }
+
+    #[test]
+    fn each_other_refusal_of_pr_merge_has_its_own_kind_and_exit_code() {
+        let name = || "demo".to_owned();
+        let draft = TypedError::PrDraft {
+            name: name(),
+            number: 12,
+        };
+        assert_typed(
+            draft,
+            "pr_draft",
+            14,
+            "PR #12 of worktree demo is a draft; mark it ready for review first (nothing was \
+             merged)",
+        );
+        let conflicting = TypedError::PrConflicting {
+            name: name(),
+            number: 12,
+        };
+        assert_typed(
+            conflicting,
+            "pr_conflicting",
+            15,
+            "PR #12 of worktree demo conflicts with its base branch on GitHub; update the branch \
+             first (nothing was merged)",
+        );
+        let not_approved = |review| TypedError::NotApproved {
+            name: name(),
+            number: 12,
+            review,
+        };
+        assert_typed(
+            not_approved(Review::ChangesRequested),
+            "not_approved",
+            16,
+            "PR #12 of worktree demo has changes requested in its review; address them and get it \
+             approved first (nothing was merged)",
+        );
+        assert_typed(
+            not_approved(Review::Required),
+            "not_approved",
+            16,
+            "PR #12 of worktree demo needs an approving review first (nothing was merged)",
+        );
+        let gh = TypedError::MergeGhUnavailable {
+            name: name(),
+            reason: "GitHub CLI is unavailable".to_owned(),
+        };
+        assert_typed(
+            gh,
+            "prerequisite",
+            9,
+            "cannot merge the pull request of worktree demo: GitHub CLI is unavailable; install \
+             the GitHub CLI (gh) and log in with `gh auth login`, then try again (nothing was \
+             merged)",
         );
     }
 

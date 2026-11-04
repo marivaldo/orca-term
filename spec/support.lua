@@ -86,11 +86,34 @@ end
 ---and exits 0, or says gh's words for a branch with no pull request and exits 1. `gh pr create`
 ---(#133) prints `create.err` on stderr and exits 1 when that file exists; else it copies the body
 ---to `create.body`, makes `gh pr view` answer pull request 12 for the `--head` branch (a draft with
----`--draft`), and prints its address. Shell builtins only: the agent specs' PATH holds nothing
----else.
+---`--draft`), and prints its address. `gh pr merge <number>` (#136) prints `merge.err` on stderr
+---and exits 1 when that file exists; else it turns `"state":"OPEN"` into `"state":"MERGED"` in the
+---`<branch>.json` of that number and exits 0; when `merge-held` exists it exits 0 and leaves the
+---pull request open, as a merge queue or a required check may. Shell builtins only: the agent
+---specs' PATH holds nothing else.
 local FAKE_GH = {
   'd="$ORCA_TERM_FAKE_GH"',
   '[ -n "$d" ] && printf \'%s\\n\' "$*" >> "$d/calls"',
+  'if [ -n "$d" ] && [ "$1 $2" = "pr merge" ]; then',
+  '  if [ -f "$d/merge.err" ]; then',
+  '    while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line" >&2; done < "$d/merge.err"',
+  '    exit 1',
+  '  fi',
+  '  [ -f "$d/merge-held" ] && exit 0',
+  '  open=\'"state":"OPEN"\'',
+  '  for file in "$d"/*.json; do',
+  '    [ -f "$file" ] || continue',
+  '    line=""',
+  '    IFS= read -r line < "$file" || :',
+  '    case "$line" in',
+  '      *"\\"number\\":$3,"*|*"\\"number\\":$3}"*)',
+  '        case "$line" in',
+  '          *$open*) printf \'%s"state":"MERGED"%s\\n\' "${line%%$open*}" "${line#*$open}" > "$file" ;;',
+  '        esac ;;',
+  '    esac',
+  '  done',
+  '  exit 0',
+  'fi',
   'if [ -n "$d" ] && [ "$1 $2" = "pr create" ]; then',
   '  if [ -f "$d/create.err" ]; then',
   '    while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line" >&2; done < "$d/create.err"',
