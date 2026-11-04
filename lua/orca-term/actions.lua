@@ -1,7 +1,8 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
 -- again, copy its path, swap its agent, start a new session, create its pull request, a draft or
--- not, through `compose.lua`, merge its open pull request, remove it), toggle its unseen mark
+-- not, through `compose.lua`, merge its open pull request, rebase it onto its base, hand a rebase's
+-- conflicts to its agent or abort the rebase, remove it), toggle its unseen mark
 -- (`u`), open its review (`d`, `:OrcaTerm review`), list its sessions to resume one (`s`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
@@ -39,6 +40,21 @@ M.MENU = {
 ---The menu entry that merges a worktree's pull request, offered only while its cached pull request
 ---is open or a draft, before `Remove worktree` (#136).
 M.MERGE_PR = 'Merge pull request'
+
+---The menu entries offered instead of `M.rebase_item` while a worktree's rebase is in progress,
+---before `Merge pull request` and `Remove worktree` (#141).
+M.RESOLVE_CONFLICTS = 'Resolve conflicts with the agent'
+M.ABORT_REBASE = 'Abort rebase'
+
+---The answers offered before a rebase is aborted.
+M.ABORT_REBASE_ANSWERS = { 'Abort rebase', 'Cancel' }
+
+---The menu entry that rebases a worktree onto `base`, naming it: `Rebase onto origin/main`.
+---@param base string
+---@return string
+function M.rebase_item(base)
+  return 'Rebase onto ' .. base
+end
 
 ---The answers offered before a pull request is merged, squash first as Orca offers them.
 M.MERGE_METHODS = { 'Squash and merge', 'Create a merge commit', 'Rebase and merge', 'Cancel' }
@@ -603,19 +619,117 @@ local function has_open_pr(worktree)
   return pr ~= nil and (pr.state == 'open' or pr.state == 'draft')
 end
 
----The entries of the menu of `worktree`, in the order shown: `M.MENU`, with `Merge pull request`
----before `Remove worktree` while its cached pull request is open or a draft.
+---The rebase entries of the menu of `worktree`: `Resolve conflicts with the agent` and `Abort
+---rebase` while its rebase is in progress; `Rebase onto <base>` when no operation is in progress
+---and the repository has a default branch on `origin` (`remote_base`), as Orca offers its rebase
+---only onto a remote base; none otherwise.
 ---@param worktree orca_term.Worktree
+---@param remote_base? string
 ---@return string[]
-function M.menu_items(worktree)
+local function rebase_items(worktree, remote_base)
+  if worktree.operation == 'rebase' then
+    return { M.RESOLVE_CONFLICTS, M.ABORT_REBASE }
+  end
+  if worktree.operation == nil and remote_base then
+    return { M.rebase_item(remote_base) }
+  end
+  return {}
+end
+
+---The entries of the menu of `worktree`, in the order shown: `M.MENU`, with the rebase entries
+---(`rebase_items`), then `Merge pull request` while its cached pull request is open or a draft,
+---before `Remove worktree`.
+---@param worktree orca_term.Worktree
+---@param remote_base? string the default branch on `origin`, such as `origin/main`
+---@return string[]
+function M.menu_items(worktree, remote_base)
   local items = {}
   for _, item in ipairs(M.MENU) do
-    if item == 'Remove worktree' and has_open_pr(worktree) then
-      table.insert(items, M.MERGE_PR)
+    if item == 'Remove worktree' then
+      vim.list_extend(items, rebase_items(worktree, remote_base))
+      if has_open_pr(worktree) then
+        table.insert(items, M.MERGE_PR)
+      end
     end
     table.insert(items, item)
   end
   return items
+end
+
+---`Rebase onto <base>` in the menu: rebases `worktree` onto `base` through the core (`worktree
+---rebase`, without blocking). It says `rebasing demo onto origin/main` first, then the core's line
+---(`demo: rebased onto origin/main (3 commits replayed)`, or already up to date). A rebase that
+---stops on conflicts stays in progress: the core's words say so as a warning, and the row shows
+---`≠`. Any other refusal is told with the core's reason. The sidebar is read again either way.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+---@param base string
+function M.rebase(worktree, primary, base)
+  info(('rebasing %s onto %s'):format(worktree.name, base))
+  core.worktree_rebase(worktree.path, primary, function(rebased, err)
+    refresh_sidebar()
+    if not rebased then
+      if err and err.kind == 'rebase_conflict' then
+        vim.notify(err.message, levels.WARN)
+      else
+        fail(err)
+      end
+      return
+    end
+    if rebased.outcome == 'up_to_date' then
+      info(('%s: already up to date with %s'):format(rebased.name, rebased.base))
+    else
+      info(
+        ('%s: rebased onto %s (%d %s replayed)'):format(
+          rebased.name,
+          rebased.base,
+          rebased.replayed,
+          rebased.replayed == 1 and 'commit' or 'commits'
+        )
+      )
+    end
+  end)
+end
+
+---`Abort rebase` in the menu: asks first, then aborts the rebase in progress in `worktree` through
+---the core (`worktree rebase --abort`, without blocking), says so and reads the sidebar again.
+---`Cancel` changes nothing.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.abort_rebase(worktree, primary)
+  local prompt = ('Abort the rebase of %s? Its branch goes back to where it was.'):format(
+    worktree.name
+  )
+  vim.ui.select(M.ABORT_REBASE_ANSWERS, { prompt = prompt }, function(choice)
+    if choice ~= 'Abort rebase' then
+      return
+    end
+    core.worktree_rebase_abort(worktree.path, primary, function(aborted, err)
+      refresh_sidebar()
+      if not aborted then
+        fail(err)
+        return
+      end
+      info(('aborted the rebase of %s'):format(aborted.name))
+    end)
+  end)
+end
+
+---`Resolve conflicts with the agent` in the menu: types into the agent of `worktree` one prompt
+---asking it to resolve the rebase's conflicts (`agent resolve`, without blocking), then says so
+---and reads the sidebar again. A refusal, such as an agent that is not running, is told with the
+---core's reason.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.resolve_conflicts(worktree, primary)
+  core.agent_resolve(worktree.path, primary, function(sent, err)
+    refresh_sidebar()
+    if not sent then
+      fail(err)
+      return
+    end
+    info(('sent the conflicts of %s to its agent'):format(sent.name))
+  end)
 end
 
 ---What the person is warned of when gh accepted the merge of `merged`'s pull request but GitHub
@@ -675,8 +789,9 @@ end
 ---The menu of what can be done with `worktree`.
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
-function M.menu(worktree, primary)
-  local items = M.menu_items(worktree)
+---@param remote_base? string the default branch on `origin` (`origin/main`), what a rebase goes onto
+function M.menu(worktree, primary, remote_base)
+  local items = M.menu_items(worktree, remote_base)
   vim.ui.select(items, { prompt = 'Worktree ' .. worktree.name }, function(choice)
     if choice == 'Re-run setup' then
       M.run_setup(worktree, primary)
@@ -690,6 +805,12 @@ function M.menu(worktree, primary)
       compose.open(worktree, primary, false)
     elseif choice == 'Create draft pull request' then
       compose.open(worktree, primary, true)
+    elseif remote_base and choice == M.rebase_item(remote_base) then
+      M.rebase(worktree, primary, remote_base)
+    elseif choice == M.RESOLVE_CONFLICTS then
+      M.resolve_conflicts(worktree, primary)
+    elseif choice == M.ABORT_REBASE then
+      M.abort_rebase(worktree, primary)
     elseif choice == M.MERGE_PR then
       M.merge_pr(worktree, primary)
     elseif choice == 'Remove worktree' then

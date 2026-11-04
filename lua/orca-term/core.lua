@@ -6,7 +6,8 @@
 -- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
--- `resume`, `new`), `pr refresh`, `pr create` and `pr merge` are not waited for, and hand their
+-- `resume`, `new`), `pr refresh`, `pr create`, `pr merge`, `worktree rebase` (with or without
+-- `--abort`) and `agent resolve` are not waited for, and hand their
 -- result to a callback in Neovim's main loop; `pr compose` only reads git, and is waited for. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
@@ -34,6 +35,8 @@
 ---@field writable? string[]
 ---With `untrusted`: the committed file they come from, absolute.
 ---@field source? string
+---With `dirty` from `worktree rebase`, and with `rebase_conflict`: the files it names.
+---@field files? string[]
 
 ---The primary checkout, as `worktree ls --json` prints it.
 ---@class orca_term.Primary
@@ -95,6 +98,9 @@
 ---@field version string the core's version
 ---@field primary orca_term.Primary
 ---@field worktrees orca_term.Worktree[]
+---The default branch on `origin` a worktree is rebased onto, such as `origin/main`; `nil` when the
+---repository has none
+---@field remote_base? string
 
 ---What a setup did, as `worktree new` and `worktree setup` print it.
 ---@class orca_term.SetupResult
@@ -690,6 +696,72 @@ local PR_MERGE_TIMEOUT_SECONDS = 90
 ---@param on_done fun(merged: orca_term.PrMerged?, err: orca_term.Error?)
 function M.pr_merge(target, method, cwd, on_done)
   run_async({ 'pr', 'merge', target, '--' .. method }, cwd, on_done, PR_MERGE_TIMEOUT_SECONDS)
+end
+
+---What `worktree rebase --json` prints: the worktree, the base it was rebased onto, and what
+---happened.
+---@class orca_term.Rebased
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field base string the base, such as `origin/main`
+---@field outcome string `rebased`, or `up_to_date` when the branch already held the base
+---@field replayed integer how many of the branch's commits were replayed (0 when up to date)
+
+---What `worktree rebase --abort --json` prints.
+---@class orca_term.RebaseAborted
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field aborted boolean always `true`: an abort that failed is an error
+
+---What `agent resolve --json` prints: the prompt typed into the agent, and the files in conflict
+---it names.
+---@class orca_term.ResolveSent
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field prompt string
+---@field files string[]
+
+---How long `worktree rebase` may take: it fetches the base from `origin`, then rebases.
+local REBASE_TIMEOUT_SECONDS = 120
+
+---Rebases the branch of the worktree `target` (its name or its path) onto the default branch on
+---`origin`, without waiting: `orca-term worktree rebase <target> --json`. The core refuses an agent
+---in a turn (`busy`), changes not committed (`dirty`, with the `files`), an operation already in
+---progress (`operation_in_progress`) and a repository with no default branch on `origin`
+---(`no_remote_base`). A rebase that stops on conflicts stays in progress and fails as
+---`rebase_conflict`, with the `files`.
+---@param target string
+---@param cwd string
+---@param on_done fun(rebased: orca_term.Rebased?, err: orca_term.Error?)
+function M.worktree_rebase(target, cwd, on_done)
+  run_async({ 'worktree', 'rebase', target }, cwd, on_done, REBASE_TIMEOUT_SECONDS)
+end
+
+---Aborts the rebase in progress in the worktree `target`, without waiting:
+---`orca-term worktree rebase <target> --abort --json`. A worktree with no rebase in progress fails
+---as `no_rebase`.
+---@param target string
+---@param cwd string
+---@param on_done fun(aborted: orca_term.RebaseAborted?, err: orca_term.Error?)
+function M.worktree_rebase_abort(target, cwd, on_done)
+  run_async({ 'worktree', 'rebase', target, '--abort' }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---Types into the running agent of the worktree `target` one prompt asking it to resolve the
+---conflicts its rebase stopped on, without waiting: `orca-term agent resolve <target> --json`. A
+---worktree with no rebase in progress fails as `no_rebase`, and one whose agent is not running as
+---`no_holder`.
+---@param target string
+---@param cwd string
+---@param on_done fun(sent: orca_term.ResolveSent?, err: orca_term.Error?)
+function M.agent_resolve(target, cwd, on_done)
+  run_async({ 'agent', 'resolve', target }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a
