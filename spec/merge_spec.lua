@@ -243,6 +243,28 @@ describe('merging a pull request', function()
     assert.are.same({ 'pr merge 12 --rebase', 'pr merge 12 --merge' }, merges(repo))
   end)
 
+  it('warns, and keeps the row open, when GitHub still shows it open after gh merged', function()
+    local repo = merge_repo(view('OPEN', { reviewDecision = 'APPROVED' }))
+    vim.fn.writefile({}, repo.gh .. '/merge-held')
+    local ui = support.stub_ui({ select = { 'Merge pull request', 'Squash and merge' } })
+    local seen = #ui.notes
+
+    press_on('.', 'demo')
+
+    assert.are.equal('orca-term: merging PR #12 of demo', note_after(ui, seen).message)
+    assert.are.same({
+      message = 'orca-term: gh accepted the merge of PR #12 (squash), but GitHub still shows it '
+        .. 'open: a merge queue or a required check may be holding it; run orca-term pr refresh '
+        .. 'demo later',
+      level = vim.log.levels.WARN,
+    }, note_after(ui, seen + 1))
+    assert.are.same({ 'pr merge 12 --squash' }, merges(repo))
+    assert.are.equal('open', support.listed(repo, 'demo').pr.state)
+    vim.wait(300)
+    local _, group = row_of('demo')
+    assert.are.equal('OrcaTermPrPassing', group)
+  end)
+
   it("shows the core's reason on a refusal, and gh's words for anything else", function()
     local repo = merge_repo(view('OPEN', { reviewDecision = 'REVIEW_REQUIRED' }))
     local ui = support.stub_ui({ select = { 'Squash and merge' } })

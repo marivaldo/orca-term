@@ -165,20 +165,23 @@ fn merge_view(run: &GhRun) -> MergeView {
 }
 
 /// What `pr merge` keeps once gh merged `before` (the pull request as it was asked about before
-/// the merge): `after`, gh's answer asked again, when it says the pull request is merged; else
-/// `before`, marked merged, since GitHub may not show the merge yet.
+/// the merge): `after`, gh's answer asked again, whenever it names the pull request, merged or
+/// not (a merge queue, auto-merge or a required check can leave it open although `gh pr merge`
+/// succeeded); else, when gh could not say, `before`, marked merged, since GitHub may simply not
+/// show the merge yet.
 pub(crate) fn merged_pr(before: &PullRequest, after: Found) -> PullRequest {
     match after {
-        Found::Pr(pr) if pr.state == PrState::Merged => pr,
-        Found::Pr(_) | Found::NoPr | Found::Unavailable(_) => PullRequest {
+        Found::Pr(pr) => pr,
+        Found::NoPr | Found::Unavailable(_) => PullRequest {
             state: PrState::Merged,
             ..before.clone()
         },
     }
 }
 
-/// What `pr merge` reports: the worktree, its pull request as `pr refresh` keeps it (merged), and
-/// the method used. The worktree and its local branch are as they were.
+/// What `pr merge` reports: the worktree, its pull request as `pr refresh` keeps it (merged, or
+/// still open when GitHub holds it), and the method used. The worktree and its local branch are as
+/// they were.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrMerged {
     pub(crate) name: String,
@@ -194,6 +197,12 @@ impl PrMerged {
             Found::Pr(pr) => Some(pr),
             Found::NoPr | Found::Unavailable(_) => None,
         }
+    }
+
+    /// Whether the pull request is recorded merged. `false` when gh accepted the merge but GitHub
+    /// still shows the pull request open, as a merge queue or a required check may hold it.
+    pub(crate) fn is_merged(&self) -> bool {
+        self.pr().is_some_and(|pr| pr.state == PrState::Merged)
     }
 }
 
@@ -317,30 +326,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_merged_pull_request_is_ghs_answer_or_else_the_one_asked_about_marked_merged() {
-        let before = PullRequest {
+    /// Pull request 12, open, with passing checks: as gh shows it before the merge.
+    fn open_pr() -> PullRequest {
+        PullRequest {
             number: 12,
             title: "Fix".to_owned(),
             state: PrState::Open,
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::Passing,
-        };
+        }
+    }
+
+    /// What `pr merge` reports with `pr` kept.
+    fn report(pr: PullRequest) -> PrMerged {
+        PrMerged {
+            name: "demo".to_owned(),
+            path: PathBuf::from("/l/demo"),
+            facts: PrFacts {
+                fetched_at: 1,
+                found: Found::Pr(pr),
+            },
+            method: Method::Squash,
+        }
+    }
+
+    #[test]
+    fn a_merged_answer_is_kept_as_gh_gives_it() {
         let after = PullRequest {
             state: PrState::Merged,
             checks: Checks::None,
-            ..before.clone()
+            ..open_pr()
         };
-        assert_eq!(merged_pr(&before, Found::Pr(after.clone())), after);
+        let kept = merged_pr(&open_pr(), Found::Pr(after.clone()));
+        assert_eq!(kept, after);
+        assert!(report(kept).is_merged());
+    }
+
+    #[test]
+    fn an_answer_still_open_or_a_draft_is_kept_open_and_not_called_merged() {
+        let kept = merged_pr(&open_pr(), Found::Pr(open_pr()));
+        assert_eq!(
+            kept,
+            open_pr(),
+            "a merge queue or a required check holds it"
+        );
+        assert!(!report(kept).is_merged());
+        let draft = PullRequest {
+            state: PrState::Draft,
+            ..open_pr()
+        };
+        assert_eq!(merged_pr(&open_pr(), Found::Pr(draft.clone())), draft);
+    }
+
+    #[test]
+    fn gh_unable_to_say_keeps_the_one_asked_about_marked_merged() {
         let marked = PullRequest {
             state: PrState::Merged,
-            ..before.clone()
+            ..open_pr()
         };
-        assert_eq!(merged_pr(&before, Found::Pr(before.clone())), marked);
-        assert_eq!(merged_pr(&before, Found::NoPr), marked);
-        assert_eq!(
-            merged_pr(&before, Found::Unavailable("slow".to_owned())),
-            marked
-        );
+        assert_eq!(merged_pr(&open_pr(), Found::NoPr), marked);
+        let slow = Found::Unavailable("slow".to_owned());
+        let kept = merged_pr(&open_pr(), slow);
+        assert_eq!(kept, marked);
+        assert!(report(kept).is_merged());
     }
 }

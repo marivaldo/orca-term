@@ -88,8 +88,9 @@ end
 ---to `create.body`, makes `gh pr view` answer pull request 12 for the `--head` branch (a draft with
 ---`--draft`), and prints its address. `gh pr merge <number>` (#136) prints `merge.err` on stderr
 ---and exits 1 when that file exists; else it turns `"state":"OPEN"` into `"state":"MERGED"` in the
----`<branch>.json` of that number and exits 0. Shell builtins only: the agent specs' PATH holds
----nothing else.
+---`<branch>.json` of that number and exits 0; when `merge-held` exists it exits 0 and leaves the
+---pull request open, as a merge queue or a required check may. Shell builtins only: the agent
+---specs' PATH holds nothing else.
 local FAKE_GH = {
   'd="$ORCA_TERM_FAKE_GH"',
   '[ -n "$d" ] && printf \'%s\\n\' "$*" >> "$d/calls"',
@@ -98,6 +99,7 @@ local FAKE_GH = {
   '    while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line" >&2; done < "$d/merge.err"',
   '    exit 1',
   '  fi',
+  '  [ -f "$d/merge-held" ] && exit 0',
   '  open=\'"state":"OPEN"\'',
   '  for file in "$d"/*.json; do',
   '    [ -f "$file" ] || continue',

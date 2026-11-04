@@ -618,9 +618,22 @@ function M.menu_items(worktree)
   return items
 end
 
+---What the person is warned of when gh accepted the merge of `merged`'s pull request but GitHub
+---still shows it open, as a merge queue or a required check may hold it: the core's text words.
+---@param merged orca_term.PrMerged
+---@return string
+function M.held_message(merged)
+  local pr = merged.pr or {}
+  return (
+    'gh accepted the merge of PR #%d (%s), but GitHub still shows it %s: a merge queue or a '
+    .. 'required check may be holding it; run orca-term pr refresh %s later'
+  ):format(pr.number or 0, merged.method, pr.state or 'open', merged.name)
+end
+
 ---`Merge pull request` in the menu: asks how, then merges the open pull request of `worktree`
 ---through the core (`pr merge`, without blocking). On success it says `merged PR #N: <url>` and
----reads the sidebar again, so the row shows the pull request merged; on a refusal it tells the
+---reads the sidebar again, so the row shows the pull request merged; when gh accepted the merge
+---but GitHub still shows it open, it warns so (`held_message`) instead; on a refusal it tells the
 ---core's reason. `Cancel` merges nothing. A worktree whose cached pull request is not open or a
 ---draft only says so.
 ---@param worktree orca_term.Worktree
@@ -649,7 +662,11 @@ function M.merge_pr(worktree, primary)
         return
       end
       local pr = merged.pr or {}
-      info(('merged PR #%d: %s'):format(pr.number or number, pr.url or ''))
+      if merged.merged == false then
+        warn(M.held_message(merged))
+      else
+        info(('merged PR #%d: %s'):format(pr.number or number, pr.url or ''))
+      end
       refresh_sidebar()
     end)
   end)

@@ -86,7 +86,9 @@ the adapters, and returns a domain value that `output` prints.
   alone when the body is empty); `pr create` prints `<name>: created PR #12 (draft): <url>`
   (without `(draft)` when it is not one), then, when files had uncommitted changes, `1 file with
   uncommitted changes was left out of the pull request` (`N files ... were`, #132). `pr merge`
-  prints `<name>: merged PR #12 (squash): <url>` (#136).
+  prints `<name>: merged PR #12 (squash): <url>` (#136), or, when GitHub still shows it open after
+  gh accepted the merge, `<name>: gh accepted the merge of PR #12 (squash), but GitHub still shows
+  it open: ...; run orca-term pr refresh <name> later`.
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm` (with `stopped_agent`, whether its agent was stopped first, #94), `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
   null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
@@ -141,7 +143,8 @@ the adapters, and returns a domain value that `output` prints.
   `title`, `body`, `base` (the default branch), `branch`, `commits` (ahead of the base) and
   `uncommitted` (files with changes not committed); `pr create` prints `name`, `path`, `pr` as
   `pr refresh` shows it, `pushed` (always `true`) and `uncommitted`. `pr merge` (#136) prints
-  `name`, `path`, `pr` as `pr refresh` shows it and `method` (`squash`, `merge` or `rebase`).
+  `name`, `path`, `pr` as `pr refresh` shows it, `method` (`squash`, `merge` or `rebase`) and
+  `merged` (`false` when GitHub still shows it open).
 
 ### ops
 
@@ -333,8 +336,8 @@ the adapters, and returns a domain value that `output` prints.
   `prerequisite`), ask gh `gh pr view <branch>` with the merge fields through `pr_refresh::view`
   and refuse what `merge::check_mergeable` refuses, then `gh pr merge <number>
   --squash|--merge|--rebase` (60 s at most, never `--delete-branch`; a failure is gh's first
-  line), then ask gh again as `pr refresh` does (`pr_refresh::ask`) and keep the merged pull
-  request in `pr.json` (`pr_refresh::keep`, notifying). The worktree and its branch are not
+  line), then ask gh again as `pr refresh` does (`pr_refresh::ask`) and keep what `merged_pr`
+  chooses in `pr.json` (`pr_refresh::keep`, notifying). The worktree and its branch are not
   touched.
 
 ### adapters
@@ -603,8 +606,9 @@ the adapters, and returns a domain value that `output` prints.
   and to merge (`merge_args`, never `--delete-branch`) and its time limit, the refusals
   (`check_mergeable`: gh unable to say, no open pull request, a draft, `CONFLICTING`,
   `CHANGES_REQUESTED` or `REVIEW_REQUIRED`), the pull request kept after the merge (`merged_pr`:
-  gh's answer when it says merged, else the one asked about, marked merged), and what `pr merge`
-  reports (`PrMerged`).
+  gh's answer whenever it names the pull request, so one still open stays open; the one asked
+  about, marked merged, only when gh cannot say), and what `pr merge` reports (`PrMerged`, whose
+  `is_merged` is `false` while GitHub still shows it open).
 
 ### Domain types
 
@@ -1606,8 +1610,9 @@ what they print.
   (`MERGE_PR`) before `Remove worktree` only while the worktree's cached `pr` is `open` or
   `draft`; `merge_pr` asks `Merge PR #<n> of <worktree>?` with `MERGE_METHODS` (`Squash and
   merge` first, `Create a merge commit`, `Rebase and merge`, `Cancel`), then runs `core.pr_merge`
-  without blocking: on success `merged PR #N: <url>` and the sidebar read again, on a refusal the
-  core's message; `merge_pr_current` (`:OrcaTerm pr-merge`, `<Plug>(OrcaTermMergePr)`) does it for
+  without blocking: on success `merged PR #N: <url>` and the sidebar read again, a warning
+  (`held_message`, the core's words) when the core says `merged: false`, on a refusal the core's
+  message; `merge_pr_current` (`:OrcaTerm pr-merge`, `<Plug>(OrcaTermMergePr)`) does it for
   the worktree under the cursor in the sidebar (`sidebar.merge_pr_here`), else the current tab's
   worktree.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and

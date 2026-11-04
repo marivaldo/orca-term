@@ -6,9 +6,9 @@
 //! open pull request (`no_open_pr`), a draft (`pr_draft`), a conflict with the base
 //! (`pr_conflicting`) and a review that blocks it (`not_approved`). Then it runs
 //! `gh pr merge <number> --squash|--merge|--rebase`, never `--delete-branch`. Last it asks gh
-//! again, as `pr refresh` does, and keeps the merged pull request in `pr.json` through the same
-//! writer, so the sidebar shows it merged at once. The worktree and its local branch are left as
-//! they are.
+//! again, as `pr refresh` does, and keeps its answer in `pr.json` through the same writer, so the
+//! sidebar shows it merged at once, or still open when a merge queue or a required check holds it
+//! (`merge::merged_pr`). The worktree and its local branch are left as they are.
 
 use std::path::Path;
 

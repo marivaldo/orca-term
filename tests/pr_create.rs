@@ -40,8 +40,10 @@ use serde_json::{Value, json};
 /// `gh-<branch>.json` holds, exit 0; else what `gh-<branch>.err` holds on stderr, exit 4; else
 /// gh's own words for a branch with no pull request, exit 1. `gh pr merge <number>` (#136) prints
 /// `gh-merge.err` on stderr and exits 1 when that file exists; else it turns `"state":"OPEN"` into
-/// `"state":"MERGED"` in the `gh-<branch>.json` of that number (not when `gh-merge-lag` exists, as
-/// GitHub may lag) and exits 0. Shell builtins only: its PATH holds nothing else.
+/// `"state":"MERGED"` in the `gh-<branch>.json` of that number and exits 0. When `gh-merge-held`
+/// exists it exits 0 and leaves the pull request open, as a merge queue or a required check may;
+/// when `gh-merge-forget` exists it empties that file instead, so gh can no longer say. Shell
+/// builtins only: its PATH holds nothing else.
 const FAKE_GH: &str = r#"#!/bin/sh
 dir="${0%/*}"
 printf '%s|%s\n' "$(pwd -P)" "$*" >> "$dir/gh.calls"
@@ -50,7 +52,7 @@ if [ "$1 $2" = "pr merge" ]; then
     while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line" >&2; done < "$dir/gh-merge.err"
     exit 1
   fi
-  [ -f "$dir/gh-merge-lag" ] && exit 0
+  [ -f "$dir/gh-merge-held" ] && exit 0
   open='"state":"OPEN"'
   for file in "$dir"/gh-*.json; do
     [ -f "$file" ] || continue
@@ -58,9 +60,13 @@ if [ "$1 $2" = "pr merge" ]; then
     IFS= read -r line < "$file" || :
     case "$line" in
       *"\"number\":$3,"*|*"\"number\":$3}"*)
-        case "$line" in
-          *$open*) printf '%s"state":"MERGED"%s\n' "${line%%$open*}" "${line#*$open}" > "$file" ;;
-        esac ;;
+        if [ -f "$dir/gh-merge-forget" ]; then
+          : > "$file"
+        else
+          case "$line" in
+            *$open*) printf '%s"state":"MERGED"%s\n' "${line%%$open*}" "${line#*$open}" > "$file" ;;
+          esac
+        fi ;;
     esac
   done
   exit 0
@@ -629,6 +635,7 @@ fn merge_squashes_by_default_records_it_merged_and_leaves_the_worktree_and_its_b
     assert_eq!(merged["name"], "demo");
     assert_eq!(merged["path"], demo.to_str().unwrap());
     assert_eq!(merged["method"], "squash");
+    assert_eq!(merged["merged"], true);
     assert_eq!(without_time(merged["pr"].clone()), merged_pr());
     let place = demo.display();
     assert_eq!(
@@ -821,15 +828,49 @@ fn anything_else_github_refuses_comes_back_as_ghs_first_line() {
 }
 
 #[test]
-fn a_merge_github_does_not_show_yet_is_recorded_merged() {
+fn a_merge_gh_cannot_read_back_is_recorded_merged() {
     let repo = PrRepo::new();
     repo.new_worktree("demo");
     answer_pr(&repo, "OPEN", false, "MERGEABLE", "APPROVED");
-    fs::write(repo.fixture.bin.join("gh-merge-lag"), "").unwrap();
+    fs::write(repo.fixture.bin.join("gh-merge-forget"), "").unwrap();
 
     let merged = repo.json_of(&["pr", "merge", "demo", "--rebase"]);
 
     assert_eq!(merged["method"], "rebase");
+    assert_eq!(merged["merged"], true);
     assert_eq!(without_time(merged["pr"].clone()), merged_pr());
     assert_eq!(without_time(repo.listed_pr("demo")), merged_pr());
+}
+
+#[test]
+fn a_merge_github_still_shows_open_is_kept_open_and_never_called_merged() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    answer_pr(&repo, "OPEN", false, "MERGEABLE", "APPROVED");
+    fs::write(repo.fixture.bin.join("gh-merge-held"), "").unwrap();
+    let mut open = merged_pr();
+    open["state"] = json!("open");
+
+    let out = repo.ok(&["pr", "merge", "demo"]);
+
+    assert_eq!(
+        out,
+        "demo: gh accepted the merge of PR #12 (squash), but GitHub still shows it open: a merge \
+         queue or a required check may be holding it; run orca-term pr refresh demo later\n"
+    );
+    assert_eq!(
+        without_time(repo.listed_pr("demo")),
+        open,
+        "the cache says open"
+    );
+
+    let held = repo.json_of(&["pr", "merge", "demo", "--merge"]);
+
+    assert_eq!(held["merged"], false);
+    assert_eq!(held["method"], "merge");
+    assert_eq!(without_time(held["pr"].clone()), open);
+    assert_eq!(
+        merges(&repo),
+        ["pr merge 12 --squash", "pr merge 12 --merge"]
+    );
 }

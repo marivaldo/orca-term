@@ -504,17 +504,23 @@ asks gh about the pull request and refuses, merging nothing:
 - gh missing or not logged in (`prerequisite`, exit code 9), in the words `pr create` uses.
 
 Then it runs `gh pr merge <number> --squash` (or `--merge`, `--rebase`). Anything else GitHub
-refuses, such as a merge queue or a required check, comes back as gh's own first line. It never
-passes `--delete-branch`: the worktree and its local branch stay as they are, as in Orca, and you
-remove the worktree when you are done with it. Last it keeps the merged pull request as `pr
-refresh` would, so `worktree ls` shows it merged at once:
+refuses comes back as gh's own first line. It never passes `--delete-branch`: the worktree and its
+local branch stay as they are, as in Orca, and you remove the worktree when you are done with it.
+Last it asks gh again and keeps the answer as `pr refresh` would, so `worktree ls` shows it merged
+at once:
 
 ```text
 demo: merged PR #12 (squash): https://github.com/o/r/pull/12
 ```
 
-With `--json` it prints the worktree's `name` and `path`, its `pr` as `pr refresh` shows it and
-the `method` (`squash`, `merge` or `rebase`).
+A merge queue, auto-merge or a required check can make gh accept the merge while the pull request
+stays open. orca-term then never says it is merged: it keeps it open and prints `demo: gh accepted
+the merge of PR #12 (squash), but GitHub still shows it open: a merge queue or a required check
+may be holding it; run orca-term pr refresh demo later`. When gh cannot say at all, the pull
+request is recorded merged, since GitHub may only be slow to show it.
+
+With `--json` it prints the worktree's `name` and `path`, its `pr` as `pr refresh` shows it, the
+`method` (`squash`, `merge` or `rebase`) and `merged` (`false` when GitHub still shows it open).
 
 `worktree ls --json` and `worktree detail --json` show what the last refresh found as each
 worktree's `pr`: `null` when it never ran, else `fetched_at` (milliseconds since the Unix epoch)
@@ -555,8 +561,9 @@ To merge a pull request from the sidebar, press `.` on a worktree whose pull req
 draft and choose `Merge pull request` (the entry is not offered otherwise). It asks `Merge PR #12
 of demo?` with `Squash and merge`, `Create a merge commit`, `Rebase and merge` and `Cancel`, then
 merges through the core (`pr merge`) without blocking Neovim. A message says `merged PR #12:
-<url>` and the row's `PR` turns purple; when the core refuses, for example because the pull request
-is a draft or needs an approving review, the reason is shown. `:OrcaTerm pr-merge`
+<url>` and the row's `PR` turns purple; when GitHub still shows it open after gh accepted the merge,
+a warning says so and the row stays as it was; when the core refuses, for example because the pull
+request is a draft or needs an approving review, the reason is shown. `:OrcaTerm pr-merge`
 (`<Plug>(OrcaTermMergePr)`) does the same for the worktree under the cursor in the sidebar, or for
 the worktree whose tab you are in.
 

@@ -662,8 +662,8 @@ function M.pr_create(target, title, body, draft, cwd, on_done)
   end, PR_CREATE_TIMEOUT_SECONDS)
 end
 
----What `pr merge --json` prints: the worktree, its merged pull request as `pr refresh` shows it,
----and the method used.
+---What `pr merge --json` prints: the worktree, its pull request as `pr refresh` shows it, the
+---method used, and whether it is merged.
 ---@class orca_term.PrMerged
 ---@field contract integer
 ---@field version string
@@ -671,6 +671,8 @@ end
 ---@field path string
 ---@field pr orca_term.Pr
 ---@field method string `squash`, `merge` or `rebase`
+---@field merged boolean `false` when gh accepted the merge but GitHub still shows the pull request
+---open, as a merge queue or a required check may hold it
 
 ---How long `pr merge` may take: it asks gh about the pull request, gives gh a minute to merge it,
 ---then asks gh about it again.

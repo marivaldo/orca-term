@@ -743,12 +743,20 @@ pub(crate) fn pr_merged(merged: &PrMerged, format: Format) -> anyhow::Result<()>
 
 fn render_pr_merged(merged: &PrMerged) -> String {
     let method = merged.method.name();
+    let name = &merged.name;
     match merged.pr() {
+        Some(pr) if merged.is_merged() => {
+            format!("{name}: merged PR #{} ({method}): {}", pr.number, pr.url)
+        }
+        // gh accepted the merge, but GitHub holds the pull request: never say it is merged.
         Some(pr) => format!(
-            "{}: merged PR #{} ({method}): {}",
-            merged.name, pr.number, pr.url
+            "{name}: gh accepted the merge of PR #{} ({method}), but GitHub still shows it {}: a \
+             merge queue or a required check may be holding it; run orca-term pr refresh {name} \
+             later",
+            pr.number,
+            pr.state.name()
         ),
-        None => format!("{}: merged its PR ({method})", merged.name),
+        None => format!("{name}: merged its PR ({method})"),
     }
 }
 
@@ -1333,7 +1341,7 @@ mod tests {
     fn merge_says_the_pull_request_and_the_method() {
         use crate::domain::pr::merge::Method;
         use crate::domain::pr::{PrFacts, PullRequest};
-        let merged = |method| PrMerged {
+        let merged = |method, state| PrMerged {
             name: "demo".to_owned(),
             path: PathBuf::from("/l/demo"),
             facts: PrFacts {
@@ -1341,7 +1349,7 @@ mod tests {
                 found: Found::Pr(PullRequest {
                     number: 12,
                     title: "Fix".to_owned(),
-                    state: PrState::Merged,
+                    state,
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::Passing,
                 }),
@@ -1349,12 +1357,18 @@ mod tests {
             method,
         };
         assert_eq!(
-            render_pr_merged(&merged(Method::Squash)),
+            render_pr_merged(&merged(Method::Squash, PrState::Merged)),
             "demo: merged PR #12 (squash): https://github.com/o/r/pull/12"
         );
         assert_eq!(
-            render_pr_merged(&merged(Method::Rebase)),
+            render_pr_merged(&merged(Method::Rebase, PrState::Merged)),
             "demo: merged PR #12 (rebase): https://github.com/o/r/pull/12"
+        );
+        assert_eq!(
+            render_pr_merged(&merged(Method::Squash, PrState::Open)),
+            "demo: gh accepted the merge of PR #12 (squash), but GitHub still shows it open: a \
+             merge queue or a required check may be holding it; run orca-term pr refresh demo \
+             later"
         );
     }
 

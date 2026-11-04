@@ -131,14 +131,17 @@ struct PrCreatedView<'a> {
     uncommitted: usize,
 }
 
-/// `pr merge --json` (#136): the worktree's `name` and `path`, its merged pull request as
-/// `pr refresh` shows it (`pr`), and the `method` used (`squash`, `merge` or `rebase`).
+/// `pr merge --json` (#136): the worktree's `name` and `path`, its pull request as `pr refresh`
+/// shows it (`pr`), the `method` used (`squash`, `merge` or `rebase`), and whether it is
+/// `merged`: `false` when gh accepted the merge but GitHub still shows it open (a merge queue or
+/// a required check holding it).
 #[derive(Debug, Serialize)]
 struct PrMergedView<'a> {
     name: &'a str,
     path: &'a Path,
     pr: PrView<'a>,
     method: &'a str,
+    merged: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -614,6 +617,7 @@ pub(crate) fn merged_pr(merged: &PrMerged) -> serde_json::Result<String> {
         path: &merged.path,
         pr: pr_view(&merged.facts),
         method: merged.method.name(),
+        merged: merged.is_merged(),
     })
 }
 
@@ -1254,7 +1258,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","pr":{{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"merged","url":"https://github.com/o/r/pull/12","checks":"passing"}},"method":"squash"}}"#
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","pr":{{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"merged","url":"https://github.com/o/r/pull/12","checks":"passing"}},"method":"squash","merged":true}}"#
             )
         );
     }
