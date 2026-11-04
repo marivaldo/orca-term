@@ -631,7 +631,7 @@ and reads the sidebar again; a rebase that stops on conflicts warns with the fil
 
 ## Push
 
-On macOS the lane's agent cannot push from inside claude's sandbox, so orca-term pushes for it,
+On macOS a worktree's agent cannot push from inside claude's sandbox, so orca-term pushes for it,
 from the core, as Orca's **Push** and its separate **Force push with lease** do.
 `orca-term worktree push <worktree>` runs `git push -u origin <branch>`, which sets the upstream
 the first time and never forces. git never prompts for credentials there.

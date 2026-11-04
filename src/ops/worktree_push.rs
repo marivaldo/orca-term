@@ -88,7 +88,7 @@ fn check_origin(primary: &PrimaryCheckout, worktree: &Worktree) -> Result<()> {
 }
 
 /// Pushes `branch` of `worktree` to `origin`, with a lease on what git last saw there when
-/// `with_lease`. A divergence is the typed `push_diverged`; any other refusal `push_failed`.
+/// `with_lease`. A diverged branch is the typed `push_diverged`; any other refusal `push_failed`.
 fn push_to_origin(worktree: &Worktree, branch: &Branch, with_lease: bool) -> Result<Outcome> {
     let seen = if with_lease {
         git::read_ref(&worktree.path, &push::tracking_ref(branch))?

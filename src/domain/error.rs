@@ -205,7 +205,7 @@ pub(crate) enum TypedError {
     )]
     ResolveNoHolder { name: String, path: PathBuf },
     /// `worktree push` of the worktree's branch failed, for `reason`, git's own words (#146): any
-    /// failure but a divergence, the refusal of a lease included. Its kind and exit code are
+    /// failure but a diverged branch, the refusal of a lease included. Its kind and exit code are
     /// `push_failed`'s.
     #[error("could not push branch {branch} of worktree {name} to origin: {reason}")]
     WorktreePushFailed {
