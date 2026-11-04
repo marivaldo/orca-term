@@ -182,7 +182,11 @@ fn no_arguments_without_a_terminal_print_the_usage() {
     sandbox.fake_nvim();
     let out = sandbox.run(&[], &[]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "nothing on stdout"
+    );
     assert!(stderr(&out).contains(USAGE), "{}", stderr(&out));
     assert_eq!(sandbox.recorded("nvim"), None, "nvim must not run");
 }
