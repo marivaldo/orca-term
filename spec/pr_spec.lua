@@ -270,7 +270,7 @@ describe('the pull requests in the sidebar', function()
     wait_for_pr('demo', 'OrcaTermPrPending')
     assert.are.equal(1, #support.gh_calls(repo))
     assert.are.equal(
-      'pr view demo --json number,title,state,isDraft,url,statusCheckRollup',
+      'pr view demo --json number,title,state,isDraft,url,statusCheckRollup,headRefOid',
       support.gh_calls(repo)[1]
     )
 

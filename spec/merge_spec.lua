@@ -321,4 +321,25 @@ describe('merging a pull request', function()
       note_after(ui, 1).message
     )
   end)
+
+  it('deletes the branch on removal after a squash merge, saying merged as PR', function()
+    local repo, path = merge_repo(nil)
+    support.run({ 'git', '-C', path, 'commit', '--quiet', '--allow-empty', '-m', 'Fix' })
+    local tip = vim.trim(support.git(repo, { 'rev-parse', 'refs/heads/demo' }))
+    refresh_to(repo, view('OPEN', { headRefOid = tip }), 'OrcaTermPrPassing')
+    support.stub_ui({ select = { 'Merge pull request', 'Squash and merge' } })
+    press_on('.', 'demo')
+    wait_for_pr('demo', 'OrcaTermPrMerged')
+    local calls = #support.gh_calls(repo)
+    local ui = support.stub_ui({ select = { 'Remove worktree', 'Remove' } })
+
+    press_on('.', 'demo')
+
+    assert.are.equal(
+      'orca-term: removed worktree demo and its branch demo (merged as PR #12)',
+      note_after(ui, 0).message
+    )
+    assert.are.equal('', vim.trim(support.git(repo, { 'branch', '--list', 'demo' })))
+    assert.are.equal(calls, #support.gh_calls(repo), 'the removal never runs gh')
+  end)
 end)

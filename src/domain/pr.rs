@@ -1,11 +1,16 @@
 //! Domain: a worktree's pull request on GitHub and the state of its checks (#87), as the GitHub
 //! CLI reports them, and `pr.json`, where `pr refresh` keeps what it last found.
 //!
-//! `pr refresh` asks `gh pr view <branch> --json number,title,state,isDraft,url,statusCheckRollup`
-//! in each worktree ([`view_args`]) and turns what gh printed into one of three findings
-//! ([`Found`]): the pull request, with its state (`open`, `draft`, `merged` or `closed`) and its
-//! checks in one word (`passing`, `failing`, `pending` or `none`); no pull request; or gh could not
-//! say, with the reason (gh missing, not logged in, not a GitHub remote, too slow).
+//! `pr refresh` asks `gh pr view <branch> --json
+//! number,title,state,isDraft,url,statusCheckRollup,headRefOid` in each worktree ([`view_args`])
+//! and turns what gh printed into one of three findings ([`Found`]): the pull request, with its
+//! state (`open`, `draft`, `merged` or `closed`), its checks in one word (`passing`, `failing`,
+//! `pending` or `none`) and its head commit; no pull request; or gh could not say, with the reason
+//! (gh missing, not logged in, not a GitHub remote, too slow).
+//!
+//! The head commit is what lets `worktree rm` delete a branch GitHub squash-merged (#137,
+//! [`merged_as`]): a `merged` pull request whose head is exactly the branch's tip holds every
+//! commit of the branch.
 //!
 //! `pr.json`, in the worktree's admin directory, is a cache, never a source of truth: only
 //! `pr refresh` writes it, replacing it whole with no lock, the last write winning. `worktree ls`
@@ -30,7 +35,7 @@ pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const GH_MISSING: &str = "GitHub CLI is unavailable";
 
 /// The fields `gh pr view` is asked for.
-const VIEW_FIELDS: &str = "number,title,state,isDraft,url,statusCheckRollup";
+const VIEW_FIELDS: &str = "number,title,state,isDraft,url,statusCheckRollup,headRefOid";
 
 /// What gh says on stderr when the branch has no pull request.
 const NO_PULL_REQUEST: &str = "no pull requests found";
@@ -110,6 +115,23 @@ pub(crate) struct PullRequest {
     pub(crate) state: PrState,
     pub(crate) url: String,
     pub(crate) checks: Checks,
+    /// The full id of the pull request's head commit on GitHub (`headRefOid`), `None` when it is
+    /// not known: a `pr.json` written before #137 has no `head`, and reads as `None`, and one
+    /// written now carries it, which an older orca-term ignores. So it needs no new schema.
+    #[serde(default)]
+    pub(crate) head: Option<String>,
+}
+
+/// The number of the pull request in `found` when it proves a branch whose tip is the commit
+/// `tip` merged (#137): the pull request is `merged`, and its head commit is exactly `tip`, so
+/// GitHub merged every commit the branch has, even when it squashed or rebased them. A head not
+/// known never proves anything, nor does a branch with a commit after the merged head.
+pub(crate) fn merged_as(found: &Found, tip: &str) -> Option<u64> {
+    let Found::Pr(pr) = found else {
+        return None;
+    };
+    let same_head = pr.head.as_deref() == Some(tip);
+    (pr.state == PrState::Merged && same_head).then_some(pr.number)
 }
 
 /// What asking gh found.
@@ -196,6 +218,8 @@ struct GhView {
     url: String,
     #[serde(default)]
     status_check_rollup: Option<Vec<RollupItem>>,
+    #[serde(default)]
+    head_ref_oid: Option<String>,
 }
 
 /// One entry of `statusCheckRollup`: a check run (`status` and, once completed, `conclusion`) or
@@ -226,6 +250,7 @@ fn parse_view(stdout: &[u8]) -> Result<PullRequest> {
         state,
         url: view.url,
         checks: checks_of(view.status_check_rollup.as_deref().unwrap_or_default()),
+        head: view.head_ref_oid.filter(|head| !head.is_empty()),
     })
 }
 
@@ -398,9 +423,12 @@ mod tests {
         }
     }
 
+    /// A full commit id, as gh prints `headRefOid`.
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
     fn view(state: &str, draft: bool, rollup: &str) -> String {
         format!(
-            r#"{{"number":12,"title":"Fix the login","state":"{state}","isDraft":{draft},"url":"https://github.com/o/r/pull/12","statusCheckRollup":{rollup}}}"#
+            r#"{{"number":12,"title":"Fix the login","state":"{state}","isDraft":{draft},"url":"https://github.com/o/r/pull/12","statusCheckRollup":{rollup},"headRefOid":"{HEAD}"}}"#
         )
     }
 
@@ -420,7 +448,7 @@ mod tests {
                 "view",
                 "fix",
                 "--json",
-                "number,title,state,isDraft,url,statusCheckRollup"
+                "number,title,state,isDraft,url,statusCheckRollup,headRefOid"
             ]
         );
     }
@@ -440,6 +468,69 @@ mod tests {
         assert_eq!(pr.number, 12);
         assert_eq!(pr.title, "Fix the login");
         assert_eq!(pr.url, "https://github.com/o/r/pull/12");
+        assert_eq!(pr.head.as_deref(), Some(HEAD));
+    }
+
+    #[test]
+    fn a_head_gh_leaves_out_or_prints_empty_is_not_known() {
+        for json in [
+            r#"{"number":1,"title":"t","state":"OPEN","url":"u"}"#,
+            r#"{"number":1,"title":"t","state":"OPEN","url":"u","headRefOid":""}"#,
+        ] {
+            assert_eq!(pr_of(&exited(true, json, "")).head, None, "{json}");
+        }
+    }
+
+    /// Pull request 12 in `state`, with `head` as its head commit.
+    fn pr_with(state: PrState, head: Option<&str>) -> Found {
+        Found::Pr(PullRequest {
+            number: 12,
+            title: "t".to_owned(),
+            state,
+            url: "u".to_owned(),
+            checks: Checks::None,
+            head: head.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn only_a_merged_pull_request_whose_head_is_the_tip_proves_the_branch_merged() {
+        assert_eq!(
+            merged_as(&pr_with(PrState::Merged, Some(HEAD)), HEAD),
+            Some(12)
+        );
+        let newer = "fedcba9876543210fedcba9876543210fedcba98";
+        assert_eq!(
+            merged_as(&pr_with(PrState::Merged, Some(HEAD)), newer),
+            None,
+            "a commit after the merged head"
+        );
+        assert_eq!(
+            merged_as(&pr_with(PrState::Merged, None), HEAD),
+            None,
+            "a cache with no head"
+        );
+        for state in [PrState::Closed, PrState::Open, PrState::Draft] {
+            assert_eq!(
+                merged_as(&pr_with(state, Some(HEAD)), HEAD),
+                None,
+                "{state:?}"
+            );
+        }
+        assert_eq!(merged_as(&Found::NoPr, HEAD), None);
+        assert_eq!(merged_as(&Found::Unavailable("x".to_owned()), HEAD), None);
+    }
+
+    #[test]
+    fn a_file_written_before_the_head_was_kept_reads_with_no_head() {
+        let old = br#"{"schema":1,"fetched_at":3,"pr":{"number":12,"title":"t","state":"merged","url":"u","checks":"none"},"unavailable":null}"#;
+        assert_eq!(
+            read(Some(old)).usable(),
+            Some(PrFacts {
+                fetched_at: 3,
+                found: pr_with(PrState::Merged, None),
+            })
+        );
     }
 
     #[test]
@@ -535,6 +626,7 @@ mod tests {
             state: PrState::Draft,
             url: "u".to_owned(),
             checks: Checks::Pending,
+            head: Some(HEAD.to_owned()),
         };
         for found in [
             Found::Pr(pr),

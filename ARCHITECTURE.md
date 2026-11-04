@@ -211,7 +211,10 @@ the adapters, and returns a domain value that `output` prints.
   holder enters the admin directory, which git will not delete while it is the current one),
   check the dirty rule again (files written while stopping refuse as `dirty`, the agent left
   stopped), remove, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
-  id learnt before git removes the admin directory), delete or keep the branch.
+  id learnt before git removes the admin directory), delete or keep the branch. The branch's fate
+  reads the worktree's `pr.json` before the removal deletes it (#137): when git does not see the
+  branch merged into the default branch, a cached `merged` pull request whose head is exactly the
+  branch's tip deletes it as `DeletedMergedPr`, `merged as PR #N`. It never runs gh.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
 - `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
@@ -592,7 +595,9 @@ the adapters, and returns a domain value that `output` prints.
   else anything pending `pending`, else any success `passing`, else `none`), and `pr.json`
   (`{"schema": 1, "fetched_at", "pr": {...} | null, "unavailable": null | "<reason>"}`, read from
   any schema, never written over a newer one, an unusable one read as never fetched), and whether
-  a finding `changed`.
+  a finding `changed`. Since #137 gh is also asked for `headRefOid`, kept as the pull request's
+  optional `head`, and `merged_as` says when a `merged` pull request whose head is exactly a
+  branch's tip proves that branch merged.
 - `domain/pr/create.rs`: a new pull request (#132): the commits ahead read from `git log`
   (`parse_log`), the template's name (`is_template_name`, `TEMPLATE_DIRS`), the message as `gh pr
   create --fill` makes it (`compose`: the only commit's subject, else the branch name; the

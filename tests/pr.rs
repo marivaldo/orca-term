@@ -66,8 +66,11 @@ fn answer(fixture: &AgentRepo, branch: &str, view: &Value) {
     .unwrap();
 }
 
-/// What `gh pr view --json number,title,state,isDraft,url,statusCheckRollup` prints for pull
-/// request 12 in `state`, a draft or not, with the checks `rollup`.
+/// The head commit the fake `gh` reports for pull request 12.
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// What `gh pr view --json number,title,state,isDraft,url,statusCheckRollup,headRefOid` prints
+/// for pull request 12 in `state`, a draft or not, with the checks `rollup`.
 fn view(state: &str, draft: bool, rollup: &Value) -> Value {
     json!({
         "number": 12,
@@ -76,6 +79,7 @@ fn view(state: &str, draft: bool, rollup: &Value) -> Value {
         "isDraft": draft,
         "url": "https://github.com/o/r/pull/12",
         "statusCheckRollup": rollup,
+        "headRefOid": HEAD,
     })
 }
 
@@ -151,7 +155,7 @@ fn an_open_pull_request_with_running_checks_is_kept_and_shown_by_ls_and_detail()
     assert_eq!(
         gh_calls(&fixture),
         [format!(
-            "{}|pr view demo --json number,title,state,isDraft,url,statusCheckRollup",
+            "{}|pr view demo --json number,title,state,isDraft,url,statusCheckRollup,headRefOid",
             demo.display()
         )],
         "gh asked once, in the worktree, about its branch"
@@ -160,6 +164,10 @@ fn an_open_pull_request_with_running_checks_is_kept_and_shown_by_ls_and_detail()
     assert_eq!(file["schema"], 1);
     assert_eq!(file["unavailable"], Value::Null);
     assert_eq!(file["pr"]["state"], "open");
+    assert_eq!(
+        file["pr"]["head"], HEAD,
+        "the cache keeps the head commit (#137)"
+    );
     assert_eq!(file["fetched_at"], worktrees[0]["pr"]["fetched_at"]);
 }
 

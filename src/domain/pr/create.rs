@@ -220,7 +220,8 @@ pub(crate) fn check_no_open_pr(name: &str, found: &Found) -> Result<()> {
 
 /// The pull request gh just created, from what it printed (its address, on the last line), the
 /// title given and whether it is a draft: what `pr create` records when gh cannot read it back
-/// yet. Its checks have not started. `None` when gh printed no pull request's address.
+/// yet. Its checks have not started, and its head is left unknown until `pr refresh` reads it.
+/// `None` when gh printed no pull request's address.
 pub(crate) fn created_pr(stdout: &[u8], title: &str, readiness: Readiness) -> Option<PullRequest> {
     let text = String::from_utf8_lossy(stdout);
     let url = text.lines().map(str::trim).rfind(|line| !line.is_empty())?;
@@ -235,6 +236,7 @@ pub(crate) fn created_pr(stdout: &[u8], title: &str, readiness: Readiness) -> Op
         },
         url: url.to_owned(),
         checks: Checks::None,
+        head: None,
     })
 }
 
@@ -444,6 +446,7 @@ mod tests {
             state,
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::None,
+            head: None,
         })
     }
 

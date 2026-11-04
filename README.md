@@ -26,6 +26,11 @@ checks what orca-term needs on the machine.
 `orca-term worktree rm <worktree>` keeps the worktree's branch unless it is merged, and refuses
 modified or untracked files unless `--force`; an agent running there is stopped first (`stopped
 the agent of worktree <name>`), once those checks pass, so a refused removal leaves it running.
+A branch also counts as merged when its pull request, as `pr refresh`, `pr create` or `pr merge`
+last recorded it, is merged on GitHub with exactly the branch's tip as its head, as after a squash
+or rebase merge: the removal then says `deleted branch <name> (merged as PR #12)`. It reads only
+that record and never asks GitHub, so after merging on the web run `pr refresh` first. A branch
+with a commit after the merged head is kept, and so is one whose record predates the head.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
@@ -518,6 +523,9 @@ stays open. orca-term then never says it is merged: it keeps it open and prints 
 the merge of PR #12 (squash), but GitHub still shows it open: a merge queue or a required check
 may be holding it; run orca-term pr refresh demo later`. When gh cannot say at all, the pull
 request is recorded merged, since GitHub may only be slow to show it.
+
+Removing the worktree after the merge deletes its branch too, saying `merged as PR #12`, as long as
+the branch has no commit after the one GitHub merged.
 
 With `--json` it prints the worktree's `name` and `path`, its `pr` as `pr refresh` shows it, the
 `method` (`squash`, `merge` or `rebase`) and `merged` (`false` when GitHub still shows it open).
