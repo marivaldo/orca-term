@@ -61,6 +61,8 @@ the adapters, and returns a domain value that `output` prints.
   at most one method through). `worktree rebase <worktree> [--abort]` (#141) rebases the
   worktree's branch onto the default branch on `origin`, or aborts the rebase in progress, and
   `agent resolve <worktree>` types the prompt that resolves its conflicts into the agent.
+  `worktree push <worktree> [--force-with-lease]` (#146) pushes the worktree's branch to
+  `origin`, never forced unless a lease is asked for.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -150,7 +152,10 @@ the adapters, and returns a domain value that `output` prints.
   `remote_base` beside `primary` (`origin/main`, null when the repository has none); `worktree
   rebase` prints `name`, `path`, `base`, `outcome` (`rebased` or `up_to_date`) and `replayed`;
   `worktree rebase --abort` prints `name`, `path` and `aborted` (always `true`); `agent resolve`
-  prints `name`, `path`, `prompt` and `files`.
+  prints `name`, `path`, `prompt` and `files`. Since #146 `worktree ls` also prints `has_origin`
+  after `remote_base`; `worktree push` prints `name`, `path`, `branch`, `remote` (`origin/demo`),
+  `outcome` (`pushed` or `up_to_date`), `with_lease`, `uncommitted` and `pr` as `pr refresh`
+  shows it, read again after the push.
 
 ### ops
 
@@ -344,7 +349,7 @@ the adapters, and returns a domain value that `output` prints.
   create --base --head --title --body-file <file>|--body "" [--draft]` (60 s at most), then ask gh
   again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`, notifying);
   when gh does not show the new pull request yet, the record is made from the address `gh pr
-  create` printed. The only code that pushes (`cargo xtask gh-guard`).
+  create` printed. One of the two ops that push, with `worktree push` (`cargo xtask gh-guard`).
 - `ops/pr_merge.rs`: `pr merge` (#136): find the target (refusing a worktree whose directory is
   gone; one on no branch is `no_open_pr`), find gh (`pr_refresh::find_gh`; missing is
   `prerequisite`), ask gh `gh pr view <branch>` with the merge fields through `pr_refresh::view`
@@ -367,6 +372,15 @@ the adapters, and returns a domain value that `output` prints.
   rebase in progress (`no_rebase`), then `git::rebase_abort` and notify. The only code that
   fetches (`cargo xtask gh-guard`); `ops/worktree_ls.rs` also reads the base, from the local refs
   only, into `Fleet::remote_base`.
+- `ops/worktree_push.rs`: `worktree push` (#146): find the target, then refuse a worktree whose
+  directory is gone, one in the middle of a rebase or on no branch, and a repository with no
+  `origin` (`git::has_origin`); count the files with changes not committed, which are left out
+  (`create::count_uncommitted`); then `git::push_branch` with `PushMode::Plain`, or with
+  `PushMode::WithLease` on what `refs/remotes/origin/<branch>` holds (`git::read_ref`; none
+  expects no branch on `origin`). A plain push git rejects as a non-fast-forward is
+  `push_diverged`; any other failure, the refused lease included, is `WorktreePushFailed` (kind
+  `push_failed`) with git's words. Last `pr_refresh::refresh` reads the pull request again and
+  keeps it. One of the two ops that push, with `pr create` (`cargo xtask gh-guard`).
 - `ops/agent_resolve.rs`: `agent resolve` (#141): refuse a worktree whose directory is gone, one
   with no rebase in progress (`no_rebase`) and one whose holder is not alive (`ResolveNoHolder`,
   kind `no_holder`), then type `rebase::resolve_prompt` of `git::conflicted_files` into the agent
@@ -387,7 +401,11 @@ the adapters, and returns a domain value that `output` prints.
   `refs/remotes/origin/<default>` exists), `is_ancestor_of_head`, `fork_point`, `count_ahead_of`
   and `conflicted_files` ask, and `fetch_into` (`git fetch --quiet --no-tags origin <refspec>`,
   the only fetch, no prompt and no input), `rebase_onto` (`--no-autostash`, no prompt, no input,
-  `GIT_EDITOR=true`) and `rebase_abort` change.
+  `GIT_EDITOR=true`) and `rebase_abort` change. Since #146 `push_branch` takes a `PushMode`
+  (`Plain`, or `WithLease` adding `--force-with-lease=<branch>:<expected>`, the only place the
+  lease is written), runs git with `LC_ALL=C` and returns what `push::classify` read from git's
+  words; `has_origin` asks whether `remote.origin.url` is set; a forced `worktree_remove` passes
+  git's short `-f`.
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
@@ -647,6 +665,10 @@ the adapters, and returns a domain value that `output` prints.
   gh's answer whenever it names the pull request, so one still open stays open; the one asked
   about, marked merged, only when gh cannot say), and what `pr merge` reports (`PrMerged`, whose
   `is_merged` is `false` while GitHub still shows it open).
+- `domain/push.rs`: pushing a worktree's branch (#146): what git said after a push (`PushRun`:
+  pushed, up to date, diverged on a non-fast-forward, failed; `classify` reads it from git's
+  English words), the ref a lease reads (`tracking_ref`, `refs/remotes/origin/<branch>`), and what
+  `worktree push` reports (`Outcome`, `Pushed` and its text).
 - `domain/rebase.rs`: rebasing a worktree onto its base (#141): the temporary ref
   (`temp_ref`, under `refs/orca-term/rebase/`), the base (`RemoteBase`: shown as `origin/main`,
   its tracking ref and its refspec into the temporary ref), what a rebase did (`Outcome`,
@@ -706,6 +728,9 @@ validate"):
   base a worktree is rebased onto, what a rebase did and reports, and what an abort and
   `agent resolve` report; `RebaseAsk` (`domain/error.rs`): what was asked of a rebase that is not
   in progress (`Abort`, `Resolve`).
+- `PushRun`, `Outcome`, `Pushed` (`domain/push.rs`, #146): what git said after a push, what a push
+  that went through did, and what `worktree push` reports; `PushMode` (`adapters/git.rs`): a
+  plain push or one with a lease on an expected commit.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -1000,7 +1025,8 @@ validate"):
   Since #141 the kinds also include `operation_in_progress`, `no_remote_base`, `rebase_conflict`
   and `no_rebase`; `worktree rebase`'s `RebaseDirty` is `dirty` and `agent resolve`'s
   `ResolveNoHolder` is `no_holder`, and the error of `dirty` from `worktree rebase` and of
-  `rebase_conflict` carries the `files` they name.
+  `rebase_conflict` carries the `files` they name. Since #146 the kinds also include
+  `push_diverged`; `worktree push`'s `WorktreePushFailed` is `push_failed`.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
@@ -1024,7 +1050,9 @@ validate"):
   `agent resolve` with no running agent; 17 for `operation_in_progress`, a rebase, merge,
   cherry-pick or revert already in progress; 18 for `no_remote_base`, no default branch on
   `origin`; 19 for `rebase_conflict`, a rebase stopped on conflicts and left in progress; 20 for
-  `no_rebase`, an abort or a resolve with no rebase in progress.
+  `no_rebase`, an abort or a resolve with no rebase in progress. Since #146: 12 also for
+  `worktree push` when git fails or refuses the lease; 21 for `push_diverged`, a plain push git
+  rejected because the branch diverged from `origin/<branch>`.
 
 ## State and schema
 
@@ -1194,7 +1222,11 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   comments, in every file under `src/` but `src/ops/pr_refresh.rs`, and `"gh"` or `'gh'` anywhere
   in `lua/`, `plugin/` and `build.lua`. Since #141 it also rejects the literal `"fetch"` outside
   `src/adapters/git.rs` and a call of `fetch_into` outside `src/ops/worktree_rebase.rs`: only
-  `worktree rebase` fetches.
+  `worktree rebase` fetches. Since #146 a call of `push_branch` is allowed in
+  `src/ops/worktree_push.rs` too, the string literal `--force` (either quote) is rejected in every
+  file scanned, and a literal starting with `--force-with-lease` outside `src/adapters/git.rs`;
+  `src/output/json.rs` and `lua/orca-term/core.lua`, which name orca-term's own `worktree rm
+  --force` and `worktree push --force-with-lease`, are left out of both.
 - `cargo xtask schema-fixtures` (`xtask/src/schema_fixtures.rs`, #118) reads every
   `const *_SCHEMA: u64` under `src/` and rejects a value with no `tests/fixtures/schema-<n>/`, or
   finding no constant at all ("State and schema").
@@ -1326,7 +1358,8 @@ what they print.
   sidebar module is loaded; neither loads a module nor calls the core until a session names a
   buffer after the sidebar. Since #124 also `SessionLoadPre` (where Neovim has it, 0.12 and
   later) and `BufFilePre` while `g:SessionLoad` is set call `sidebar.session_loading` once the
-  sidebar module is loaded.
+  sidebar module is loaded. Since #146 also `push` and `<Plug>(OrcaTermPush)`
+  (`actions.push_current`).
 - `build.lua`: the build hook, at the root where lazy.nvim finds it and runs it by itself (other
   managers run `nvim -l build.lua`). It loads `install.lua` by its path, since the plugin is not on
   the runtimepath yet, runs `install.build`, yielding to lazy.nvim's coroutine while it waits, and
@@ -1387,7 +1420,9 @@ what they print.
   (#141) runs `worktree rebase <target>` without waiting (120 s at most, for the fetch), typed as
   `orca_term.Rebased`; `worktree_rebase_abort` runs it with `--abort` (10 s at most,
   `orca_term.RebaseAborted`) and `agent_resolve` runs `agent resolve <target>` (10 s at most,
-  `orca_term.ResolveSent`); the fleet carries `remote_base`.
+  `orca_term.ResolveSent`); the fleet carries `remote_base`. `worktree_push(target, with_lease,
+  cwd, on_done)` (#146) runs `worktree push <target> [--force-with-lease]` without waiting (120 s
+  at most), typed as `orca_term.Pushed`; the fleet carries `has_origin`.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1687,6 +1722,15 @@ what they print.
   on `rebase_conflict`; `abort_rebase` asks with `ABORT_REBASE_ANSWERS` first, then runs
   `core.worktree_rebase_abort`; `resolve_conflicts` runs `core.agent_resolve`. Each reads the
   sidebar again once the core answers.
+- Pushing a worktree (#146) lives in `actions.lua`: `menu_items(worktree, remote_base,
+  has_origin)` adds `Push` (`PUSH`) after the rebase entries when the worktree is on a branch and
+  the fleet has `has_origin` (the sidebar passes it to `menu`). `push` runs `core.worktree_push`
+  without blocking and tells the core's line, warning when files were left out; on
+  `push_diverged` it asks `Push rejected: <name> diverged from origin/<branch> (after a
+  rebase?)` with `FORCE_PUSH_ANSWERS` (`Force push (with lease)`, `Cancel`), and the first runs
+  `core.worktree_push` with the lease. `push_current` (`:OrcaTerm push`, `<Plug>(OrcaTermPush)`)
+  does it for the worktree under the cursor in the sidebar (`sidebar.push_here`), else the current
+  tab's worktree. Each reads the sidebar again once the core answers.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
