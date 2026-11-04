@@ -18,10 +18,11 @@ use crate::domain::pr::{self, Found, GhRun, PrFacts, PrState, PullRequest};
 /// How long gh may take to merge the pull request before it is stopped.
 pub(crate) const MERGE_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// The fields `gh pr view` is asked for before a merge: those `pr refresh` reads, then whether
-/// GitHub can merge it and what its review decided.
+/// The fields `gh pr view` is asked for before a merge: those `pr refresh` reads (its head commit
+/// included, kept when gh cannot read the merge back), then whether GitHub can merge it and what
+/// its review decided.
 const MERGE_VIEW_FIELDS: &str =
-    "number,title,state,isDraft,url,statusCheckRollup,mergeable,reviewDecision";
+    "number,title,state,isDraft,url,statusCheckRollup,headRefOid,mergeable,reviewDecision";
 
 /// How the pull request's commits land on the base branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -244,7 +245,7 @@ mod tests {
                 "view",
                 "demo",
                 "--json",
-                "number,title,state,isDraft,url,statusCheckRollup,mergeable,reviewDecision"
+                "number,title,state,isDraft,url,statusCheckRollup,headRefOid,mergeable,reviewDecision"
             ]
         );
         assert_eq!(Method::default(), Method::Squash);
@@ -334,6 +335,7 @@ mod tests {
             state: PrState::Open,
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::Passing,
+            head: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
         }
     }
 

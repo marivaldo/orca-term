@@ -691,6 +691,11 @@ fn removed_branch_view(outcome: &BranchOutcome) -> RemovedBranchView<'_> {
         BranchOutcome::DeletedMerged { branch, into } => {
             (Some(branch), "deleted", Some(format!("merged into {into}")))
         }
+        BranchOutcome::DeletedMergedPr { branch, number } => (
+            Some(branch),
+            "deleted",
+            Some(format!("merged as PR #{number}")),
+        ),
         BranchOutcome::DeletedForced { branch } => {
             (Some(branch), "deleted", Some("--force".to_owned()))
         }
@@ -1222,6 +1227,7 @@ mod tests {
                     state: PrState::Draft,
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::None,
+                    head: None,
                 }),
             },
             uncommitted: 0,
@@ -1250,6 +1256,7 @@ mod tests {
                     state: PrState::Merged,
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::Passing,
+                    head: None,
                 }),
             },
             method: Method::Squash,
@@ -1276,6 +1283,7 @@ mod tests {
             state: PrState::Open,
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::Pending,
+            head: None,
         }));
         let shapes = [
             (
@@ -1859,6 +1867,15 @@ mod tests {
         assert_eq!(
             (forced.status, forced.reason.as_deref()),
             ("deleted", Some("--force"))
+        );
+        let outcome = BranchOutcome::DeletedMergedPr {
+            branch: Branch::new("fix"),
+            number: 12,
+        };
+        let by_pr = removed_branch_view(&outcome);
+        assert_eq!(
+            (by_pr.status, by_pr.reason.as_deref()),
+            ("deleted", Some("merged as PR #12"))
         );
     }
 

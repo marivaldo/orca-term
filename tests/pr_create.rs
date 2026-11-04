@@ -1,7 +1,8 @@
 //! `orca-term pr compose`, `orca-term pr create` and `orca-term pr merge`, driven as a black box
 //! (seam 1) against a fake `gh` on the isolated PATH of `tests/agent.rs` and a bare repository as
 //! `origin` (#132, #136): the message a new pull request starts from, the push, gh's arguments,
-//! each refusal, the merge, and the pull request recorded in `pr.json` for `worktree ls`.
+//! each refusal, the merge, and the pull request recorded in `pr.json` for `worktree ls`. Last,
+//! `worktree rm` deleting the branch of a pull request recorded merged at the branch's tip (#137).
 
 #![expect(
     clippy::unwrap_used,
@@ -35,7 +36,8 @@ use serde_json::{Value, json};
 /// The fake `gh`: it records the directory it ran in and its arguments in `gh.calls` beside it.
 /// `gh pr create` prints `gh-create.err` on stderr and exits 1 when that file exists; else it
 /// copies the body to `gh-create.body`, makes `gh pr view` answer for the `--head` branch with pull
-/// request 12 (a draft with `--draft`; not when `gh-lag` exists, as GitHub may lag), and prints its
+/// request 12 (a draft with `--draft`; not when `gh-lag` exists, as GitHub may lag) whose
+/// `headRefOid` is the branch's commit (read from the repository's loose ref), and prints its
 /// address. `gh pr view` answers for the branch it is asked about (its third argument): what
 /// `gh-<branch>.json` holds, exit 0; else what `gh-<branch>.err` holds on stderr, exit 4; else
 /// gh's own words for a branch with no pull request, exit 1. `gh pr merge <number>` (#136) prints
@@ -91,8 +93,15 @@ if [ "$1 $2" = "pr create" ]; then
       *) shift ;;
     esac
   done
+  oid=""
+  if [ -f .git ]; then
+    IFS= read -r gitfile < .git || :
+    gitdir="${gitfile#gitdir: }"
+    ref="${gitdir%/worktrees/*}/refs/heads/$head"
+    [ -f "$ref" ] && { IFS= read -r oid < "$ref" || :; }
+  fi
   if [ ! -f "$dir/gh-lag" ]; then
-    printf '{"number":12,"title":"%s","state":"OPEN","isDraft":%s,"url":"https://github.com/o/r/pull/12","statusCheckRollup":[]}\n' "$title" "$draft" > "$dir/gh-$head.json"
+    printf '{"number":12,"title":"%s","state":"OPEN","isDraft":%s,"url":"https://github.com/o/r/pull/12","statusCheckRollup":[],"headRefOid":"%s"}\n' "$title" "$draft" "$oid" > "$dir/gh-$head.json"
   fi
   printf 'https://github.com/o/r/pull/12\n'
   exit 0
@@ -111,7 +120,7 @@ exit 1
 "#;
 
 /// What `gh pr view` asks for, after the branch.
-const VIEW_FIELDS: &str = "--json number,title,state,isDraft,url,statusCheckRollup";
+const VIEW_FIELDS: &str = "--json number,title,state,isDraft,url,statusCheckRollup,headRefOid";
 
 /// A repository whose `origin` is a bare repository beside it, holding `main`, with worktrees
 /// placed under the fixture's own directory, and the fake `gh` on the isolated PATH.
@@ -586,7 +595,7 @@ fn a_body_file_that_does_not_exist_is_refused_before_the_push() {
 
 /// What `gh pr view` asks for before a merge, after the branch.
 const MERGE_VIEW_FIELDS: &str =
-    "--json number,title,state,isDraft,url,statusCheckRollup,mergeable,reviewDecision";
+    "--json number,title,state,isDraft,url,statusCheckRollup,headRefOid,mergeable,reviewDecision";
 
 /// Makes the fake `gh` answer for the branch `demo` with pull request 12 in `state` (`OPEN`,
 /// `MERGED` or `CLOSED`), a draft or not, with `mergeable` and `reviewDecision` as gh prints them,
@@ -873,4 +882,138 @@ fn a_merge_github_still_shows_open_is_kept_open_and_never_called_merged() {
         merges(&repo),
         ["pr merge 12 --squash", "pr merge 12 --merge"]
     );
+}
+
+/// Makes the fake `gh` answer for the branch `demo` with pull request 12 in `state`, whose head
+/// commit is `head` (none when `None`, as gh answered before #137 asked for it).
+fn answer_pr_at(repo: &PrRepo, state: &str, head: Option<&str>) {
+    let mut pr = json!({
+        "number": 12, "title": "Fix the login", "state": state, "isDraft": false,
+        "url": "https://github.com/o/r/pull/12", "statusCheckRollup": [],
+    });
+    if let Some(head) = head {
+        pr["headRefOid"] = json!(head);
+    }
+    fs::write(repo.fixture.bin.join("gh-demo.json"), pr.to_string()).unwrap();
+}
+
+/// Removes the worktree `demo` without `--force`, and returns its `branch` as `--json` prints it.
+fn removed_branch(repo: &PrRepo) -> Value {
+    repo.json_of(&["worktree", "rm", "demo"])["branch"].clone()
+}
+
+/// Whether the primary checkout still has the branch `demo`.
+fn has_demo_branch(repo: &PrRepo) -> bool {
+    !repo
+        .fixture
+        .repo
+        .git(&["branch", "--list", "demo"])
+        .trim()
+        .is_empty()
+}
+
+#[test]
+fn rm_deletes_the_branch_of_a_squash_merged_pull_request_whose_head_is_its_tip() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    repo.ok(&["pr", "create", "demo", "--title", "Fix the login"]);
+    repo.ok(&["pr", "merge", "demo"]);
+    let asked = repo.gh_calls().len();
+
+    let out = repo.ok(&["worktree", "rm", "demo"]);
+
+    assert_eq!(
+        out.lines().last().unwrap(),
+        "deleted branch demo (merged as PR #12)",
+        "{out}"
+    );
+    assert!(!has_demo_branch(&repo), "the branch is deleted");
+    assert!(!demo.exists(), "the worktree is removed");
+    assert_eq!(repo.gh_calls().len(), asked, "the removal never runs gh");
+}
+
+#[test]
+fn rm_says_merged_as_pr_in_json_and_keeps_the_ancestor_check_first() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    answer_pr_at(&repo, "MERGED", Some(&repo.head(&demo)));
+    repo.ok(&["pr", "refresh", "demo"]);
+
+    assert_eq!(
+        removed_branch(&repo),
+        json!({"name": "demo", "status": "deleted", "reason": "merged as PR #12"})
+    );
+    assert!(!has_demo_branch(&repo));
+
+    // A branch git already sees merged says so, whatever its pull request.
+    repo.new_worktree("demo");
+    answer_pr_at(&repo, "MERGED", Some(&repo.head(&demo)));
+    repo.ok(&["pr", "refresh", "demo"]);
+    assert_eq!(removed_branch(&repo)["reason"], "merged into main");
+}
+
+#[test]
+fn rm_keeps_a_branch_with_a_commit_after_the_merged_head() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    answer_pr_at(&repo, "MERGED", Some(&repo.head(&demo)));
+    repo.ok(&["pr", "refresh", "demo"]);
+    repo.commit(&demo, "b.txt", "One more thing");
+
+    assert_eq!(
+        removed_branch(&repo),
+        json!({"name": "demo", "status": "kept", "reason": "not merged into main"})
+    );
+    assert!(has_demo_branch(&repo), "nothing local is lost");
+}
+
+#[test]
+fn rm_keeps_the_branch_when_the_cache_has_no_head() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    // `pr.json` exactly as an orca-term before #137 wrote it: no `head` at all.
+    let admin = repo.fixture.admin_dir(&demo);
+    fs::write(
+        admin.join("pr.json"),
+        r#"{"schema":1,"fetched_at":1793047381369,"pr":{"number":12,"title":"Fix the login","state":"merged","url":"https://github.com/o/r/pull/12","checks":"passing"},"unavailable":null}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        repo.listed_pr("demo")["state"],
+        "merged",
+        "the old cache reads"
+    );
+
+    assert_eq!(removed_branch(&repo)["status"], "kept");
+    assert!(has_demo_branch(&repo));
+    assert_eq!(repo.gh_calls(), Vec::<String>::new(), "never asks gh");
+
+    // gh answering with no head is no proof either.
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    answer_pr_at(&repo, "MERGED", None);
+    repo.ok(&["pr", "refresh", "demo"]);
+    assert_eq!(removed_branch(&repo)["status"], "kept");
+    assert!(has_demo_branch(&repo));
+    assert!(!demo.exists());
+}
+
+#[test]
+fn rm_keeps_the_branch_of_a_closed_unmerged_pull_request() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    answer_pr_at(&repo, "CLOSED", Some(&repo.head(&demo)));
+    repo.ok(&["pr", "refresh", "demo"]);
+
+    assert_eq!(
+        removed_branch(&repo),
+        json!({"name": "demo", "status": "kept", "reason": "not merged into main"})
+    );
+    assert!(has_demo_branch(&repo));
 }

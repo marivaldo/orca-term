@@ -144,6 +144,10 @@ pub(crate) struct Removed {
 pub(crate) enum BranchOutcome {
     /// Deleted because it is merged into `into`.
     DeletedMerged { branch: Branch, into: StartPoint },
+    /// Deleted because its pull request `number` is merged on GitHub with exactly the branch's
+    /// tip as its head (#137): a squash or rebase merge, or a merge the default branch has not
+    /// fetched yet.
+    DeletedMergedPr { branch: Branch, number: u64 },
     /// Deleted because of `--force`.
     DeletedForced { branch: Branch },
     /// Kept, for `reason`.
@@ -183,7 +187,8 @@ impl fmt::Display for KeptReason {
 pub(crate) enum BranchFate {
     /// Decided without asking git.
     Decided(BranchOutcome),
-    /// Delete `branch` only when it is merged into the default branch, which git has to answer.
+    /// Delete `branch` only when it is merged: into the default branch, which git has to answer,
+    /// or as a pull request the worktree's `pr.json` records merged at the branch's tip.
     IfMerged { branch: Branch },
 }
 

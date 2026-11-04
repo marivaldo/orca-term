@@ -1,5 +1,6 @@
 //! Ops: `worktree rm`, which removes a worktree. Its branch goes too only when merged into the
-//! default branch, or with `--force`. A worktree whose lock is held (its setup or another
+//! default branch, or when its pull request is merged on GitHub with exactly the branch's tip as
+//! its head (#137), or with `--force`. A worktree whose lock is held (its setup or another
 //! orca-term command is running on it) is refused as `busy`, even with `--force`. A worktree with
 //! modified or untracked files is refused as `dirty` unless `--force`.
 //!
@@ -8,6 +9,10 @@
 //! (`agent stop` takes none, so this cannot deadlock), and the dirty rule is checked again after
 //! it: files the agent wrote while stopping refuse the removal as `dirty`, the agent staying
 //! stopped. An agent that does not stop refuses the removal as `busy` and nothing is removed.
+//!
+//! The pull request is read from the worktree's `pr.json`, the cache `pr refresh`, `pr create` and
+//! `pr merge` keep: the removal never asks GitHub. A cache with no head commit (written before
+//! #137) never proves a merge, and a branch with a commit after the merged head is kept.
 //!
 //! Once the worktree is removed, its chain of snapshots (`refs/orca-term/worktrees/<id>`,
 //! `domain/snapshot.rs`) is deleted too: that ref does not die with the admin directory.
@@ -20,13 +25,14 @@ use crate::domain::error::BusyReason;
 use crate::domain::error::TypedError;
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::fleet::Worktree;
+use crate::domain::pr::{self, Found};
 use crate::domain::snapshot;
 use crate::domain::state::{AdminDir, LockStatus};
 use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
 use crate::ops::agent_stop::stop_holder;
-use crate::ops::{Changed, find_target, lock_worktree, read_fleet};
+use crate::ops::{Changed, find_target, lock_worktree, read_fleet, read_pr};
 
 /// Removes the worktree `target` names or locates in the repository containing the current
 /// directory, stopping its agent first when one runs, then tells the running Neovims it is gone.
@@ -40,6 +46,8 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     // Found while git's files are still there: the removal takes them away.
     let changed = Changed::of(lock.admin());
     let chain = lock.admin().worktree_id().map(snapshot::chain_ref);
+    // Read now: the removal deletes the admin directory that holds it.
+    let cached_pr = read_pr(lock.admin()).usable().map(|facts| facts.found);
     check_clean(worktree, removal, false)?;
     let primary = &fleet.primary;
 
@@ -47,7 +55,7 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     let default = git::default_branch(primary).ok();
     let planned = match worktree::branch_fate(worktree.branch.as_ref(), default.as_ref(), removal) {
         BranchFate::Decided(outcome) => outcome,
-        BranchFate::IfMerged { branch } => outcome_if_merged(primary, branch)?,
+        BranchFate::IfMerged { branch } => outcome_if_merged(primary, branch, cached_pr.as_ref())?,
     };
 
     // Every rule has passed: only now is the agent stopped, so a refusal leaves it running. Read
@@ -124,8 +132,13 @@ fn stop_agent(worktree: &Worktree, admin: &AdminDir, primary: &PrimaryCheckout) 
 }
 
 /// What happens to `branch` when it goes only if merged: git says whether it is merged into the
-/// default branch. A default branch git cannot find keeps the branch, for that reason.
-fn outcome_if_merged(primary: &PrimaryCheckout, branch: Branch) -> Result<BranchOutcome> {
+/// default branch; failing that, `cached_pr` (what `pr.json` holds) may prove its pull request
+/// merged at the branch's tip. A default branch git cannot find keeps the branch, for that reason.
+fn outcome_if_merged(
+    primary: &PrimaryCheckout,
+    branch: Branch,
+    cached_pr: Option<&Found>,
+) -> Result<BranchOutcome> {
     let start = match git::start_point(primary) {
         Ok(start) => start,
         Err(err) => {
@@ -136,23 +149,42 @@ fn outcome_if_merged(primary: &PrimaryCheckout, branch: Branch) -> Result<Branch
         }
     };
     if git::is_merged(primary, &branch, &start)? {
-        Ok(BranchOutcome::DeletedMerged {
+        return Ok(BranchOutcome::DeletedMerged {
             branch,
             into: start,
-        })
-    } else {
-        Ok(BranchOutcome::Kept {
-            branch,
-            reason: KeptReason::NotMerged { into: start },
-        })
+        });
     }
+    if let Some(number) = merged_pr(primary, &branch, cached_pr)? {
+        return Ok(BranchOutcome::DeletedMergedPr { branch, number });
+    }
+    Ok(BranchOutcome::Kept {
+        branch,
+        reason: KeptReason::NotMerged { into: start },
+    })
+}
+
+/// The number of the pull request `cached_pr` records merged with exactly the tip of `branch` as
+/// its head, or `None` when there is no such pull request.
+fn merged_pr(
+    primary: &PrimaryCheckout,
+    branch: &Branch,
+    cached_pr: Option<&Found>,
+) -> Result<Option<u64>> {
+    let Some(found) = cached_pr else {
+        return Ok(None);
+    };
+    let Some(tip) = git::read_ref(&primary.path, &format!("refs/heads/{branch}"))? else {
+        return Ok(None);
+    };
+    Ok(pr::merged_as(found, tip.as_str()))
 }
 
 /// Deletes the branch when `planned` says it goes, and returns `planned`, or why the branch was
 /// kept when git refuses.
 fn delete_branch(primary: &PrimaryCheckout, planned: BranchOutcome) -> BranchOutcome {
-    let (BranchOutcome::DeletedMerged { branch, .. } | BranchOutcome::DeletedForced { branch }) =
-        &planned
+    let (BranchOutcome::DeletedMerged { branch, .. }
+    | BranchOutcome::DeletedMergedPr { branch, .. }
+    | BranchOutcome::DeletedForced { branch }) = &planned
     else {
         return planned;
     };

@@ -362,6 +362,9 @@ fn render_worktree_removed(removed: &Removed) -> String {
         BranchOutcome::DeletedMerged { branch, into } => {
             format!("deleted branch {branch} (merged into {into})")
         }
+        BranchOutcome::DeletedMergedPr { branch, number } => {
+            format!("deleted branch {branch} (merged as PR #{number})")
+        }
         BranchOutcome::DeletedForced { branch } => format!("deleted branch {branch} (--force)"),
         BranchOutcome::Kept { branch, reason } => format!("kept branch {branch}: {reason}"),
         BranchOutcome::Detached => "no branch to delete: the worktree was detached".to_owned(),
@@ -1262,6 +1265,7 @@ mod tests {
                 state,
                 url: "https://github.com/o/r/pull/12".to_owned(),
                 checks,
+                head: None,
             })
         };
         let all = Refreshed {
@@ -1317,6 +1321,7 @@ mod tests {
                     state,
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::None,
+                    head: None,
                 }),
             },
             uncommitted,
@@ -1352,6 +1357,7 @@ mod tests {
                     state,
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::Passing,
+                    head: None,
                 }),
             },
             method,
@@ -2062,6 +2068,13 @@ mod tests {
                 into: StartPoint::Local(Branch::new("main")),
             })),
             "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged into main)"
+        );
+        assert_eq!(
+            render_worktree_removed(&removed(BranchOutcome::DeletedMergedPr {
+                branch: Branch::new("fix"),
+                number: 12,
+            })),
+            "removed worktree fix\npath:   /l/repo/fix\ndeleted branch fix (merged as PR #12)"
         );
     }
 
