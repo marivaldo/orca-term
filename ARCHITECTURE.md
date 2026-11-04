@@ -158,6 +158,18 @@ the adapters, and returns a domain value that `output` prints.
   after `remote_base`; `worktree push` prints `name`, `path`, `branch`, `remote` (`origin/demo`),
   `outcome` (`pushed` or `up_to_date`), `with_lease`, `uncommitted` and `pr` as `pr refresh`
   shows it, read again after the push.
+- The project list's surface (#149): `cli` parses `project add [<path>]`, `project ls`, `project
+  rm <path or name>` (a `ProjectTarget`) and `fleets`, each with `--json`; only `project add` and
+  `fleets` check git first. `output` prints `added project <name> at <path>` or `project <name>
+  at <path> is already on the list`, `removed project <name> at <path> from the list (nothing on
+  disk was touched)`, `project ls`'s table (`NAME`, `PATH`, and `STATE` with `gone` only when a
+  project is gone; `no projects yet; ...` when empty) and, for `fleets`, per project a line with
+  its name and path then its fleet table or its error, indented. `output/json.rs` prints
+  `project add` as `name`, `path`, `added`; `project rm` as `name`, `path`; `project ls` as
+  `projects`, each `{"name", "path", "gone"}`; `fleets` as `projects`, each the same three keys
+  then `fleet` (the `worktree ls` document's body, through `fleet_view`, or null) and `error` (the
+  error object any command prints, or null). The error object of `ambiguous_project` also carries
+  `candidates`.
 
 ### ops
 
@@ -392,6 +404,21 @@ the adapters, and returns a domain value that `output` prints.
   with no rebase in progress (`no_rebase`) and one whose holder is not alive (`ResolveNoHolder`,
   kind `no_holder`), then type `rebase::resolve_prompt` of `git::conflicted_files` into the agent
   as `note send` does (`holder::type_input`: `prompt::paste`, a pause, `prompt::SUBMIT`).
+- The project list (#149). `ops.rs` shares `read_projects` (no lock: a change replaces the file
+  whole) and `change_projects`, which holds `projects.lock` in the state directory from the read
+  to the write (2 s at most), writes only when the list changed and never when the change failed.
+  `ops/project_add.rs`: `project add`: refuse a path that is not a directory, then
+  `add_repository_of`, which finds the primary checkout with `git::repository_of` and adds it;
+  `None` outside every repository, which `run` turns into the typed `not_a_repository`. The
+  launcher (#148) is meant to call `add_repository_of` with the current directory.
+  `ops/project_ls.rs`: `project ls`: the list, each project marked gone when its directory is not
+  one; runs no git. `ops/project_rm.rs`: `project rm`: under the lock, a name through
+  `Projects::find_by_name` (`ambiguous_project` when several match), a path matched with
+  `fs::same_path`, else through the primary checkout of the repository containing it; then
+  `Projects::remove`. It touches nothing but the list. `ops/fleets.rs`: `fleets`: every project
+  on a scoped thread of its own, a gone one reported as such, the others read by
+  `worktree_ls::read_listed`, which `worktree ls` runs on the current directory; a project whose
+  read fails carries the error.
 
 ### adapters
 
@@ -477,6 +504,9 @@ the adapters, and returns a domain value that `output` prints.
   its input detaches. `is_interactive` says whether stdin and stderr are both terminals, so a
   setup script can be approved at a prompt. `stdin_and_stdout_are_terminals` says whether a
   person typed `orca-term` at a terminal, so no arguments may open Neovim (#148).
+- Since #149: `git::repository_of` gives the primary checkout of the repository containing a
+  directory, or `None` when git says it is not inside one, and `env::config_env` also reads
+  `XDG_STATE_HOME`.
 
 ### domain
 
@@ -693,6 +723,14 @@ the adapters, and returns a domain value that `output` prints.
   `ResolveSent`), the files git names (`paths`, `uncommitted_files`) and the prompt that hands the
   conflicts to the agent (`resolve_prompt`: the files, resolve, `git add`, `GIT_EDITOR=true git
   rebase --continue`, and never `git rebase --abort`, `git reset`, `git stash` or `git push`).
+- `domain/project.rs`: the project list (#149, ADR 0011): `projects.json` and `projects.lock` in
+  the state directory (`config::Env::state_dir`: `$XDG_STATE_HOME/orca-term`, or
+  `~/.local/state/orca-term`), `Projects` (the primary checkouts' paths in the order they were
+  added; `add` says whether it added, `remove`, `find_by_name`), `read` (refusing a broken file
+  or a newer schema, naming the file), a project's name (`name_of`, the basename), what `project
+  rm` is given (`ProjectTarget`, a path when it holds `/` or is `.` or `..`, as a worktree target
+  is), and what the commands report (`ProjectAdded`, `ProjectRemoved`, `ListedProject`,
+  `ProjectFleet`).
 
 ### Domain types
 
@@ -1099,6 +1137,13 @@ they read without it; any other change raises the schema. To raise one:
 
 `cargo xtask schema-fixtures` fails while a constant names a schema with no samples.
 
+The project list (#149) is the one state file outside every repository: `PROJECTS_SCHEMA`
+(`projects.json`, `domain/project.rs`), in orca-term's state directory. Its sample sits in
+`tests/fixtures/schema-1/state/`, laid out as `$XDG_STATE_HOME`, with the placeholders `{{repo}}`
+(the fixture's primary checkout) and `{{gone}}` (a directory that does not exist), and
+`tests/schema_1.rs` reads it through `project ls` and `fleets` (`schema_samples::build_projects`).
+A file of a newer schema is refused, for reading too, since the list's shape could change.
+
 ## Known limits of the agent holder
 
 - **The Linux peer check is namespace equality, nothing finer.** A client is served when it
@@ -1357,6 +1402,12 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   answer pull requests (`support.gh_answer`) and checks the `PR` icon and its colours, `R`, `K`,
   `:OrcaTerm pr-refresh`, the refresh on opening, after a turn ends and on the timer.
 - **Lints** have their own unit tests in `xtask/src/`.
+- **The project list, seam 1** (#149): `tests/projects.rs` runs `project add|ls|rm` and `fleets`
+  against several throwaway repositories, with `XDG_STATE_HOME` set to a temporary directory of
+  each test: adding from the primary checkout, a linked worktree and a subdirectory, twice, eight
+  at once (all kept, under the lock), and outside a repository; a gone project; removing by path, by name and with an ambiguous name,
+  checking nothing on disk changed; and `fleets` with two repositories, a broken one (its `.git`
+  removed) and a gone one, the readable fleet compared with `worktree ls --json`.
 
 ## Neovim client
 
