@@ -321,7 +321,11 @@ describe('the worktree actions', function()
 
       press_on('.', '· alpha')
 
-      assert.are.equal(vim.log.levels.INFO, next_note(ui).level)
+      -- The whole note, so a refusal of the core shows its reason (#128).
+      assert.are.same({
+        message = 'orca-term: removed worktree alpha and its branch alpha (merged into main)',
+        level = vim.log.levels.INFO,
+      }, next_note(ui))
       assert.are.equal(1, #vim.api.nvim_list_tabpages())
       assert.are.equal(repo.root, tab_directory())
       assert.truthy(line_with('no worktrees yet'))
