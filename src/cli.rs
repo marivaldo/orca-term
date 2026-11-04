@@ -260,8 +260,8 @@ enum WorktreeCommand {
         worktree: Target,
         /// Replace the branch on origin, but only while it still holds the commit git last saw
         /// there (`refs/remotes/origin/<branch>`): git refuses when someone else pushed since.
-        #[arg(long)]
-        force_with_lease: bool,
+        #[arg(long = "force-with-lease")]
+        lease: bool,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -741,13 +741,8 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Push {
-            worktree,
-            force_with_lease,
-            ..
-        } => {
-            output::worktree_pushed(&worktree_push::run(worktree, *force_with_lease)?, format)?;
-            Ok(ExitCode::SUCCESS)
-        }
+            worktree, lease, ..
+        } => run_worktree_push(worktree, *lease, format),
         WorktreeCommand::Rebase {
             worktree, abort, ..
         } => run_worktree_rebase(worktree, *abort, format),
@@ -815,6 +810,13 @@ fn run_worktree_new(
         (None, Format::Text) => {}
     }
     Ok(exit_code(&created.setup))
+}
+
+/// Runs `worktree push` of `worktree`, with a lease when `lease` (`--force-with-lease`), and
+/// prints what it did.
+fn run_worktree_push(worktree: &Target, lease: bool, format: Format) -> Result<ExitCode> {
+    output::worktree_pushed(&worktree_push::run(worktree, lease)?, format)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Runs `worktree rebase` of `worktree`, or its `--abort` when `abort`, and prints what it did.

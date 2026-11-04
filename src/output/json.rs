@@ -1421,16 +1421,7 @@ mod tests {
         for (facts, shape) in shapes {
             let mut listed = idle_worktree();
             listed.pr = Some(facts.clone());
-            let fleet_doc = fleet(&Fleet {
-                primary: PrimaryCheckout {
-                    path: PathBuf::from("/repo"),
-                    branch: None,
-                },
-                worktrees: vec![listed],
-                remote_base: None,
-                has_origin: false,
-            })
-            .unwrap();
+            let fleet_doc = fleet_doc_of(listed);
             assert!(
                 fleet_doc.contains(&format!(
                     r#""denials":0,"operation":null,"pr":{shape},"last_activity":null,"changed_files":null}}]"#
@@ -1502,6 +1493,21 @@ mod tests {
                 r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main","has_origin":true}}"#
             )
         );
+    }
+
+    /// The `worktree ls --json` document of a repository on no branch whose only worktree is
+    /// `listed`.
+    fn fleet_doc_of(listed: Worktree) -> String {
+        fleet(&Fleet {
+            primary: PrimaryCheckout {
+                path: PathBuf::from("/repo"),
+                branch: None,
+            },
+            worktrees: vec![listed],
+            remote_base: None,
+            has_origin: false,
+        })
+        .unwrap()
     }
 
     fn idle_worktree() -> Worktree {
