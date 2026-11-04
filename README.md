@@ -200,8 +200,11 @@ Limits:
   agent with or without the setting. claude's sandbox there allows a unix socket only through
   `allowAllUnixSockets`, which opens every socket, so orca-term never turns it on and claude
   cannot sign through an agent on Linux.
-- On macOS, claude's push over SSH fails inside its sandbox whatever the setting, because of
-  claude's own network proxy.
+- On macOS (measured with claude 2.1.318), claude's `git push` over SSH works inside its sandbox
+  once ssh can reach your key, but a push over HTTPS cannot read its credentials from the
+  Keychain, and `gh` cannot verify GitHub's TLS certificate (`x509: OSStatus -26276`), so
+  `gh pr create` fails too. Listing `gh *` in claude's own `sandbox.excludedCommands` does not
+  change that. Open the pull request from your own terminal.
 
 ## opencode
 
@@ -311,6 +314,9 @@ resumes it and shows its agent's terminal in the worktree's tab. `.` then `New s
 first, then starts a new session. `:OrcaTerm sessions` (or `<Plug>(OrcaTermSessions)`) opens the
 same list for the worktree under the cursor in the sidebar, or for the worktree whose tab (or
 review) you are in.
+
+A worktree moved with `git worktree move` keeps its sessions, as it keeps its turns and notes:
+the next `agent start` resumes the current one from the new path (measured with claude 2.1.318).
 
 Limits:
 
