@@ -58,7 +58,9 @@ the adapters, and returns a domain value that `output` prints.
   the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
   <f>] [--base <b>] [--draft]` pushes the branch and creates it. `pr merge <worktree>
   [--squash|--merge|--rebase]` (#136) merges its open pull request, squash by default (clap lets
-  at most one method through).
+  at most one method through). `worktree rebase <worktree> [--abort]` (#141) rebases the
+  worktree's branch onto the default branch on `origin`, or aborts the rebase in progress, and
+  `agent resolve <worktree>` types the prompt that resolves its conflicts into the agent.
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -144,7 +146,11 @@ the adapters, and returns a domain value that `output` prints.
   `uncommitted` (files with changes not committed); `pr create` prints `name`, `path`, `pr` as
   `pr refresh` shows it, `pushed` (always `true`) and `uncommitted`. `pr merge` (#136) prints
   `name`, `path`, `pr` as `pr refresh` shows it, `method` (`squash`, `merge` or `rebase`) and
-  `merged` (`false` when GitHub still shows it open).
+  `merged` (`false` when GitHub still shows it open). Since #141 `worktree ls` also prints
+  `remote_base` beside `primary` (`origin/main`, null when the repository has none); `worktree
+  rebase` prints `name`, `path`, `base`, `outcome` (`rebased` or `up_to_date`) and `replayed`;
+  `worktree rebase --abort` prints `name`, `path` and `aborted` (always `true`); `agent resolve`
+  prints `name`, `path`, `prompt` and `files`.
 
 ### ops
 
@@ -347,6 +353,24 @@ the adapters, and returns a domain value that `output` prints.
   line), then ask gh again as `pr refresh` does (`pr_refresh::ask`) and keep what `merged_pr`
   chooses in `pr.json` (`pr_refresh::keep`, notifying). The worktree and its branch are not
   touched.
+- `ops/worktree_rebase.rs`: `worktree rebase` (#141): find the target (refusing a worktree whose
+  directory is gone), take its lock, then refuse an agent in a turn (`agent_swap::check_not_in_turn`
+  with `BusyReason::RebaseInTurn`), an operation in progress (`operation_in_progress`), modified
+  or untracked files (`RebaseDirty`, kind `dirty`, naming them; never stashed) and a repository
+  with no default branch on `origin` (`git::remote_default_branch`, `no_remote_base`). Then
+  `git::fetch_into` the base into `rebase::temp_ref`, leave a branch that already holds it alone
+  (`up_to_date`), find the fork point against `refs/remotes/origin/<default>`
+  (`git::fork_point`) and `git::rebase_onto` the temporary ref, count what was replayed
+  (`git::count_ahead_of`), delete the temporary ref whatever happened and notify. A rebase git
+  stops with a rebase left in progress (`read_operation`) is `rebase_conflict`, naming
+  `git::conflicted_files`; any other stop is git's words. `abort` refuses a worktree with no
+  rebase in progress (`no_rebase`), then `git::rebase_abort` and notify. The only code that
+  fetches (`cargo xtask gh-guard`); `ops/worktree_ls.rs` also reads the base, from the local refs
+  only, into `Fleet::remote_base`.
+- `ops/agent_resolve.rs`: `agent resolve` (#141): refuse a worktree whose directory is gone, one
+  with no rebase in progress (`no_rebase`) and one whose holder is not alive (`ResolveNoHolder`,
+  kind `no_holder`), then type `rebase::resolve_prompt` of `git::conflicted_files` into the agent
+  as `note send` does (`holder::type_input`: `prompt::paste`, a pause, `prompt::SUBMIT`).
 
 ### adapters
 
@@ -359,7 +383,11 @@ the adapters, and returns a domain value that `output` prints.
   `base_point`, `commits_ahead` and `uncommitted_status`, ...) or change (`worktree_add`,
   `delete_branch`, the snapshot's `write_tree_through` a given index, `commit_tree` and
   `update_ref`, `delete_ref`, `push_branch`, `pr create`'s `git push -u origin <branch>`,
-  ...).
+  ...). Since #141: `remote_default_branch` (the default branch when `origin` is configured and
+  `refs/remotes/origin/<default>` exists), `is_ancestor_of_head`, `fork_point`, `count_ahead_of`
+  and `conflicted_files` ask, and `fetch_into` (`git fetch --quiet --no-tags origin <refspec>`,
+  the only fetch, no prompt and no input), `rebase_onto` (`--no-autostash`, no prompt, no input,
+  `GIT_EDITOR=true`) and `rebase_abort` change.
 - `adapters/fs.rs`: reading and atomically writing files, plain byte copies, creating and listing
   directories (`list_file_names`: the non-directory entries, sorted, empty when the directory is
   missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
@@ -619,6 +647,13 @@ the adapters, and returns a domain value that `output` prints.
   gh's answer whenever it names the pull request, so one still open stays open; the one asked
   about, marked merged, only when gh cannot say), and what `pr merge` reports (`PrMerged`, whose
   `is_merged` is `false` while GitHub still shows it open).
+- `domain/rebase.rs`: rebasing a worktree onto its base (#141): the temporary ref
+  (`temp_ref`, under `refs/orca-term/rebase/`), the base (`RemoteBase`: shown as `origin/main`,
+  its tracking ref and its refspec into the temporary ref), what a rebase did (`Outcome`,
+  `Rebased` and its text line), what an abort and `agent resolve` report (`Aborted`,
+  `ResolveSent`), the files git names (`paths`, `uncommitted_files`) and the prompt that hands the
+  conflicts to the agent (`resolve_prompt`: the files, resolve, `git add`, `GIT_EDITOR=true git
+  rebase --continue`, and never `git rebase --abort`, `git reset`, `git stash` or `git push`).
 
 ### Domain types
 
@@ -667,6 +702,10 @@ validate"):
   `Merge`, `Rebase`) and what `pr merge` reports; `NotOpen` and `Review` (`domain/error.rs`): why
   there is no open pull request to merge (`None`, `Merged`, `Closed`) and which review decision
   blocks one (`ChangesRequested`, `Required`).
+- `RemoteBase`, `Outcome`, `Rebased`, `Aborted`, `ResolveSent` (`domain/rebase.rs`, #141): the
+  base a worktree is rebased onto, what a rebase did and reports, and what an abort and
+  `agent resolve` report; `RebaseAsk` (`domain/error.rs`): what was asked of a rebase that is not
+  in progress (`Abort`, `Resolve`).
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -958,6 +997,10 @@ validate"):
   `prerequisite`, and since #132 `no_commits`, `pr_exists`, `push_failed`, since #136
   `no_open_pr`, `pr_draft`, `pr_conflicting`, `not_approved`) or `other`. The error of `untrusted` also carries `what` (`setup` or
   `sandbox`), the `script` or the `writable` paths as written, and `source` (the committed file).
+  Since #141 the kinds also include `operation_in_progress`, `no_remote_base`, `rebase_conflict`
+  and `no_rebase`; `worktree rebase`'s `RebaseDirty` is `dirty` and `agent resolve`'s
+  `ResolveNoHolder` is `no_holder`, and the error of `dirty` from `worktree rebase` and of
+  `rebase_conflict` carries the `files` they name.
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
   not ready); 2 for a usage error (clap); 3 for `busy`, a worktree whose lock another process
@@ -976,7 +1019,12 @@ validate"):
   `pr merge` when gh is missing or cannot say (`MergeGhUnavailable`, kind `prerequisite`); 13 for
   `no_open_pr`, no pull request or one merged or closed; 14 for `pr_draft`; 15 for
   `pr_conflicting`, a pull request GitHub reports `CONFLICTING`; 16 for `not_approved`, a review
-  decision of `CHANGES_REQUESTED` or `REVIEW_REQUIRED`.
+  decision of `CHANGES_REQUESTED` or `REVIEW_REQUIRED`. Since #141: 3 also for `worktree rebase`
+  while the agent is in a turn; 6 also for `worktree rebase` with files not committed; 7 also for
+  `agent resolve` with no running agent; 17 for `operation_in_progress`, a rebase, merge,
+  cherry-pick or revert already in progress; 18 for `no_remote_base`, no default branch on
+  `origin`; 19 for `rebase_conflict`, a rebase stopped on conflicts and left in progress; 20 for
+  `no_rebase`, an abort or a resolve with no rebase in progress.
 
 ## State and schema
 
@@ -1144,7 +1192,9 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   `plugin/` but `src/domain/launch.rs`, where the run-time guard lists them.
 - `cargo xtask gh-guard` (`xtask/src/gh_guard.rs`, #87) rejects the string literal `"gh"`, outside
   comments, in every file under `src/` but `src/ops/pr_refresh.rs`, and `"gh"` or `'gh'` anywhere
-  in `lua/`, `plugin/` and `build.lua`.
+  in `lua/`, `plugin/` and `build.lua`. Since #141 it also rejects the literal `"fetch"` outside
+  `src/adapters/git.rs` and a call of `fetch_into` outside `src/ops/worktree_rebase.rs`: only
+  `worktree rebase` fetches.
 - `cargo xtask schema-fixtures` (`xtask/src/schema_fixtures.rs`, #118) reads every
   `const *_SCHEMA: u64` under `src/` and rejects a value with no `tests/fixtures/schema-<n>/`, or
   finding no constant at all ("State and schema").
@@ -1333,7 +1383,11 @@ what they print.
   waiting (120 s at most), the body written to a `vim.fn.tempname()` file for `--body-file` (none
   for an empty body) and removed once the core ends, typed as `orca_term.PrCreated`.
   `pr_merge(target, method, cwd, on_done)` (#136) runs `pr merge <target> --<method>` without
-  waiting (90 s at most), typed as `orca_term.PrMerged`.
+  waiting (90 s at most), typed as `orca_term.PrMerged`. `worktree_rebase(target, cwd, on_done)`
+  (#141) runs `worktree rebase <target>` without waiting (120 s at most, for the fetch), typed as
+  `orca_term.Rebased`; `worktree_rebase_abort` runs it with `--abort` (10 s at most,
+  `orca_term.RebaseAborted`) and `agent_resolve` runs `agent resolve <target>` (10 s at most,
+  `orca_term.ResolveSent`); the fleet carries `remote_base`.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1625,6 +1679,14 @@ what they print.
   message; `merge_pr_current` (`:OrcaTerm pr-merge`, `<Plug>(OrcaTermMergePr)`) does it for
   the worktree under the cursor in the sidebar (`sidebar.merge_pr_here`), else the current tab's
   worktree.
+- Rebasing a worktree (#141) lives in `actions.lua`: `menu_items(worktree, remote_base)` adds,
+  before `Merge pull request` and `Remove worktree`, `rebase_item(remote_base)` (`Rebase onto
+  origin/main`) when no operation is in progress and the fleet has a `remote_base` (the sidebar
+  passes it to `menu`), or `RESOLVE_CONFLICTS` and `ABORT_REBASE` during a rebase. `rebase` runs
+  `core.worktree_rebase` without blocking and tells the core's line, warning with the core's words
+  on `rebase_conflict`; `abort_rebase` asks with `ABORT_REBASE_ANSWERS` first, then runs
+  `core.worktree_rebase_abort`; `resolve_conflicts` runs `core.agent_resolve`. Each reads the
+  sidebar again once the core answers.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,

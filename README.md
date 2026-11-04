@@ -462,8 +462,9 @@ once and gives each 10 seconds. When gh is not installed, not logged in or the r
 on GitHub (`not a GitHub remote`), the worktree's pull request is unavailable, with the reason;
 the command still succeeds.
 
-orca-term runs gh only in `pr refresh`, `pr create` and `pr merge`, and `git push` only in `pr
-create`. No other command touches the network, `pr compose` included, and the Neovim client never
+orca-term runs gh only in `pr refresh`, `pr create` and `pr merge`, `git push` only in `pr
+create`, and `git fetch` only in `worktree rebase` ([Rebase](#rebase)). No other command touches
+the network, `pr compose` included, and the Neovim client never
 runs gh at all.
 
 `orca-term pr compose <worktree>` prints the message a new pull request of the worktree starts
@@ -577,6 +578,55 @@ a warning says so and the row stays as it was; when the core refuses, for exampl
 request is a draft or needs an approving review, the reason is shown. `:OrcaTerm pr-merge`
 (`<Plug>(OrcaTermMergePr)`) does the same for the worktree under the cursor in the sidebar, or for
 the worktree whose tab you are in.
+
+## Rebase
+
+`orca-term worktree rebase <worktree>` rebases the worktree's branch onto the default branch on
+`origin`, as Orca's **Rebase from `<base>`** does. The base is always `origin/main` (or whatever
+the default branch is), never a local branch. It first refuses, changing nothing:
+
+- an agent in a turn, working or waiting for you (`busy`, exit code 3);
+- a rebase, merge, cherry-pick or revert already in progress (`operation_in_progress`, exit code
+  17);
+- files with changes not committed, untracked ones included, which it names: commit or stash them
+  first, since it never stashes them for you (`dirty`, exit code 6);
+- a repository with no `origin` remote holding the default branch (`no_remote_base`, exit code
+  18).
+
+Then it fetches the base into a private temporary ref, `refs/orca-term/rebase/<id>`, so a fetch
+running at the same time cannot move it, and rebases onto it: from the fork point git finds with
+`merge-base --fork-point`, else a plain `git rebase`. The temporary ref is always deleted
+afterwards. git never prompts for credentials or opens an editor there.
+
+```text
+demo: rebased onto origin/main (3 commits replayed)
+```
+
+When the branch already holds every commit of the base, it says `demo: already up to date with
+origin/main` and does nothing. With `--json` it prints the worktree's `name` and `path`, the
+`base`, the `outcome` (`rebased` or `up_to_date`) and how many commits were `replayed`.
+
+A rebase that stops on conflicts stays in progress, as in Orca: the command fails as
+`rebase_conflict` (exit code 19), naming the files in conflict (`files` in the `--json` error), the
+row shows `≠` and `K` shows `rebase in progress (2/5)`. From there:
+
+- `orca-term agent resolve <worktree>` types one prompt into the worktree's running agent, as
+  `note send` does. It lists the files in conflict, tells the agent to resolve them, `git add`
+  them and run `git rebase --continue`, and forbids `git rebase --abort`, `reset`, `stash` and
+  `push`. It is refused with no rebase in progress (`no_rebase`, exit code 20) and when the agent
+  is not running (`no_holder`, exit code 7). With `--json` it prints the `prompt` and the `files`.
+- `orca-term worktree rebase <worktree> --abort` runs `git rebase --abort`, which puts the branch
+  back where it was. It is refused with no rebase in progress (`no_rebase`, exit code 20).
+
+Fetching the base is the only network use of `worktree rebase`, and no other command fetches.
+`worktree ls --json` names the base as `remote_base` (`origin/main`, or `null` when there is none),
+from the refs git already has.
+
+In the sidebar, `.` on a worktree offers `Rebase onto origin/main`, naming the real base, when no
+operation is in progress (not at all when the repository has no default branch on `origin`).
+During a rebase it offers `Resolve conflicts with the agent` and `Abort rebase` instead, and
+`Abort rebase` asks first. Each runs through the core without blocking Neovim, tells the result
+and reads the sidebar again; a rebase that stops on conflicts warns with the files in conflict.
 
 ## Status strip
 

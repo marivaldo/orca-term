@@ -15,8 +15,12 @@
 //! `"push"`, and only `src/ops/pr_create.rs` may call it. Every read path (`pr compose`,
 //! `worktree ls`, ...) stays off the network.
 //!
+//! A fetch reaches the network too (#141), so `git fetch` is started in one function alone,
+//! `fetch_into` in `src/adapters/git.rs`, the only file that may hold the literal `"fetch"`, and
+//! only `src/ops/worktree_rebase.rs` (`worktree rebase`) may call it.
+//!
 //! The check is textual, like the launch guard: comments are skipped, and only a literal that is
-//! exactly `gh` or `push` counts (`"gh auth login"` in a message is not a program name).
+//! exactly `gh`, `push` or `fetch` counts (`"gh auth login"` in a message is not a program name).
 
 use std::path::Path;
 
@@ -56,6 +60,12 @@ const PUSH_OP: &str = "src/ops/pr_create.rs";
 
 /// The call that pushes.
 const PUSH_CALL: &str = "push_branch(";
+
+/// The one op that may fetch, through `fetch_into`.
+const FETCH_OP: &str = "src/ops/worktree_rebase.rs";
+
+/// The call that fetches.
+const FETCH_CALL: &str = "fetch_into(";
 
 /// The directories scanned, relative to the repository root, with the extension of their files.
 const SCANNED: &[(&str, &str)] = &[("src", "rs"), ("lua", "lua"), ("plugin", "lua")];
@@ -123,8 +133,9 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     problems
 }
 
-/// The findings about pushing in the Rust file at `path` holding `text`: the literal `"push"`
-/// outside the git adapter, and a call of `push_branch` outside the adapter and `pr create`.
+/// The findings about the network in the Rust file at `path` holding `text`: the literal
+/// `"push"` or `"fetch"` outside the git adapter, a call of `push_branch` outside the adapter and
+/// `pr create`, and a call of `fetch_into` outside the adapter and `worktree rebase`.
 fn check_push(path: &str, text: &str) -> Vec<String> {
     let is_rust = Path::new(path)
         .extension()
@@ -144,6 +155,18 @@ fn check_push(path: &str, text: &str) -> Vec<String> {
         if code.contains(PUSH_CALL) && path != PUSH_OP {
             problems.push(format!(
                 "{path}:{}: pushes a branch; only {PUSH_OP} (`pr create`) may push",
+                n + 1
+            ));
+        }
+        if code.contains("\"fetch\"") {
+            problems.push(format!(
+                "{path}:{}: names git's fetch; only {PUSH_ADAPTER} may start it",
+                n + 1
+            ));
+        }
+        if code.contains(FETCH_CALL) && path != FETCH_OP {
+            problems.push(format!(
+                "{path}:{}: fetches from origin; only {FETCH_OP} (`worktree rebase`) may fetch",
                 n + 1
             ));
         }
@@ -238,6 +261,27 @@ mod tests {
             ["src/adapters/program.rs:1: names git's push; only src/adapters/git.rs may start it"]
         );
         assert!(check_file("src/ops/pr_create.rs", "// \"push\" in a comment\n").is_empty());
+    }
+
+    #[test]
+    fn only_the_git_adapter_names_fetch_and_only_worktree_rebase_calls_it() {
+        let adapter = ".args([\"fetch\", \"--quiet\", \"--no-tags\", \"origin\", refspec])\n";
+        assert_eq!(check_file(PUSH_ADAPTER, adapter), Vec::<String>::new());
+        let fetches = "git::fetch_into(&worktree.path, &refspec)?\n";
+        assert_eq!(check_file(FETCH_OP, fetches), Vec::<String>::new());
+        assert_eq!(
+            check_file("src/ops/worktree_ls.rs", fetches),
+            [
+                "src/ops/worktree_ls.rs:1: fetches from origin; only src/ops/worktree_rebase.rs \
+                 (`worktree rebase`) may fetch"
+            ]
+        );
+        assert_eq!(
+            check_file("src/ops/pr_refresh.rs", "git(&[\"fetch\", \"origin\"])\n"),
+            ["src/ops/pr_refresh.rs:1: names git's fetch; only src/adapters/git.rs may start it"]
+        );
+        let comment = "// \"fetch\" in a comment\n";
+        assert_eq!(check_file(FETCH_OP, comment), Vec::<String>::new());
     }
 
     #[test]

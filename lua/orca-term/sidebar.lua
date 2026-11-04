@@ -300,7 +300,7 @@ end
 local function worktree_menu()
   local worktree = worktree_under_cursor()
   if worktree then
-    actions.menu(worktree, primary_path())
+    actions.menu(worktree, primary_path(), state.fleet and state.fleet.remote_base)
   end
 end
 

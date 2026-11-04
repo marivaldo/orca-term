@@ -151,6 +151,111 @@ pub(crate) enum TypedError {
          and log in with `gh auth login`, then try again (nothing was merged)"
     )]
     MergeGhUnavailable { name: String, reason: String },
+    /// The worktree has modified or untracked `files`, so `worktree rebase` starts no rebase
+    /// (#141): it never stashes them. Its kind and exit code are `dirty`'s. Nothing was rebased.
+    #[error(
+        "worktree {name} at {} has changes not committed ({}); commit or stash them first \
+         (nothing was rebased)",
+        path.display(),
+        listed(files)
+    )]
+    RebaseDirty {
+        name: String,
+        path: PathBuf,
+        files: Vec<String>,
+    },
+    /// A git operation is already in progress in the worktree (`operation`, as `worktree ls`
+    /// names it: `rebase`, `merge`, `cherry-pick` or `revert`), so `worktree rebase` starts none
+    /// (#141). Nothing was rebased.
+    #[error("{}", operation_in_progress_message(name, operation))]
+    OperationInProgress {
+        name: String,
+        operation: &'static str,
+    },
+    /// The repository has no default branch on `origin` to rebase the worktree onto (#141). A
+    /// rebase never goes onto a local branch instead. Nothing was rebased.
+    #[error(
+        "worktree {name} cannot be rebased: this repository has no default branch on an `origin` \
+         remote to rebase onto, and a rebase never goes onto a local branch (nothing was rebased)"
+    )]
+    NoRemoteBase { name: String },
+    /// The rebase of the worktree onto `base` stopped on conflicts in `files` (#141). It stays in
+    /// progress, as in Orca, for the agent to resolve or the person to abort.
+    #[error(
+        "the rebase of worktree {name} onto {base} stopped on conflicts in {}; it stays in \
+         progress: send them to the agent or abort the rebase, from the worktree menu or with \
+         `orca-term agent resolve {name}` or `orca-term worktree rebase {name} --abort`",
+        listed(files)
+    )]
+    RebaseConflict {
+        name: String,
+        base: String,
+        files: Vec<String>,
+    },
+    /// The worktree has no rebase in progress, so there is nothing to abort or to resolve, as
+    /// `asked` says (#141). Nothing was changed.
+    #[error("{}", no_rebase_message(name, *asked))]
+    NoRebase { name: String, asked: RebaseAsk },
+    /// No holder is alive in the worktree, so `agent resolve` has no agent to type its prompt
+    /// into (#141). Its kind and exit code are `no_holder`'s. The rebase stays in progress.
+    #[error(
+        "worktree {name} at {} has no running agent to resolve the conflicts; start it with \
+         `orca-term agent start {name}`, then try again (the rebase stays in progress)",
+        path.display()
+    )]
+    ResolveNoHolder { name: String, path: PathBuf },
+}
+
+/// What was asked of a rebase that is not in progress (#141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RebaseAsk {
+    /// `worktree rebase --abort`.
+    Abort,
+    /// `agent resolve`.
+    Resolve,
+}
+
+/// The most file names a refusal lists before it says how many more there are.
+const LISTED_FILES: usize = 5;
+
+/// `files` as a refusal lists them: the first few, comma-separated, then how many more.
+fn listed(files: &[String]) -> String {
+    let shown = files
+        .iter()
+        .take(LISTED_FILES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match files.len().saturating_sub(LISTED_FILES) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
+/// The message of [`TypedError::OperationInProgress`]: a rebase names how to resolve or abort it.
+fn operation_in_progress_message(name: &str, operation: &str) -> String {
+    if operation == "rebase" {
+        format!(
+            "worktree {name} has a rebase in progress already; send its conflicts to the agent \
+             with `orca-term agent resolve {name}`, or abort it with `orca-term worktree rebase \
+             {name} --abort` (nothing was rebased)"
+        )
+    } else {
+        format!(
+            "worktree {name} has a {operation} in progress; finish or abort it first (nothing \
+             was rebased)"
+        )
+    }
+}
+
+/// The message of [`TypedError::NoRebase`].
+fn no_rebase_message(name: &str, asked: RebaseAsk) -> String {
+    match asked {
+        RebaseAsk::Abort => format!("worktree {name} has no rebase in progress to abort"),
+        RebaseAsk::Resolve => format!(
+            "worktree {name} has no rebase in progress, so there are no conflicts to resolve"
+        ),
+    }
 }
 
 /// Why a worktree has no open pull request to merge (#136).
@@ -254,6 +359,9 @@ pub(crate) enum BusyReason {
     /// Its agent was asked to stop so the worktree could be removed, but did not (#94): nothing
     /// was removed.
     AgentDidNotStop,
+    /// Its agent is in a turn, working or waiting for the person, so its branch is not rebased
+    /// under it (#141).
+    RebaseInTurn,
 }
 
 fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
@@ -285,6 +393,11 @@ fn busy_message(name: &str, path: &Path, reason: BusyReason) -> String {
         BusyReason::AgentDidNotStop => format!(
             "worktree {name} at {path} is busy: its agent did not stop, so nothing was removed; \
              try again, or stop it with `orca-term agent stop {name}`"
+        ),
+        BusyReason::RebaseInTurn => format!(
+            "worktree {name} at {path} is busy: its agent is in a turn, working or waiting for \
+             you; rebase once the turn ends, or stop it first with `orca-term agent stop {name}` \
+             (nothing was rebased)"
         ),
     }
 }
@@ -344,9 +457,9 @@ impl TypedError {
         match self {
             Self::Busy { .. } => "busy",
             Self::NoSandbox { .. } => "no_sandbox",
-            Self::Dirty { .. } => "dirty",
+            Self::Dirty { .. } | Self::RebaseDirty { .. } => "dirty",
             Self::SessionGone { .. } => "session_gone",
-            Self::NoHolder { .. } => "no_holder",
+            Self::NoHolder { .. } | Self::ResolveNoHolder { .. } => "no_holder",
             Self::Prerequisite { .. }
             | Self::GhUnavailable { .. }
             | Self::MergeGhUnavailable { .. } => "prerequisite",
@@ -358,6 +471,10 @@ impl TypedError {
             Self::PrDraft { .. } => "pr_draft",
             Self::PrConflicting { .. } => "pr_conflicting",
             Self::NotApproved { .. } => "not_approved",
+            Self::OperationInProgress { .. } => "operation_in_progress",
+            Self::NoRemoteBase { .. } => "no_remote_base",
+            Self::RebaseConflict { .. } => "rebase_conflict",
+            Self::NoRebase { .. } => "no_rebase",
         }
     }
 
@@ -366,9 +483,9 @@ impl TypedError {
         match self {
             Self::Busy { .. } => 3,
             Self::NoSandbox { .. } => 5,
-            Self::Dirty { .. } => 6,
+            Self::Dirty { .. } | Self::RebaseDirty { .. } => 6,
             Self::SessionGone { .. } => 4,
-            Self::NoHolder { .. } => 7,
+            Self::NoHolder { .. } | Self::ResolveNoHolder { .. } => 7,
             Self::Prerequisite { .. }
             | Self::GhUnavailable { .. }
             | Self::MergeGhUnavailable { .. } => 9,
@@ -380,6 +497,10 @@ impl TypedError {
             Self::PrDraft { .. } => 14,
             Self::PrConflicting { .. } => 15,
             Self::NotApproved { .. } => 16,
+            Self::OperationInProgress { .. } => 17,
+            Self::NoRemoteBase { .. } => 18,
+            Self::RebaseConflict { .. } => 19,
+            Self::NoRebase { .. } => 20,
         }
     }
 }
@@ -804,6 +925,103 @@ mod tests {
             "cannot merge the pull request of worktree demo: GitHub CLI is unavailable; install \
              the GitHub CLI (gh) and log in with `gh auth login`, then try again (nothing was \
              merged)",
+        );
+    }
+
+    #[test]
+    fn the_rebase_refusals_have_their_kinds_and_exit_codes() {
+        let files = |n: usize| (1..=n).map(|i| format!("f{i}.txt")).collect::<Vec<_>>();
+        assert_typed(
+            busy(BusyReason::RebaseInTurn),
+            "busy",
+            3,
+            "worktree fix at /w/repo/fix is busy: its agent is in a turn, working or waiting for \
+             you; rebase once the turn ends, or stop it first with `orca-term agent stop fix` \
+             (nothing was rebased)",
+        );
+        assert_typed(
+            TypedError::RebaseDirty {
+                name: "demo".to_owned(),
+                path: PathBuf::from("/w/demo"),
+                files: files(7),
+            },
+            "dirty",
+            6,
+            "worktree demo at /w/demo has changes not committed (f1.txt, f2.txt, f3.txt, f4.txt, \
+             f5.txt and 2 more); commit or stash them first (nothing was rebased)",
+        );
+        assert_typed(
+            TypedError::OperationInProgress {
+                name: "demo".to_owned(),
+                operation: "merge",
+            },
+            "operation_in_progress",
+            17,
+            "worktree demo has a merge in progress; finish or abort it first (nothing was \
+             rebased)",
+        );
+        assert_typed(
+            TypedError::OperationInProgress {
+                name: "demo".to_owned(),
+                operation: "rebase",
+            },
+            "operation_in_progress",
+            17,
+            "worktree demo has a rebase in progress already; send its conflicts to the agent \
+             with `orca-term agent resolve demo`, or abort it with `orca-term worktree rebase \
+             demo --abort` (nothing was rebased)",
+        );
+        assert_typed(
+            TypedError::NoRemoteBase {
+                name: "demo".to_owned(),
+            },
+            "no_remote_base",
+            18,
+            "worktree demo cannot be rebased: this repository has no default branch on an \
+             `origin` remote to rebase onto, and a rebase never goes onto a local branch \
+             (nothing was rebased)",
+        );
+    }
+
+    #[test]
+    fn a_rebase_conflict_names_its_files_and_the_ways_out() {
+        assert_typed(
+            TypedError::RebaseConflict {
+                name: "demo".to_owned(),
+                base: "origin/main".to_owned(),
+                files: vec!["a.txt".to_owned()],
+            },
+            "rebase_conflict",
+            19,
+            "the rebase of worktree demo onto origin/main stopped on conflicts in a.txt; it stays \
+             in progress: send them to the agent or abort the rebase, from the worktree menu or \
+             with `orca-term agent resolve demo` or `orca-term worktree rebase demo --abort`",
+        );
+        let no_rebase = |asked| TypedError::NoRebase {
+            name: "demo".to_owned(),
+            asked,
+        };
+        assert_typed(
+            no_rebase(RebaseAsk::Abort),
+            "no_rebase",
+            20,
+            "worktree demo has no rebase in progress to abort",
+        );
+        assert_typed(
+            no_rebase(RebaseAsk::Resolve),
+            "no_rebase",
+            20,
+            "worktree demo has no rebase in progress, so there are no conflicts to resolve",
+        );
+        assert_typed(
+            TypedError::ResolveNoHolder {
+                name: "demo".to_owned(),
+                path: PathBuf::from("/w/demo"),
+            },
+            "no_holder",
+            7,
+            "worktree demo at /w/demo has no running agent to resolve the conflicts; start it \
+             with `orca-term agent start demo`, then try again (the rebase stays in progress)",
         );
     }
 

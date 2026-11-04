@@ -23,11 +23,11 @@ use crate::domain::state::AdminDir;
 use crate::domain::trust::{self, Unapproved};
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
-    Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
-    hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
-    pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new, session_resume,
-    turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
-    worktree_review, worktree_rm, worktree_seen, worktree_setup,
+    Approval, agent_attach, agent_holder, agent_resolve, agent_start, agent_stop, agent_swap,
+    check_git, doctor, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register,
+    nvim_unregister, pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new,
+    session_resume, turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new,
+    worktree_prune, worktree_rebase, worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -250,6 +250,20 @@ enum WorktreeCommand {
     },
     /// Clean the worktrees whose directory is gone (`git worktree prune`). Nothing else prunes.
     Prune,
+    /// Rebase a worktree's branch onto the default branch on origin, fetched first. Refuses an
+    /// agent in a turn, changes not committed, an operation already in progress and a repository
+    /// with no default branch on origin. A rebase that stops on conflicts stays in progress, for
+    /// `agent resolve` or `--abort`.
+    Rebase {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Abort the rebase in progress instead, putting the branch back where it was.
+        #[arg(long)]
+        abort: bool,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mark a worktree seen: every turn that ended so far is reviewed, and a mark set by hand goes.
     Seen {
         /// The worktree's name, or its path when several worktrees share the name.
@@ -498,6 +512,16 @@ enum AgentCommand {
         #[arg(long)]
         no_detach_key: bool,
     },
+    /// Type into a worktree's running agent one prompt asking it to resolve the conflicts its
+    /// rebase stopped on, `git add` them and continue the rebase, never aborting, resetting,
+    /// stashing or pushing.
+    Resolve {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop a worktree's agent and wait for its holder to end.
     Stop {
         /// The worktree's name, or its path when several worktrees share the name.
@@ -538,6 +562,7 @@ impl Cli {
                 | WorktreeCommand::New { json, .. }
                 | WorktreeCommand::Setup { json, .. }
                 | WorktreeCommand::Rm { json, .. }
+                | WorktreeCommand::Rebase { json, .. }
                 | WorktreeCommand::Seen { json, .. }
                 | WorktreeCommand::Unseen { json, .. }
                 | WorktreeCommand::Review { json, .. }
@@ -547,6 +572,7 @@ impl Cli {
             Command::Agent { command } => match command {
                 AgentCommand::Start { json, .. }
                 | AgentCommand::Swap { json, .. }
+                | AgentCommand::Resolve { json, .. }
                 | AgentCommand::Stop { json, .. } => *json,
                 AgentCommand::Attach { .. } | AgentCommand::Holder { .. } => false,
             },
@@ -697,6 +723,9 @@ fn run_worktree(command: &WorktreeCommand, format: Format) -> Result<ExitCode> {
             output::worktrees_pruned(&worktree_prune::run()?);
             Ok(ExitCode::SUCCESS)
         }
+        WorktreeCommand::Rebase {
+            worktree, abort, ..
+        } => run_worktree_rebase(worktree, *abort, format),
         WorktreeCommand::Seen { worktree, .. } => {
             output::worktree_marked(&worktree_seen::run(worktree, Mark::Seen)?, format)?;
             Ok(ExitCode::SUCCESS)
@@ -761,6 +790,16 @@ fn run_worktree_new(
         (None, Format::Text) => {}
     }
     Ok(exit_code(&created.setup))
+}
+
+/// Runs `worktree rebase` of `worktree`, or its `--abort` when `abort`, and prints what it did.
+fn run_worktree_rebase(worktree: &Target, abort: bool, format: Format) -> Result<ExitCode> {
+    if abort {
+        output::rebase_aborted(&worktree_rebase::abort(worktree)?, format)?;
+    } else {
+        output::worktree_rebased(&worktree_rebase::run(worktree)?, format)?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Runs `worktree setup`: says whose setup it runs, runs it and prints what it did.
@@ -849,18 +888,26 @@ fn run_agent(command: &AgentCommand, format: Format) -> Result<ExitCode> {
             worktree,
             no_detach_key,
         } => {
-            let detach_key = if *no_detach_key {
-                DetachKey::None
-            } else {
-                DetachKey::CtrlBackslash
-            };
-            output::attach_ended(&agent_attach::run(worktree, detach_key)?);
+            output::attach_ended(&agent_attach::run(worktree, detach_key(*no_detach_key))?);
         }
         AgentCommand::Stop { worktree, .. } => {
             output::agent_stopped(&agent_stop::run(worktree)?, format)?;
         }
+        AgentCommand::Resolve { worktree, .. } => {
+            output::resolve_sent(&agent_resolve::run(worktree)?, format)?;
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The key that detaches `agent attach`: none with `--no-detach-key` (`no_detach_key`), else
+/// Ctrl-\.
+fn detach_key(no_detach_key: bool) -> DetachKey {
+    if no_detach_key {
+        DetachKey::None
+    } else {
+        DetachKey::CtrlBackslash
+    }
 }
 
 /// Runs `agent swap` of `worktree` for `agent`, with its first terminal `size` (rows, columns)

@@ -86,6 +86,9 @@ pub(crate) struct Worktree {
 pub(crate) struct Fleet {
     pub(crate) primary: PrimaryCheckout,
     pub(crate) worktrees: Vec<Worktree>,
+    /// The default branch when it is on `origin`, which a worktree is rebased onto (#141); `None`
+    /// when the repository has none, or it was not looked for (only `worktree ls` looks).
+    pub(crate) remote_base: Option<Branch>,
 }
 
 impl Fleet {
@@ -117,6 +120,7 @@ impl Fleet {
         Ok(Self {
             primary: PrimaryCheckout::from_entry(primary),
             worktrees,
+            remote_base: None,
         })
     }
 
