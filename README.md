@@ -31,6 +31,9 @@ last recorded it, is merged on GitHub with exactly the branch's tip as its head,
 or rebase merge: the removal then says `deleted branch <name> (merged as PR #12)`. It reads only
 that record and never asks GitHub, so after merging on the web run `pr refresh` first. A branch
 with a commit after the merged head is kept, and so is one whose record predates the head.
+A merged branch is deleted only at the tip that was checked: if the agent commits while it is
+being stopped, the branch is kept with that commit, saying `kept branch <name>: it moved while the
+agent stopped`. `--force` still deletes the branch whatever its tip.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
 pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs

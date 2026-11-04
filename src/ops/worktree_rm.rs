@@ -14,6 +14,10 @@
 //! `pr merge` keep: the removal never asks GitHub. A cache with no head commit (written before
 //! #137) never proves a merge, and a branch with a commit after the merged head is kept.
 //!
+//! A branch deleted as merged is deleted only at the tip that was checked (#140): an agent that
+//! commits while it stops moves the branch past that tip, and git then refuses the deletion
+//! atomically, so the branch is kept with its new commits. `--force` deletes whatever the tip.
+//!
 //! Once the worktree is removed, its chain of snapshots (`refs/orca-term/worktrees/<id>`,
 //! `domain/snapshot.rs`) is deleted too: that ref does not die with the admin directory.
 
@@ -26,6 +30,7 @@ use crate::domain::error::TypedError;
 use crate::domain::fleet::PrimaryCheckout;
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::{self, Found};
+use crate::domain::review::Commit;
 use crate::domain::snapshot;
 use crate::domain::state::{AdminDir, LockStatus};
 use crate::domain::worktree::{
@@ -54,8 +59,11 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
     // Decided before the worktree goes, so a failure here leaves everything in place.
     let default = git::default_branch(primary).ok();
     let planned = match worktree::branch_fate(worktree.branch.as_ref(), default.as_ref(), removal) {
-        BranchFate::Decided(outcome) => outcome,
-        BranchFate::IfMerged { branch } => outcome_if_merged(primary, branch, cached_pr.as_ref())?,
+        BranchFate::Decided(outcome) => PlannedBranch {
+            outcome,
+            checked_tip: None,
+        },
+        BranchFate::IfMerged { branch } => plan_if_merged(primary, branch, cached_pr.as_ref())?,
     };
 
     // Every rule has passed: only now is the agent stopped, so a refusal leaves it running. Read
@@ -131,68 +139,105 @@ fn stop_agent(worktree: &Worktree, admin: &AdminDir, primary: &PrimaryCheckout) 
     })
 }
 
-/// What happens to `branch` when it goes only if merged: git says whether it is merged into the
-/// default branch; failing that, `cached_pr` (what `pr.json` holds) may prove its pull request
-/// merged at the branch's tip. A default branch git cannot find keeps the branch, for that reason.
-fn outcome_if_merged(
+/// What the removal plans for the worktree's branch, decided before the agent stops: the outcome,
+/// and, when the branch is to be deleted as merged, the tip that was checked (#140). Only that
+/// tip is deleted: a branch that moved past it is kept.
+struct PlannedBranch {
+    outcome: BranchOutcome,
+    /// The commit the merge checks looked at; `None` when no check ran (`--force`, a kept or
+    /// detached branch).
+    checked_tip: Option<Commit>,
+}
+
+/// What happens to `branch` when it goes only if merged: git says whether its tip is merged into
+/// the default branch; failing that, `cached_pr` (what `pr.json` holds) may prove its pull request
+/// merged at that tip. A default branch git cannot find keeps the branch, for that reason.
+fn plan_if_merged(
     primary: &PrimaryCheckout,
     branch: Branch,
     cached_pr: Option<&Found>,
-) -> Result<BranchOutcome> {
+) -> Result<PlannedBranch> {
     let start = match git::start_point(primary) {
         Ok(start) => start,
         Err(err) => {
-            return Ok(BranchOutcome::Kept {
+            return Ok(kept(
                 branch,
-                reason: KeptReason::NoDefaultBranch(format!("{err:#}")),
-            });
+                KeptReason::NoDefaultBranch(format!("{err:#}")),
+            ));
         }
     };
-    if git::is_merged(primary, &branch, &start)? {
-        return Ok(BranchOutcome::DeletedMerged {
+    // Read once: every check below looks at this commit, and only this commit may be deleted.
+    let Some(tip) = git::read_ref(&primary.path, &branch_ref(&branch))? else {
+        return Ok(kept(branch, KeptReason::NotMerged { into: start }));
+    };
+    let merged_pr = cached_pr.and_then(|found| pr::merged_as(found, tip.as_str()));
+    let outcome = if git::is_merged(primary, &tip, &start)? {
+        BranchOutcome::DeletedMerged {
             branch,
             into: start,
-        });
-    }
-    if let Some(number) = merged_pr(primary, &branch, cached_pr)? {
-        return Ok(BranchOutcome::DeletedMergedPr { branch, number });
-    }
-    Ok(BranchOutcome::Kept {
-        branch,
-        reason: KeptReason::NotMerged { into: start },
+        }
+    } else if let Some(number) = merged_pr {
+        BranchOutcome::DeletedMergedPr { branch, number }
+    } else {
+        return Ok(kept(branch, KeptReason::NotMerged { into: start }));
+    };
+    Ok(PlannedBranch {
+        outcome,
+        checked_tip: Some(tip),
     })
 }
 
-/// The number of the pull request `cached_pr` records merged with exactly the tip of `branch` as
-/// its head, or `None` when there is no such pull request.
-fn merged_pr(
-    primary: &PrimaryCheckout,
-    branch: &Branch,
-    cached_pr: Option<&Found>,
-) -> Result<Option<u64>> {
-    let Some(found) = cached_pr else {
-        return Ok(None);
-    };
-    let Some(tip) = git::read_ref(&primary.path, &format!("refs/heads/{branch}"))? else {
-        return Ok(None);
-    };
-    Ok(pr::merged_as(found, tip.as_str()))
+/// The plan that keeps `branch`, for `reason`.
+fn kept(branch: Branch, reason: KeptReason) -> PlannedBranch {
+    PlannedBranch {
+        outcome: BranchOutcome::Kept { branch, reason },
+        checked_tip: None,
+    }
 }
 
-/// Deletes the branch when `planned` says it goes, and returns `planned`, or why the branch was
-/// kept when git refuses.
-fn delete_branch(primary: &PrimaryCheckout, planned: BranchOutcome) -> BranchOutcome {
+/// The full name of the ref of `branch`: `refs/heads/<branch>`.
+fn branch_ref(branch: &Branch) -> String {
+    format!("refs/heads/{branch}")
+}
+
+/// Deletes the branch when `planned` says it goes, and returns the planned outcome, or why the
+/// branch was kept when git refuses. A branch with a checked tip is deleted only at that tip.
+fn delete_branch(primary: &PrimaryCheckout, planned: PlannedBranch) -> BranchOutcome {
+    let PlannedBranch {
+        outcome,
+        checked_tip,
+    } = planned;
     let (BranchOutcome::DeletedMerged { branch, .. }
     | BranchOutcome::DeletedMergedPr { branch, .. }
-    | BranchOutcome::DeletedForced { branch }) = &planned
+    | BranchOutcome::DeletedForced { branch }) = &outcome
     else {
-        return planned;
+        return outcome;
     };
-    match git::delete_branch(primary, branch) {
-        Ok(()) => planned,
+    let deleted = match &checked_tip {
+        Some(tip) => git::delete_branch_at(primary, branch, tip),
+        None => git::delete_branch(primary, branch),
+    };
+    match deleted {
+        Ok(()) => outcome,
         Err(err) => BranchOutcome::Kept {
             branch: branch.clone(),
-            reason: KeptReason::DeleteFailed(format!("{err:#}")),
+            reason: refusal_reason(primary, branch, checked_tip.as_ref(), &err),
         },
     }
+}
+
+/// Why git refused to delete `branch`: it moved past `checked_tip`, or `err` otherwise.
+fn refusal_reason(
+    primary: &PrimaryCheckout,
+    branch: &Branch,
+    checked_tip: Option<&Commit>,
+    err: &anyhow::Error,
+) -> KeptReason {
+    if let Some(checked) = checked_tip {
+        let now = git::read_ref(&primary.path, &branch_ref(branch));
+        if matches!(&now, Ok(Some(now)) if now != checked) {
+            return KeptReason::MovedWhileStopping;
+        }
+    }
+    KeptReason::DeleteFailed(format!("{err:#}"))
 }
