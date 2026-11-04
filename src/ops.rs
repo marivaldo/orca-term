@@ -33,6 +33,7 @@ pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
 pub(crate) mod worktree_prune;
+pub(crate) mod worktree_push;
 pub(crate) mod worktree_rebase;
 pub(crate) mod worktree_review;
 pub(crate) mod worktree_rm;

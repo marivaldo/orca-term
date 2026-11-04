@@ -1,5 +1,6 @@
 //! gh guard lint: the GitHub CLI runs only from the `pr refresh` op (#87), the `pr create` op
-//! (#132) and the `pr merge` op (#136), and only `pr create` pushes. gh is a program that speaks
+//! (#132) and the `pr merge` op (#136), and only `pr create` and `worktree push` (#146) push,
+//! never forced. gh is a program that speaks
 //! to GitHub with the person's credentials, so it is named, as a program to find and run, in two
 //! files alone, `src/ops/pr_refresh.rs` and `src/ops/pr_create.rs`; this lint rejects the string
 //! literal `"gh"` in every other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client
@@ -12,15 +13,22 @@
 //!
 //! A push sends the person's commits to the network the same way, so `git push` is started in one
 //! function alone, `push_branch` in `src/adapters/git.rs`, the only file that may hold the literal
-//! `"push"`, and only `src/ops/pr_create.rs` may call it. Every read path (`pr compose`,
-//! `worktree ls`, ...) stays off the network.
+//! `"push"`, and only `src/ops/pr_create.rs` and `src/ops/worktree_push.rs` (#146) may call it.
+//! Every read path (`pr compose`, `worktree ls`, ...) stays off the network.
+//!
+//! A push never forces (#146): the string literal `--force` is refused in every file scanned, so
+//! git's force is never written (`branch -D` and `worktree remove -f` spell theirs out), and a
+//! literal starting with `--force-with-lease` is refused outside the git adapter, the one place a
+//! push with lease is built. The two files that name orca-term's own `worktree rm --force` and
+//! `worktree push --force-with-lease`, which git never sees, are left out (`OWN_FLAGS`).
 //!
 //! A fetch reaches the network too (#141), so `git fetch` is started in one function alone,
 //! `fetch_into` in `src/adapters/git.rs`, the only file that may hold the literal `"fetch"`, and
 //! only `src/ops/worktree_rebase.rs` (`worktree rebase`) may call it.
 //!
 //! The check is textual, like the launch guard: comments are skipped, and only a literal that is
-//! exactly `gh`, `push` or `fetch` counts (`"gh auth login"` in a message is not a program name).
+//! exactly `gh`, `push`, `fetch` or `--force` counts (`"gh auth login"` in a message is not a
+//! program name, and `"pass --force to remove it"` names no force given to git).
 
 use std::path::Path;
 
@@ -55,8 +63,17 @@ const DELETE_BRANCH: &str = "delete-branch";
 /// The one file that may start `git push`: the git adapter, in `push_branch`.
 const PUSH_ADAPTER: &str = "src/adapters/git.rs";
 
-/// The one op that may push, through `push_branch`.
-const PUSH_OP: &str = "src/ops/pr_create.rs";
+/// The ops that may push, through `push_branch`.
+const PUSH_OPS: &[&str] = &["src/ops/pr_create.rs", "src/ops/worktree_push.rs"];
+
+/// The same ops, as the findings name them.
+const PUSH_OPS_TEXT: &str =
+    "src/ops/pr_create.rs (`pr create`) and src/ops/worktree_push.rs (`worktree push`)";
+
+/// The files that name orca-term's own flags `worktree rm --force` and `worktree push
+/// --force-with-lease`, which git never sees: the reason `worktree rm --json` prints, and the
+/// client passing them to the core.
+const OWN_FLAGS: &[&str] = &["src/output/json.rs", "lua/orca-term/core.lua"];
 
 /// The call that pushes.
 const PUSH_CALL: &str = "push_branch(";
@@ -109,6 +126,7 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     } else {
         ("//", &["\"gh\""])
     };
+    problems.extend(check_force(path, text, marker));
     for (n, line) in text.lines().enumerate() {
         let code = without_comment(line, marker);
         if !GH_MODULES.contains(&path) && literals.iter().any(|literal| code.contains(literal)) {
@@ -133,9 +151,44 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     problems
 }
 
+/// The findings about forcing in the file at `path` holding `text`, each line's code read with
+/// `marker` starting its comment: a string literal that is exactly `--force`, and one that starts
+/// with `--force-with-lease` outside the git adapter, in either quote. The files naming
+/// orca-term's own flags ([`OWN_FLAGS`]) may hold both.
+fn check_force(path: &str, text: &str, marker: &str) -> Vec<String> {
+    if OWN_FLAGS.contains(&path) {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let code = without_comment(line, marker);
+        if ["\"--force\"", "'--force'"]
+            .iter()
+            .any(|literal| code.contains(literal))
+        {
+            problems.push(format!(
+                "{path}:{}: names --force; nothing is forced but a push with lease, in \
+                 {PUSH_ADAPTER}",
+                n + 1
+            ));
+        }
+        let names_lease = ["\"--force-with-lease", "'--force-with-lease"]
+            .iter()
+            .any(|literal| code.contains(literal));
+        if names_lease && path != PUSH_ADAPTER {
+            problems.push(format!(
+                "{path}:{}: names --force-with-lease; only {PUSH_ADAPTER} may push with a lease",
+                n + 1
+            ));
+        }
+    }
+    problems
+}
+
 /// The findings about the network in the Rust file at `path` holding `text`: the literal
-/// `"push"` or `"fetch"` outside the git adapter, a call of `push_branch` outside the adapter and
-/// `pr create`, and a call of `fetch_into` outside the adapter and `worktree rebase`.
+/// `"push"` or `"fetch"` outside the git adapter, a call of `push_branch` outside the adapter,
+/// `pr create` and `worktree push`, and a call of `fetch_into` outside the adapter and `worktree
+/// rebase`.
 fn check_push(path: &str, text: &str) -> Vec<String> {
     let is_rust = Path::new(path)
         .extension()
@@ -152,9 +205,9 @@ fn check_push(path: &str, text: &str) -> Vec<String> {
                 n + 1
             ));
         }
-        if code.contains(PUSH_CALL) && path != PUSH_OP {
+        if code.contains(PUSH_CALL) && !PUSH_OPS.contains(&path) {
             problems.push(format!(
-                "{path}:{}: pushes a branch; only {PUSH_OP} (`pr create`) may push",
+                "{path}:{}: pushes a branch; only {PUSH_OPS_TEXT} may push",
                 n + 1
             ));
         }
@@ -239,10 +292,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_git_adapter_names_push_and_only_pr_create_calls_it() {
+    fn only_the_git_adapter_names_push_and_only_pr_create_and_worktree_push_call_it() {
         let adapter = "invoke(worktree, &[\"push\", \"-u\", \"origin\", branch])\n";
         assert!(check_file(PUSH_ADAPTER, adapter).is_empty());
-        assert!(check_file(PUSH_OP, "git::push_branch(&worktree.path, branch)?\n").is_empty());
+        for op in PUSH_OPS {
+            let pushes = "git::push_branch(&worktree.path, branch, mode)?\n";
+            assert_eq!(check_file(op, pushes), Vec::<String>::new());
+        }
         assert_eq!(
             check_file(
                 "src/ops/pr_compose.rs",
@@ -250,7 +306,7 @@ mod tests {
             ),
             [
                 "src/ops/pr_compose.rs:1: pushes a branch; only src/ops/pr_create.rs (`pr create`) \
-                 may push"
+                 and src/ops/worktree_push.rs (`worktree push`) may push"
             ]
         );
         assert_eq!(
@@ -282,6 +338,63 @@ mod tests {
         );
         let comment = "// \"fetch\" in a comment\n";
         assert_eq!(check_file(FETCH_OP, comment), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_literal_force_is_refused_everywhere_even_in_the_git_adapter() {
+        assert_eq!(
+            check_file(PUSH_ADAPTER, "args.push(OsStr::new(\"--force\"));\n"),
+            [
+                "src/adapters/git.rs:1: names --force; nothing is forced but a push with lease, \
+                 in src/adapters/git.rs"
+            ]
+        );
+        assert_eq!(
+            check_file("src/ops/worktree_push.rs", "let force = \"--force\";\n").len(),
+            1
+        );
+        assert_eq!(
+            check_file("lua/orca-term/actions.lua", "local a = { '--force' }\n").len(),
+            1
+        );
+        assert_eq!(check_file("build.lua", "run({ \"--force\" })\n").len(), 1);
+        let none = Vec::<String>::new();
+        // A message naming orca-term's flag, a comment, git's short spelling and branch -D pass.
+        let fine = "let why = \"pass --force to remove it\";\n// \"--force\" in a comment\n\
+                    args.push(OsStr::new(\"-f\"));\noutput(&path, &[\"branch\", \"-D\", b])\n";
+        assert_eq!(check_file(PUSH_ADAPTER, fine), none);
+        // The files naming orca-term's own `worktree rm --force`.
+        let reason = "(Some(branch), \"deleted\", Some(\"--force\".to_owned()))\n";
+        assert_eq!(check_file("src/output/json.rs", reason), none);
+        let lua = "table.insert(args, '--force')\n";
+        assert_eq!(check_file("lua/orca-term/core.lua", lua), none);
+    }
+
+    #[test]
+    fn only_the_git_adapter_names_the_lease() {
+        let none = Vec::<String>::new();
+        let adapter = "args.push(format!(\"--force-with-lease={branch}:{expected}\"));\n";
+        assert_eq!(check_file(PUSH_ADAPTER, adapter), none);
+        assert_eq!(
+            check_file("src/ops/worktree_push.rs", adapter),
+            [
+                "src/ops/worktree_push.rs:1: names --force-with-lease; only src/adapters/git.rs \
+                 may push with a lease"
+            ]
+        );
+        assert_eq!(
+            check_file(
+                "lua/orca-term/actions.lua",
+                "local a = { '--force-with-lease' }\n"
+            )
+            .len(),
+            1
+        );
+        // A message naming orca-term's flag, and the client passing it to the core, pass.
+        let message = "\"`orca-term worktree push {name} --force-with-lease` would replace it\"\n";
+        assert_eq!(check_file("src/domain/error.rs", message), none);
+        let lua = "table.insert(args, '--force-with-lease')\n";
+        assert_eq!(check_file("lua/orca-term/core.lua", lua), none);
     }
 
     #[test]

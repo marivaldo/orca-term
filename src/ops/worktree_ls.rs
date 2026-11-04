@@ -1,6 +1,6 @@
 //! Ops: `worktree ls`, which lists the fleet. Never writes: it runs git to count each worktree's
 //! changed files, and to find the default branch on `origin` a worktree is rebased onto (#141),
-//! which it never fetches.
+//! which it never fetches, and whether it has an `origin` a worktree is pushed to (#146).
 
 use anyhow::Result;
 
@@ -16,5 +16,6 @@ pub(crate) fn run() -> Result<Fleet> {
     let mut fleet = read_fleet(&cwd)?;
     count_fleet_changes(&mut fleet);
     fleet.remote_base = git::remote_default_branch(&fleet.primary).ok().flatten();
+    fleet.has_origin = git::has_origin(&fleet.primary).unwrap_or(false);
     Ok(fleet)
 }

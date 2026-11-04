@@ -22,6 +22,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::push::Pushed;
 use crate::domain::rebase::{Aborted, Outcome as RebaseOutcome, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -43,12 +44,14 @@ struct Envelope<'a, T: Serialize> {
 
 /// `worktree ls --json`: the primary checkout, every worktree, and `remote_base`, the default
 /// branch on `origin` a worktree is rebased onto (`origin/main`; null when the repository has
-/// none, #141).
+/// none, #141), then `has_origin`, whether the repository has a remote named `origin` a worktree
+/// is pushed to (#146).
 #[derive(Debug, Serialize)]
 struct FleetView<'a> {
     primary: PrimaryView<'a>,
     worktrees: Vec<ListedWorktreeView<'a>>,
     remote_base: Option<String>,
+    has_origin: bool,
 }
 
 /// A worktree as `worktree ls` and `worktree detail` print it: the worktree object, then `pr`,
@@ -159,6 +162,23 @@ struct RebasedView<'a> {
     base: &'a str,
     outcome: &'static str,
     replayed: usize,
+}
+
+/// `worktree push --json` (#146): the worktree's `name` and `path`, its `branch`, where it went
+/// (`remote`, `origin/demo`), the `outcome` (`pushed`, or `up_to_date` when `origin` already had
+/// it), whether a lease was asked for (`with_lease`), how many files with changes not committed
+/// were left out (`uncommitted`), and its pull request as read again after the push (`pr`, as
+/// `pr refresh` shows it).
+#[derive(Debug, Serialize)]
+struct PushedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    branch: &'a str,
+    remote: String,
+    outcome: &'static str,
+    with_lease: bool,
+    uncommitted: usize,
+    pr: PrView<'a>,
 }
 
 /// `worktree rebase --abort --json` (#141): the worktree's `name` and `path`, and `aborted`
@@ -612,6 +632,7 @@ pub(crate) fn fleet(fleet: &Fleet) -> serde_json::Result<String> {
             .remote_base
             .as_ref()
             .map(|branch| StartPoint::Remote(branch.clone()).to_string()),
+        has_origin: fleet.has_origin,
     })
 }
 
@@ -676,6 +697,20 @@ pub(crate) fn rebased(rebased: &Rebased) -> serde_json::Result<String> {
         base: &rebased.base,
         outcome: rebased.outcome.name(),
         replayed,
+    })
+}
+
+/// What `worktree push` did, as one JSON document.
+pub(crate) fn pushed(pushed: &Pushed) -> serde_json::Result<String> {
+    document(PushedView {
+        name: &pushed.name,
+        path: &pushed.path,
+        branch: pushed.branch.as_str(),
+        remote: pushed.remote(),
+        outcome: pushed.outcome.name(),
+        with_lease: pushed.with_lease,
+        uncommitted: pushed.uncommitted,
+        pr: pr_view(&pushed.facts),
     })
 }
 
@@ -1270,7 +1305,7 @@ mod tests {
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":null}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":null,"has_origin":false}}"#
             )
         );
         listed.worktrees[0].unseen = true;
@@ -1393,6 +1428,7 @@ mod tests {
                 },
                 worktrees: vec![listed],
                 remote_base: None,
+                has_origin: false,
             })
             .unwrap();
             assert!(
@@ -1459,10 +1495,11 @@ mod tests {
         .unwrap();
         fleet.worktrees.push(worktree);
         fleet.remote_base = Some(Branch::new("main"));
+        fleet.has_origin = true;
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main"}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main","has_origin":true}}"#
             )
         );
     }
