@@ -1,6 +1,7 @@
 //! Ops: `pr refresh`, which asks the GitHub CLI about each worktree's pull request and its checks
 //! (#87) and keeps the answer in the worktree's `pr.json` (`domain/pr.rs`), for `worktree ls` and
-//! `worktree detail` to show. This is the only code that runs gh (`cargo xtask gh-guard`).
+//! `worktree detail` to show. gh runs only from here and from `pr create`, which finds it, asks
+//! about a branch and keeps the answer through this module's functions (`cargo xtask gh-guard`).
 //!
 //! gh runs in every worktree at once, one thread each, each stopped after 10 seconds, so a fleet
 //! takes about as long as its slowest answer. Each `pr.json` is replaced whole with no lock, the
@@ -8,7 +9,7 @@
 //! gh missing, not logged in or not pointed at GitHub is an answer too (`unavailable`): the
 //! command itself fails only for a worktree it cannot find or write.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::{Result, bail};
@@ -44,7 +45,7 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
         }
         named
     };
-    let gh = fs::executable_in(&env::path_dirs(), GH);
+    let gh = find_gh();
     let answers = ask_all(gh.as_deref(), &chosen);
     let fetched_at = env::now_millis();
     let mut refreshed = Refreshed::default();
@@ -58,6 +59,11 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
         });
     }
     Ok(refreshed)
+}
+
+/// gh as found on PATH, or `None` when it is not there. `pr create` finds it here too.
+pub(crate) fn find_gh() -> Option<PathBuf> {
+    fs::executable_in(&env::path_dirs(), GH)
 }
 
 /// Asks gh, found at `gh` (`None` when it is not on PATH), about every worktree of `worktrees` at
@@ -80,7 +86,7 @@ fn ask_all(gh: Option<&Path>, worktrees: &[&Worktree]) -> Vec<Found> {
 }
 
 /// What gh says about the pull request of `worktree`'s branch. A worktree on no branch has none.
-fn ask(gh: Option<&Path>, worktree: &Worktree) -> Found {
+pub(crate) fn ask(gh: Option<&Path>, worktree: &Worktree) -> Found {
     let Some(branch) = &worktree.branch else {
         return Found::NoPr;
     };
@@ -109,7 +115,7 @@ fn ask(gh: Option<&Path>, worktree: &Worktree) -> Found {
 
 /// Writes `facts` to the `pr.json` of `worktree`, never over a newer schema, and tells the running
 /// Neovims when the answer changed.
-fn keep(worktree: &Worktree, facts: &PrFacts) -> Result<()> {
+pub(crate) fn keep(worktree: &Worktree, facts: &PrFacts) -> Result<()> {
     let admin = git::admin_dir(&worktree.path)?;
     let before = read_pr(&admin);
     pr::check_overwrite(&before)?;

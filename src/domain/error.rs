@@ -76,6 +76,47 @@ pub(crate) enum TypedError {
         subject: Subject,
         file: PathBuf,
     },
+    /// The worktree's branch has no commits ahead of the base, so `pr create` has nothing to open
+    /// a pull request with (#132). Nothing was pushed.
+    #[error(
+        "worktree {name} has no commits ahead of {base} on its branch {branch}, so there is \
+         nothing to open a pull request with; commit your changes first (nothing was pushed)"
+    )]
+    NoCommits {
+        name: String,
+        branch: String,
+        base: String,
+    },
+    /// The worktree's branch already has an open pull request (or a draft), `number` at `url`,
+    /// as gh says, so `pr create` opens no other (#132). Nothing was pushed.
+    #[error(
+        "worktree {name} already has an open pull request, #{number}: {url} (nothing was pushed)"
+    )]
+    PrExists {
+        name: String,
+        number: u64,
+        url: String,
+    },
+    /// `git push` of the worktree's branch failed, for `reason`, git's own words (#132). No pull
+    /// request was created.
+    #[error(
+        "could not push branch {branch} of worktree {name} to origin: {reason}; no pull request \
+         was created"
+    )]
+    PushFailed {
+        name: String,
+        branch: String,
+        reason: String,
+    },
+    /// gh cannot create the worktree's pull request, for `reason`, in the words `pr refresh` keeps
+    /// (`GitHub CLI is unavailable`, gh's first line when it is not logged in). Its kind and exit
+    /// code are `prerequisite`'s, but `doctor` does not check gh, so the message names gh's own fix
+    /// (#132). Nothing was pushed.
+    #[error(
+        "cannot create a pull request for worktree {name}: {reason}; install the GitHub CLI (gh) \
+         and log in with `gh auth login`, then try again (nothing was pushed)"
+    )]
+    GhUnavailable { name: String, reason: String },
 }
 
 /// The message of [`TypedError::Untrusted`], naming the command that asks.
@@ -222,8 +263,11 @@ impl TypedError {
             Self::Dirty { .. } => "dirty",
             Self::SessionGone { .. } => "session_gone",
             Self::NoHolder { .. } => "no_holder",
-            Self::Prerequisite { .. } => "prerequisite",
+            Self::Prerequisite { .. } | Self::GhUnavailable { .. } => "prerequisite",
             Self::Untrusted { .. } => "untrusted",
+            Self::NoCommits { .. } => "no_commits",
+            Self::PrExists { .. } => "pr_exists",
+            Self::PushFailed { .. } => "push_failed",
         }
     }
 
@@ -235,8 +279,11 @@ impl TypedError {
             Self::Dirty { .. } => 6,
             Self::SessionGone { .. } => 4,
             Self::NoHolder { .. } => 7,
-            Self::Prerequisite { .. } => 9,
+            Self::Prerequisite { .. } | Self::GhUnavailable { .. } => 9,
             Self::Untrusted { .. } => 8,
+            Self::NoCommits { .. } => 10,
+            Self::PrExists { .. } => 11,
+            Self::PushFailed { .. } => 12,
         }
     }
 }
@@ -522,6 +569,54 @@ mod tests {
              /w/repo/fix/orca-term.yaml, are not approved in this repository, so the agent did \
              not start; read them, then run `orca-term agent start fix` in a terminal to be \
              asked, or pass --approve-sandbox"
+        );
+    }
+
+    #[test]
+    fn each_refusal_of_pr_create_has_its_own_kind_and_exit_code() {
+        let err = anyhow::Error::new(TypedError::NoCommits {
+            name: "demo".to_owned(),
+            branch: "demo".to_owned(),
+            base: "main".to_owned(),
+        });
+        assert_eq!((kind(&err), exit_code(&err)), ("no_commits", 10));
+        assert_eq!(
+            err.to_string(),
+            "worktree demo has no commits ahead of main on its branch demo, so there is nothing \
+             to open a pull request with; commit your changes first (nothing was pushed)"
+        );
+        let err = anyhow::Error::new(TypedError::PrExists {
+            name: "demo".to_owned(),
+            number: 12,
+            url: "https://github.com/o/r/pull/12".to_owned(),
+        });
+        assert_eq!((kind(&err), exit_code(&err)), ("pr_exists", 11));
+        assert_eq!(
+            err.to_string(),
+            "worktree demo already has an open pull request, #12: \
+             https://github.com/o/r/pull/12 (nothing was pushed)"
+        );
+        let err = anyhow::Error::new(TypedError::PushFailed {
+            name: "demo".to_owned(),
+            branch: "demo".to_owned(),
+            reason: "! [rejected] demo -> demo (fetch first)".to_owned(),
+        });
+        assert_eq!((kind(&err), exit_code(&err)), ("push_failed", 12));
+        assert_eq!(
+            err.to_string(),
+            "could not push branch demo of worktree demo to origin: ! [rejected] demo -> demo \
+             (fetch first); no pull request was created"
+        );
+        let err = anyhow::Error::new(TypedError::GhUnavailable {
+            name: "demo".to_owned(),
+            reason: "GitHub CLI is unavailable".to_owned(),
+        });
+        assert_eq!((kind(&err), exit_code(&err)), ("prerequisite", 9));
+        assert_eq!(
+            err.to_string(),
+            "cannot create a pull request for worktree demo: GitHub CLI is unavailable; install \
+             the GitHub CLI (gh) and log in with `gh auth login`, then try again (nothing was \
+             pushed)"
         );
     }
 

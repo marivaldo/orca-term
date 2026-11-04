@@ -23,7 +23,8 @@ use crate::domain::include;
 use crate::domain::note::{Listed, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::nvim::Address;
 use crate::domain::operation::{Operation, RebaseStep};
-use crate::domain::pr::{Checks, Found, Refreshed};
+use crate::domain::pr::create::{Composed, PrCreated};
+use crate::domain::pr::{Checks, Found, PrState, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
 use crate::domain::seen::Marked;
@@ -664,6 +665,68 @@ fn render_prs_refreshed(refreshed: &Refreshed) -> String {
     lines.join("\n")
 }
 
+/// Prints the message `pr compose` made, as the composer shows it: the title, a blank line, then
+/// the body (the title alone when the body is empty).
+pub(crate) fn pr_composed(composed: &Composed, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_pr_composed(composed)),
+        Format::Json => out(&json::composed(composed)?),
+    }
+    Ok(())
+}
+
+fn render_pr_composed(composed: &Composed) -> String {
+    let message = &composed.message;
+    if message.body.is_empty() {
+        message.title.clone()
+    } else {
+        format!("{}\n\n{}", message.title, message.body)
+    }
+}
+
+/// Prints what `pr create` made, with a second line when files with uncommitted changes were left
+/// out:
+///
+/// ```text
+/// demo: created PR #12 (draft): https://github.com/o/r/pull/12
+/// 2 files with uncommitted changes were left out of the pull request
+/// ```
+pub(crate) fn pr_created(created: &PrCreated, format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_pr_created(created)),
+        Format::Json => out(&json::created_pr(created)?),
+    }
+    Ok(())
+}
+
+fn render_pr_created(created: &PrCreated) -> String {
+    let mut text = match created.pr() {
+        Some(pr) => {
+            let draft = if pr.state == PrState::Draft {
+                " (draft)"
+            } else {
+                ""
+            };
+            format!(
+                "{}: created PR #{}{draft}: {}",
+                created.name, pr.number, pr.url
+            )
+        }
+        None => format!("{}: created a PR", created.name),
+    };
+    match created.uncommitted {
+        0 => {}
+        1 => text.push_str("\n1 file with uncommitted changes was left out of the pull request"),
+        n => {
+            let _ = write!(
+                text,
+                "\n{n} files with uncommitted changes were left out of the pull request"
+            );
+        }
+    }
+    text
+}
+
 /// What was found about a pull request, in a few words: `PR #12 open, checks passing`, `no PR`
 /// or `PR unavailable: <reason>`.
 fn pr_text(found: &Found) -> String {
@@ -1183,6 +1246,61 @@ mod tests {
             render_prs_refreshed(&all),
             "fix: PR #12 open, checks pending\nold: PR #12 merged, no checks\ndocs: no PR\n\
              spike: PR unavailable: GitHub CLI is unavailable"
+        );
+    }
+
+    #[test]
+    fn compose_prints_the_title_a_blank_line_and_the_body() {
+        use crate::domain::branch::Branch;
+        use crate::domain::pr::create::Message;
+        let composed = |body: &str| Composed {
+            message: Message {
+                title: "Fix the login".to_owned(),
+                body: body.to_owned(),
+            },
+            base: Branch::new("main"),
+            branch: Branch::new("fix"),
+            commits: 1,
+            uncommitted: 0,
+        };
+        assert_eq!(
+            render_pr_composed(&composed("## What\n")),
+            "Fix the login\n\n## What\n"
+        );
+        assert_eq!(render_pr_composed(&composed("")), "Fix the login");
+    }
+
+    #[test]
+    fn create_says_the_pull_request_and_the_files_left_out() {
+        use crate::domain::pr::{PrFacts, PrState, PullRequest};
+        let created = |state, uncommitted| PrCreated {
+            name: "demo".to_owned(),
+            path: PathBuf::from("/l/demo"),
+            facts: PrFacts {
+                fetched_at: 1,
+                found: Found::Pr(PullRequest {
+                    number: 12,
+                    title: "Fix".to_owned(),
+                    state,
+                    url: "https://github.com/o/r/pull/12".to_owned(),
+                    checks: Checks::None,
+                }),
+            },
+            uncommitted,
+        };
+        assert_eq!(
+            render_pr_created(&created(PrState::Open, 0)),
+            "demo: created PR #12: https://github.com/o/r/pull/12"
+        );
+        assert_eq!(
+            render_pr_created(&created(PrState::Draft, 1)),
+            "demo: created PR #12 (draft): https://github.com/o/r/pull/12\n1 file with \
+             uncommitted changes was left out of the pull request"
+        );
+        assert_eq!(
+            render_pr_created(&created(PrState::Open, 3)),
+            "demo: created PR #12: https://github.com/o/r/pull/12\n3 files with uncommitted \
+             changes were left out of the pull request"
         );
     }
 

@@ -1,11 +1,17 @@
-//! gh guard lint: the GitHub CLI runs only from the `pr refresh` op (#87). gh is a program that
-//! speaks to GitHub with the person's credentials, so it is named, as a program to find and run,
-//! in one file alone, `src/ops/pr_refresh.rs`; this lint rejects the string literal `"gh"` in every
-//! other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client (`lua/`, `plugin/`,
-//! `build.lua`), which only ever asks the core.
+//! gh guard lint: the GitHub CLI runs only from the `pr refresh` op (#87) and the `pr create` op
+//! (#132), and only `pr create` pushes. gh is a program that speaks to GitHub with the person's
+//! credentials, so it is named, as a program to find and run, in those two files alone,
+//! `src/ops/pr_refresh.rs` and `src/ops/pr_create.rs`; this lint rejects the string literal `"gh"`
+//! in every other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client (`lua/`,
+//! `plugin/`, `build.lua`), which only ever asks the core.
+//!
+//! A push sends the person's commits to the network the same way, so `git push` is started in one
+//! function alone, `push_branch` in `src/adapters/git.rs`, the only file that may hold the literal
+//! `"push"`, and only `src/ops/pr_create.rs` may call it. Every read path (`pr compose`,
+//! `worktree ls`, ...) stays off the network.
 //!
 //! The check is textual, like the launch guard: comments are skipped, and only a literal that is
-//! exactly `gh` counts (`"gh auth login"` in a message is not a program name).
+//! exactly `gh` or `push` counts (`"gh auth login"` in a message is not a program name).
 
 use std::path::Path;
 
@@ -13,8 +19,21 @@ use anyhow::{Context, Result};
 
 use crate::launch_guard::{collect_files, without_comment};
 
-/// The one file that may name gh: the op that runs it.
-const GH_MODULE: &str = "src/ops/pr_refresh.rs";
+/// The files that may name gh: the ops that run it.
+const GH_MODULES: &[&str] = &["src/ops/pr_refresh.rs", "src/ops/pr_create.rs"];
+
+/// The same files, as the findings name them.
+const GH_MODULES_TEXT: &str =
+    "src/ops/pr_refresh.rs (`pr refresh`) and src/ops/pr_create.rs (`pr create`)";
+
+/// The one file that may start `git push`: the git adapter, in `push_branch`.
+const PUSH_ADAPTER: &str = "src/adapters/git.rs";
+
+/// The one op that may push, through `push_branch`.
+const PUSH_OP: &str = "src/ops/pr_create.rs";
+
+/// The call that pushes.
+const PUSH_CALL: &str = "push_branch(";
 
 /// The directories scanned, relative to the repository root, with the extension of their files.
 const SCANNED: &[(&str, &str)] = &[("src", "rs"), ("lua", "lua"), ("plugin", "lua")];
@@ -49,8 +68,9 @@ pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
 
 /// The findings for the file at `path` holding `text`, each as `path:line: message`.
 fn check_file(path: &str, text: &str) -> Vec<String> {
-    if path == GH_MODULE {
-        return Vec::new();
+    let mut problems = check_push(path, text);
+    if GH_MODULES.contains(&path) {
+        return problems;
     }
     let is_lua = Path::new(path)
         .extension()
@@ -60,12 +80,39 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     } else {
         ("//", &["\"gh\""])
     };
-    let mut problems = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let code = without_comment(line, marker);
         if literals.iter().any(|literal| code.contains(literal)) {
             problems.push(format!(
-                "{path}:{}: names the program gh; only {GH_MODULE} (`pr refresh`) may run it",
+                "{path}:{}: names the program gh; only {GH_MODULES_TEXT} may run it",
+                n + 1
+            ));
+        }
+    }
+    problems
+}
+
+/// The findings about pushing in the Rust file at `path` holding `text`: the literal `"push"`
+/// outside the git adapter, and a call of `push_branch` outside the adapter and `pr create`.
+fn check_push(path: &str, text: &str) -> Vec<String> {
+    let is_rust = Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"));
+    if !is_rust || path == PUSH_ADAPTER {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let code = without_comment(line, "//");
+        if code.contains("\"push\"") {
+            problems.push(format!(
+                "{path}:{}: names git's push; only {PUSH_ADAPTER} may start it",
+                n + 1
+            ));
+        }
+        if code.contains(PUSH_CALL) && path != PUSH_OP {
+            problems.push(format!(
+                "{path}:{}: pushes a branch; only {PUSH_OP} (`pr create`) may push",
                 n + 1
             ));
         }
@@ -78,8 +125,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pr_refresh_op_may_name_gh() {
-        assert!(check_file(GH_MODULE, "const GH: &str = \"gh\";\n").is_empty());
+    fn the_pr_refresh_and_pr_create_ops_may_name_gh() {
+        for module in GH_MODULES {
+            assert!(check_file(module, "const GH: &str = \"gh\";\n").is_empty());
+        }
+    }
+
+    #[test]
+    fn only_the_git_adapter_names_push_and_only_pr_create_calls_it() {
+        let adapter = "invoke(worktree, &[\"push\", \"-u\", \"origin\", branch])\n";
+        assert!(check_file(PUSH_ADAPTER, adapter).is_empty());
+        assert!(check_file(PUSH_OP, "git::push_branch(&worktree.path, branch)?\n").is_empty());
+        assert_eq!(
+            check_file(
+                "src/ops/pr_compose.rs",
+                "git::push_branch(&path, &branch)?;\n"
+            ),
+            [
+                "src/ops/pr_compose.rs:1: pushes a branch; only src/ops/pr_create.rs (`pr create`) \
+                 may push"
+            ]
+        );
+        assert_eq!(
+            check_file(
+                "src/adapters/program.rs",
+                "Command::new(\"git\").arg(\"push\")\n"
+            ),
+            ["src/adapters/program.rs:1: names git's push; only src/adapters/git.rs may start it"]
+        );
+        assert!(check_file("src/ops/pr_create.rs", "// \"push\" in a comment\n").is_empty());
     }
 
     #[test]
@@ -89,7 +163,7 @@ mod tests {
             check_file("src/ops/worktree_ls.rs", text),
             [
                 "src/ops/worktree_ls.rs:2: names the program gh; only src/ops/pr_refresh.rs \
-                 (`pr refresh`) may run it"
+                 (`pr refresh`) and src/ops/pr_create.rs (`pr create`) may run it"
             ]
         );
         assert_eq!(

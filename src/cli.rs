@@ -12,8 +12,10 @@ use crate::adapters::holder::HolderArgs;
 use crate::adapters::stdin;
 use crate::adapters::terminal::{self, DetachKey};
 use crate::domain::agent::{Agent, Size, StartMode};
+use crate::domain::branch::Branch;
 use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
+use crate::domain::pr::create::Readiness;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::state::AdminDir;
@@ -22,9 +24,9 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_start, agent_stop, agent_swap, check_git, doctor,
     hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register, nvim_unregister,
-    pr_refresh, session_ls, session_new, session_resume, turn_blame, turn_diff, turn_ls,
-    worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_review, worktree_rm,
-    worktree_seen, worktree_setup,
+    pr_compose, pr_create, pr_refresh, session_ls, session_new, session_resume, turn_blame,
+    turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune,
+    worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -67,7 +69,8 @@ enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
-    /// Read each worktree's pull request on GitHub, and its checks, through the GitHub CLI (`gh`).
+    /// Read each worktree's pull request on GitHub and its checks, or create one, through the
+    /// GitHub CLI (`gh`).
     Pr {
         #[command(subcommand)]
         command: PrCommand,
@@ -107,6 +110,38 @@ enum PrCommand {
         /// The worktrees' names, or their paths when several worktrees share a name (default:
         /// every worktree).
         worktrees: Vec<Target>,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the message a new pull request of the worktree starts from: the title, a blank line,
+    /// then the body, as `gh pr create --fill` would make them (the repository's pull request
+    /// template wins for the body). Writes nothing and runs no gh.
+    Compose {
+        /// The worktree's name, or its path when several worktrees share a name.
+        worktree: Target,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Push the worktree's branch to origin and create its pull request through gh. Refuses a
+    /// branch with no commits ahead of the base, one that already has an open pull request, and
+    /// gh missing or not logged in. Files with uncommitted changes are left out, and said so.
+    Create {
+        /// The worktree's name, or its path when several worktrees share a name.
+        worktree: Target,
+        /// The pull request's title.
+        #[arg(long)]
+        title: String,
+        /// A file holding the pull request's body (no body when it is missing or empty).
+        #[arg(long, value_name = "FILE")]
+        body_file: Option<PathBuf>,
+        /// The branch to merge into (default: the repository's default branch).
+        #[arg(long, value_name = "BRANCH")]
+        base: Option<String>,
+        /// Create the pull request as a draft.
+        #[arg(long)]
+        draft: bool,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -511,10 +546,12 @@ impl Cli {
                 | SessionCommand::Resume { json, .. }
                 | SessionCommand::New { json, .. } => *json,
             },
-            Command::Pr {
-                command: PrCommand::Refresh { json, .. },
-            }
-            | Command::Doctor { json } => *json,
+            Command::Pr { command } => match command {
+                PrCommand::Refresh { json, .. }
+                | PrCommand::Compose { json, .. }
+                | PrCommand::Create { json, .. } => *json,
+            },
+            Command::Doctor { json } => *json,
             Command::Hook { .. } => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -554,12 +591,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Note { command } => run_note(command, cli.format()),
         Command::Turn { command } => run_turn(command, cli.format()),
         Command::Session { command } => run_session(command, cli.format()),
-        Command::Pr {
-            command: PrCommand::Refresh { worktrees, .. },
-        } => {
-            output::prs_refreshed(&pr_refresh::run(worktrees)?, cli.format())?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Pr { command } => run_pr(command, cli.format()),
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -895,6 +927,38 @@ fn run_turn(command: &TurnCommand, format: Format) -> Result<ExitCode> {
         }
         TurnCommand::Blame { worktree, path, .. } => {
             output::turn_blame(&turn_blame::run(worktree, path)?, format)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_pr(command: &PrCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        PrCommand::Refresh { worktrees, .. } => {
+            output::prs_refreshed(&pr_refresh::run(worktrees)?, format)?;
+        }
+        PrCommand::Compose { worktree, .. } => {
+            output::pr_composed(&pr_compose::run(worktree)?, format)?;
+        }
+        PrCommand::Create {
+            worktree,
+            title,
+            body_file,
+            base,
+            draft,
+            ..
+        } => {
+            let wanted = pr_create::Wanted {
+                title: title.clone(),
+                body_file: body_file.clone(),
+                base: base.as_deref().map(Branch::new),
+                readiness: if *draft {
+                    Readiness::Draft
+                } else {
+                    Readiness::Ready
+                },
+            };
+            output::pr_created(&pr_create::run(worktree, &wanted)?, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

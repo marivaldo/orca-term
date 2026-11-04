@@ -17,6 +17,8 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod create;
+
 /// The newest schema of `pr.json` this core reads and writes.
 pub(crate) const PR_SCHEMA: u64 = 1;
 
