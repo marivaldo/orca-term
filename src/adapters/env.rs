@@ -1,6 +1,7 @@
 //! Adapter: the process environment, meaning the current directory, the variables the
-//! configuration depends on, the directories of PATH, the running binary's path, the clock, the
-//! live checks' recording tap and the socket of the person's ssh agent.
+//! configuration depends on, the directories of PATH, whether it runs inside Neovim and which
+//! Neovim to open, the running binary's path, the clock, the live checks' recording tap and the
+//! socket of the person's ssh agent.
 #![expect(
     clippy::disallowed_methods,
     reason = "this adapter is the one place that reads the process environment"
@@ -14,6 +15,7 @@ use anyhow::{Context, Result};
 use crate::domain::config::Env;
 use crate::domain::hook::record;
 use crate::domain::launch::opencode::DirsEnv;
+use crate::domain::open::NVIM_VAR;
 
 /// The directory the core was started in.
 pub(crate) fn current_dir() -> Result<PathBuf> {
@@ -44,6 +46,18 @@ pub(crate) fn path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default()
+}
+
+/// Whether this process runs inside Neovim: Neovim sets `NVIM` to its server address in the
+/// terminals it opens, so a non-empty `NVIM` means inside (#148).
+pub(crate) fn inside_nvim() -> bool {
+    std::env::var_os("NVIM").is_some_and(|value| !value.is_empty())
+}
+
+/// The Neovim the person asks `orca-term` to open (`ORCA_TERM_NVIM`), or `None` when it is unset
+/// or not text (#148).
+pub(crate) fn nvim_override() -> Option<String> {
+    std::env::var(NVIM_VAR).ok()
 }
 
 /// The variables opencode finds its own directories by (`HOME`, `XDG_DATA_HOME`,

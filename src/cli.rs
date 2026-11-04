@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
 
 use crate::adapters::holder::HolderArgs;
 use crate::adapters::stdin;
@@ -25,7 +25,7 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_resolve, agent_start, agent_stop, agent_swap,
     check_git, doctor, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register,
-    nvim_unregister, pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new,
+    nvim_unregister, open, pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new,
     session_resume, turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new,
     worktree_prune, worktree_push, worktree_rebase, worktree_review, worktree_rm, worktree_seen,
     worktree_setup,
@@ -39,8 +39,10 @@ use crate::output::{self, Format};
     about = "A fleet of parallel CLI coding agents"
 )]
 pub struct Cli {
+    /// The command; with none, `orca-term` opens Neovim with the sidebar at a terminal outside
+    /// Neovim, and prints the usage otherwise (#148).
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -77,6 +79,9 @@ enum Command {
         #[command(subcommand)]
         command: PrCommand,
     },
+    /// Open Neovim in the current directory with the orca-term sidebar showing, as `orca-term`
+    /// with no arguments does at a terminal. Works without a terminal too; refused inside Neovim.
+    Open,
     /// Check every program orca-term needs (git, claude's sandbox, the agents) and say how to fix
     /// what is missing; installs nothing. Works outside a repository.
     Doctor {
@@ -572,7 +577,10 @@ enum AgentCommand {
 impl Cli {
     /// How the command asked for its output, which is also how its error is printed.
     pub fn format(&self) -> Format {
-        let json = match &self.command {
+        let Some(command) = &self.command else {
+            return Format::Text;
+        };
+        let json = match command {
             Command::Worktree { command } => match command {
                 WorktreeCommand::Ls { json }
                 | WorktreeCommand::New { json, .. }
@@ -617,7 +625,7 @@ impl Cli {
                 | PrCommand::Merge { json, .. } => *json,
             },
             Command::Doctor { json } => *json,
-            Command::Hook { .. } => false,
+            Command::Hook { .. } | Command::Open => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
             },
@@ -630,26 +638,34 @@ impl Cli {
     /// checked.
     fn runs_git(&self) -> bool {
         match &self.command {
-            Command::Doctor { .. } | Command::Hook { .. } => false,
-            Command::Agent { command } => !matches!(command, AgentCommand::Holder { .. }),
-            Command::Worktree { .. }
-            | Command::Note { .. }
-            | Command::Turn { .. }
-            | Command::Session { .. }
-            | Command::Pr { .. }
-            | Command::Nvim { .. } => true,
+            None | Some(Command::Doctor { .. } | Command::Hook { .. } | Command::Open) => false,
+            Some(Command::Agent { command }) => !matches!(command, AgentCommand::Holder { .. }),
+            Some(
+                Command::Worktree { .. }
+                | Command::Note { .. }
+                | Command::Turn { .. }
+                | Command::Session { .. }
+                | Command::Pr { .. }
+                | Command::Nvim { .. },
+            ) => true,
         }
     }
 }
 
 /// Runs the command `cli` names and returns the process's exit code: 1 when a setup failed,
 /// although the command itself did its job. A command that runs git first refuses, as the typed
-/// `prerequisite`, when git is missing or too old.
+/// `prerequisite`, when git is missing or too old. With no command, it opens Neovim or prints the
+/// usage.
 pub fn run(cli: &Cli) -> Result<ExitCode> {
     if cli.runs_git() {
         check_git()?;
     }
-    match &cli.command {
+    let Some(command) = &cli.command else {
+        open::run_with_no_arguments()?;
+        return Ok(usage());
+    };
+    match command {
+        Command::Open => match open::run()? {},
         Command::Doctor { .. } => Ok(output::doctor(&doctor::run(), cli.format())?),
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),
@@ -662,6 +678,20 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Nvim { command } => run_nvim(command, cli.format()),
+    }
+}
+
+/// Prints the usage as `orca-term` with no arguments always printed it, from before it could open
+/// Neovim: the help, on stderr, exiting 2.
+fn usage() -> ExitCode {
+    let parsed = Cli::command()
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .try_get_matches_from(["orca-term"]);
+    match parsed {
+        Err(err) => output::usage(&err),
+        // Unreachable: a command is required and none is given.
+        Ok(_) => ExitCode::from(2),
     }
 }
 
@@ -1218,7 +1248,10 @@ mod tests {
             ],
         ] {
             let cli = Cli::try_parse_from(&args).unwrap();
-            assert!(matches!(cli.command, Command::Hook { .. }), "{args:?}");
+            assert!(
+                matches!(cli.command, Some(Command::Hook { .. })),
+                "{args:?}"
+            );
         }
     }
 }
