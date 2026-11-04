@@ -155,8 +155,10 @@ describe('the pull request composer', function()
         'New session',
         'Create pull request',
         'Create draft pull request',
-        -- This repository has `origin/main`, so the rebase is offered too (#141).
+        -- This repository has `origin/main`, so the rebase (#141) and the push (#146) are
+        -- offered too.
         'Rebase onto origin/main',
+        'Push',
         'Remove worktree',
       },
     }, ui.shown)

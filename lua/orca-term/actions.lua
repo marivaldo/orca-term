@@ -2,7 +2,8 @@
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
 -- again, copy its path, swap its agent, start a new session, create its pull request, a draft or
 -- not, through `compose.lua`, merge its open pull request, rebase it onto its base, hand a rebase's
--- conflicts to its agent or abort the rebase, remove it), toggle its unseen mark
+-- conflicts to its agent or abort the rebase, push its branch, with lease when it diverged, remove
+-- it), toggle its unseen mark
 -- (`u`), open its review (`d`, `:OrcaTerm review`), list its sessions to resume one (`s`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
@@ -55,6 +56,13 @@ M.ABORT_REBASE_ANSWERS = { 'Abort rebase', 'Cancel' }
 function M.rebase_item(base)
   return 'Rebase onto ' .. base
 end
+
+---The menu entry that pushes a worktree's branch to `origin`, never forced, offered when the
+---worktree is on a branch and the repository has `origin` (#146).
+M.PUSH = 'Push'
+
+---The answers offered when a plain push was rejected because the branch diverged from `origin`.
+M.FORCE_PUSH_ANSWERS = { 'Force push (with lease)', 'Cancel' }
 
 ---The answers offered before a pull request is merged, squash first as Orca offers them.
 M.MERGE_METHODS = { 'Squash and merge', 'Create a merge commit', 'Rebase and merge', 'Cancel' }
@@ -637,16 +645,21 @@ local function rebase_items(worktree, remote_base)
 end
 
 ---The entries of the menu of `worktree`, in the order shown: `M.MENU`, with the rebase entries
----(`rebase_items`), then `Merge pull request` while its cached pull request is open or a draft,
+---(`rebase_items`), then `Push` when the worktree is on a branch and the repository has `origin`
+---(`has_origin`), then `Merge pull request` while its cached pull request is open or a draft,
 ---before `Remove worktree`.
 ---@param worktree orca_term.Worktree
 ---@param remote_base? string the default branch on `origin`, such as `origin/main`
+---@param has_origin? boolean whether the repository has a remote named `origin`
 ---@return string[]
-function M.menu_items(worktree, remote_base)
+function M.menu_items(worktree, remote_base, has_origin)
   local items = {}
   for _, item in ipairs(M.MENU) do
     if item == 'Remove worktree' then
       vim.list_extend(items, rebase_items(worktree, remote_base))
+      if has_origin and worktree.branch then
+        table.insert(items, M.PUSH)
+      end
       if has_open_pr(worktree) then
         table.insert(items, M.MERGE_PR)
       end
@@ -732,6 +745,71 @@ function M.resolve_conflicts(worktree, primary)
   end)
 end
 
+---Says what a push did: `demo: pushed to origin/demo`, or `demo: origin/demo is already up to
+---date`, as the core's text says it, then warns when files with uncommitted changes were left out.
+---@param pushed orca_term.Pushed
+local function tell_pushed(pushed)
+  if pushed.outcome == 'up_to_date' then
+    info(('%s: %s is already up to date'):format(pushed.name, pushed.remote))
+  else
+    info(('%s: pushed to %s'):format(pushed.name, pushed.remote))
+  end
+  if pushed.uncommitted == 1 then
+    warn('1 file with uncommitted changes was left out of the push')
+  elseif pushed.uncommitted > 1 then
+    warn(('%d files with uncommitted changes were left out of the push'):format(pushed.uncommitted))
+  end
+end
+
+---Pushes `worktree` with a lease through the core (`worktree push --force-with-lease`, without
+---blocking): the branch on `origin` is replaced only while it still holds what git last saw there.
+---It says what the push did, or the core's reason when git refused the lease.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+local function force_push(worktree, primary)
+  info(('pushing %s with lease'):format(worktree.name))
+  core.worktree_push(worktree.path, true, primary, function(pushed, err)
+    refresh_sidebar()
+    if not pushed then
+      fail(err)
+      return
+    end
+    tell_pushed(pushed)
+  end)
+end
+
+---`Push` in the menu: pushes the branch of `worktree` to `origin` through the core (`worktree
+---push`, without blocking), never forced. It says `pushing demo` first, then what the push did.
+---When git rejected the push because the branch diverged from `origin` (after a rebase, for
+---example), it asks `Push rejected: demo diverged from origin/demo (after a rebase?)` with
+---`Force push (with lease)` and `Cancel`; `Cancel` pushes nothing. Any other refusal is told with
+---the core's reason. The sidebar is read again either way.
+---@param worktree orca_term.Worktree
+---@param primary string the primary checkout's path, where the core runs
+function M.push(worktree, primary)
+  info(('pushing %s'):format(worktree.name))
+  core.worktree_push(worktree.path, false, primary, function(pushed, err)
+    refresh_sidebar()
+    if pushed then
+      tell_pushed(pushed)
+      return
+    end
+    if not (err and err.kind == 'push_diverged') then
+      fail(err)
+      return
+    end
+    local prompt = ('Push rejected: %s diverged from origin/%s (after a rebase?)'):format(
+      worktree.name,
+      worktree.branch or worktree.name
+    )
+    vim.ui.select(M.FORCE_PUSH_ANSWERS, { prompt = prompt }, function(choice)
+      if choice == M.FORCE_PUSH_ANSWERS[1] then
+        force_push(worktree, primary)
+      end
+    end)
+  end)
+end
+
 ---What the person is warned of when gh accepted the merge of `merged`'s pull request but GitHub
 ---still shows it open, as a merge queue or a required check may hold it: the core's text words.
 ---@param merged orca_term.PrMerged
@@ -790,8 +868,9 @@ end
 ---@param worktree orca_term.Worktree
 ---@param primary string the primary checkout's path, where the core runs
 ---@param remote_base? string the default branch on `origin` (`origin/main`), what a rebase goes onto
-function M.menu(worktree, primary, remote_base)
-  local items = M.menu_items(worktree, remote_base)
+---@param has_origin? boolean whether the repository has a remote named `origin`, to push to
+function M.menu(worktree, primary, remote_base, has_origin)
+  local items = M.menu_items(worktree, remote_base, has_origin)
   vim.ui.select(items, { prompt = 'Worktree ' .. worktree.name }, function(choice)
     if choice == 'Re-run setup' then
       M.run_setup(worktree, primary)
@@ -811,6 +890,8 @@ function M.menu(worktree, primary, remote_base)
       M.resolve_conflicts(worktree, primary)
     elseif choice == M.ABORT_REBASE then
       M.abort_rebase(worktree, primary)
+    elseif choice == M.PUSH then
+      M.push(worktree, primary)
     elseif choice == M.MERGE_PR then
       M.merge_pr(worktree, primary)
     elseif choice == 'Remove worktree' then
@@ -1166,6 +1247,28 @@ function M.merge_pr_current()
   for _, worktree in ipairs(fleet.worktrees) do
     if worktree.path == path then
       M.merge_pr(worktree, fleet.primary.path)
+      return
+    end
+  end
+end
+
+---`:OrcaTerm push`: in the sidebar, pushes the branch of the worktree under the cursor; anywhere
+---else, of the current tab's worktree, the worktree whose tab is current, or the worktree a review
+---tab or a turn review reviews (`M.push`, which offers a push with lease when git rejects a
+---diverged branch). Anywhere else it says what it needs.
+function M.push_current()
+  if require('orca-term.sidebar').push_here() then
+    return
+  end
+  local path, fleet = current_worktree(
+    "pushing needs a worktree's tab or its review; go to one, or press . on a worktree in the sidebar"
+  )
+  if not (path and fleet) then
+    return
+  end
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.path == path then
+      M.push(worktree, fleet.primary.path)
       return
     end
   end

@@ -18,6 +18,7 @@ local MENU_WITH_REBASE = {
   'Create pull request',
   'Create draft pull request',
   'Rebase onto origin/main',
+  'Push',
   'Remove worktree',
 }
 

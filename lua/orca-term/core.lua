@@ -7,7 +7,7 @@
 -- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
 -- `resume`, `new`), `pr refresh`, `pr create`, `pr merge`, `worktree rebase` (with or without
--- `--abort`) and `agent resolve` are not waited for, and hand their
+-- `--abort`), `agent resolve` and `worktree push` are not waited for, and hand their
 -- result to a callback in Neovim's main loop; `pr compose` only reads git, and is waited for. `nvim register` tells the core where this Neovim listens, so it
 -- says when a worktree changes; `nvim unregister` runs as Neovim exits and is
 -- waited for, briefly. `doctor` is waited for too, for `:checkhealth orca-term` (`health.lua`).
@@ -101,6 +101,8 @@
 ---The default branch on `origin` a worktree is rebased onto, such as `origin/main`; `nil` when the
 ---repository has none
 ---@field remote_base? string
+---Whether the repository has a remote named `origin`, which a worktree is pushed to
+---@field has_origin? boolean
 
 ---What a setup did, as `worktree new` and `worktree setup` print it.
 ---@class orca_term.SetupResult
@@ -762,6 +764,39 @@ end
 ---@param on_done fun(sent: orca_term.ResolveSent?, err: orca_term.Error?)
 function M.agent_resolve(target, cwd, on_done)
   run_async({ 'agent', 'resolve', target }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---What `worktree push --json` prints: the worktree, its branch, where it went and what happened.
+---@class orca_term.Pushed
+---@field contract integer
+---@field version string
+---@field name string
+---@field path string
+---@field branch string
+---@field remote string where the branch went, such as `origin/demo`
+---@field outcome string `pushed`, or `up_to_date` when `origin` already had it
+---@field with_lease boolean whether the push was asked for with a lease
+---@field uncommitted integer how many files with changes not committed were left out
+---@field pr orca_term.Pr the pull request as read again after the push
+
+---How long `worktree push` may take: it sends the branch to `origin`, then asks gh about its pull
+---request.
+local PUSH_TIMEOUT_SECONDS = 120
+
+---Pushes the branch of the worktree `target` (its name or its path) to `origin`, without waiting:
+---`orca-term worktree push <target> --json`, never forced, or with `--force-with-lease` when
+---`with_lease` is true. A branch that diverged from `origin` fails as `push_diverged`; any other
+---failure, the refusal of a lease included, as `push_failed`.
+---@param target string
+---@param with_lease boolean
+---@param cwd string
+---@param on_done fun(pushed: orca_term.Pushed?, err: orca_term.Error?)
+function M.worktree_push(target, with_lease, cwd, on_done)
+  local args = { 'worktree', 'push', target }
+  if with_lease then
+    table.insert(args, '--force-with-lease')
+  end
+  run_async(args, cwd, on_done, PUSH_TIMEOUT_SECONDS)
 end
 
 ---Where a note is, as the note commands print it: on one line (`scope` `line`, with `line`), on a

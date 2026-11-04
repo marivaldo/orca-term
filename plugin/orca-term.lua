@@ -44,6 +44,9 @@ local subcommands = {
   ['pr-merge'] = function()
     require('orca-term.actions').merge_pr_current()
   end,
+  push = function()
+    require('orca-term.actions').push_current()
+  end,
   worktree = function(args)
     local n = tonumber(args[1])
     if not n or n < 1 or n ~= math.floor(n) then
@@ -139,6 +142,13 @@ vim.keymap.set('n', '<Plug>(OrcaTermMergePr)', function()
 end, {
   desc = 'orca-term: merge the open pull request of the worktree under the cursor in the sidebar, '
     .. "or of the current tab's worktree, asking how first",
+})
+
+vim.keymap.set('n', '<Plug>(OrcaTermPush)', function()
+  require('orca-term.actions').push_current()
+end, {
+  desc = 'orca-term: push the branch of the worktree under the cursor in the sidebar, '
+    .. "or of the current tab's worktree, offering a push with lease when it diverged",
 })
 
 vim.keymap.set('n', '<Plug>(OrcaTermInstallCli)', function()
