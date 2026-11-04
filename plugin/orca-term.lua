@@ -38,6 +38,9 @@ local subcommands = {
   ['pr-refresh'] = function()
     require('orca-term.pr').refresh_all()
   end,
+  ['pr-create'] = function()
+    require('orca-term.actions').create_pr_current()
+  end,
   worktree = function(args)
     local n = tonumber(args[1])
     if not n or n < 1 or n ~= math.floor(n) then
@@ -120,6 +123,13 @@ end, {
 vim.keymap.set('n', '<Plug>(OrcaTermPrRefresh)', function()
   require('orca-term.pr').refresh_all()
 end, { desc = "orca-term: refresh every worktree's pull request and checks" })
+
+vim.keymap.set('n', '<Plug>(OrcaTermCreatePr)', function()
+  require('orca-term.actions').create_pr_current()
+end, {
+  desc = 'orca-term: write a new pull request of the worktree under the cursor in the sidebar, '
+    .. "or of the current tab's worktree, in a buffer; :w creates it",
+})
 
 vim.keymap.set('n', '<Plug>(OrcaTermInstallCli)', function()
   require('orca-term.install').install_cli()

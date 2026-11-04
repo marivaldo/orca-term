@@ -83,11 +83,38 @@ end
 
 ---The fake `gh`, after `#!/bin/sh`: it records its arguments in `$ORCA_TERM_FAKE_GH/calls`, then
 ---prints `$ORCA_TERM_FAKE_GH/<branch>.json` for the branch it is asked about (its third argument)
----and exits 0, or says gh's words for a branch with no pull request and exits 1. Shell builtins
----only: the agent specs' PATH holds nothing else.
+---and exits 0, or says gh's words for a branch with no pull request and exits 1. `gh pr create`
+---(#133) prints `create.err` on stderr and exits 1 when that file exists; else it copies the body
+---to `create.body`, makes `gh pr view` answer pull request 12 for the `--head` branch (a draft with
+---`--draft`), and prints its address. Shell builtins only: the agent specs' PATH holds nothing
+---else.
 local FAKE_GH = {
   'd="$ORCA_TERM_FAKE_GH"',
   '[ -n "$d" ] && printf \'%s\\n\' "$*" >> "$d/calls"',
+  'if [ -n "$d" ] && [ "$1 $2" = "pr create" ]; then',
+  '  if [ -f "$d/create.err" ]; then',
+  '    while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line" >&2; done < "$d/create.err"',
+  '    exit 1',
+  '  fi',
+  '  shift 2',
+  '  head=""; title=""; draft=false',
+  '  while [ $# -gt 0 ]; do',
+  '    case "$1" in',
+  '      --head) head="$2"; shift 2 ;;',
+  '      --title) title="$2"; shift 2 ;;',
+  '      --body-file)',
+  '        : > "$d/create.body"',
+  '        while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line" >> "$d/create.body"; done < "$2"',
+  '        shift 2 ;;',
+  '      --body) printf \'%s\' "$2" > "$d/create.body"; shift 2 ;;',
+  '      --draft) draft=true; shift ;;',
+  '      *) shift ;;',
+  '    esac',
+  '  done',
+  '  printf \'{"number":12,"title":"%s","state":"OPEN","isDraft":%s,"url":"https://github.com/o/r/pull/12","statusCheckRollup":[]}\\n\' "$title" "$draft" > "$d/$head.json"',
+  "  printf 'https://github.com/o/r/pull/12\\n'",
+  '  exit 0',
+  'fi',
   'if [ -n "$d" ] && [ -f "$d/$3.json" ]; then',
   '  while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line"; done < "$d/$3.json"',
   '  exit 0',

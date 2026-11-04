@@ -767,4 +767,19 @@ function M.list_sessions_here()
   return true
 end
 
+---`:OrcaTerm pr-create` in the sidebar: opens the composer of a new pull request of the worktree
+---under the cursor (`compose.lua`). `false`, doing nothing, when the current buffer is not the
+---sidebar's; `true`, doing nothing, on a line that is no worktree.
+---@return boolean
+function M.create_pr_here()
+  if vim.api.nvim_get_current_buf() ~= M.buffer() then
+    return false
+  end
+  local worktree = worktree_under_cursor()
+  if worktree then
+    require('orca-term.compose').open(worktree, primary_path(), false)
+  end
+  return true
+end
+
 return M

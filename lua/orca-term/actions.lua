@@ -1,6 +1,7 @@
 -- orca-term's worktree actions: open a worktree (`<CR>` in the sidebar: its tab, and its agent's
 -- terminal), create a worktree (`a`), the menu of the worktree under the cursor (`.`: run its setup
--- again, copy its path, swap its agent, start a new session, remove it), toggle its unseen mark
+-- again, copy its path, swap its agent, start a new session, create its pull request, a draft or
+-- not, through `compose.lua`, remove it), toggle its unseen mark
 -- (`u`), open its review (`d`, `:OrcaTerm review`), list its sessions to resume one (`s`), and going to a worktree by picking it (`:OrcaTerm jump`) or by its
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
@@ -12,6 +13,7 @@
 -- the worktree shows as setting up) and once more when the command finishes, and the outcome is
 -- told with `vim.notify`. Removing a worktree always asks first.
 
+local compose = require('orca-term.compose')
 local core = require('orca-term.core')
 local render = require('orca-term.render')
 local review = require('orca-term.review')
@@ -24,7 +26,15 @@ local M = {}
 M.EARLY_REFRESH_MS = 500
 
 ---The entries of the worktree menu, in the order shown.
-M.MENU = { 'Re-run setup', 'Copy path', 'Swap agent', 'New session', 'Remove worktree' }
+M.MENU = {
+  'Re-run setup',
+  'Copy path',
+  'Swap agent',
+  'New session',
+  'Create pull request',
+  'Create draft pull request',
+  'Remove worktree',
+}
 
 ---Every agent a worktree can run, as the core names them.
 M.ALL_AGENTS = { 'claude-code', 'opencode' }
@@ -584,6 +594,10 @@ function M.menu(worktree, primary)
       M.swap_agent(worktree, primary)
     elseif choice == 'New session' then
       M.new_session(worktree, primary)
+    elseif choice == 'Create pull request' then
+      compose.open(worktree, primary, false)
+    elseif choice == 'Create draft pull request' then
+      compose.open(worktree, primary, true)
     elseif choice == 'Remove worktree' then
       M.remove(worktree, primary)
     end
@@ -893,6 +907,28 @@ function M.sessions_current()
   for _, worktree in ipairs(fleet.worktrees) do
     if worktree.path == path then
       M.sessions(worktree, fleet.primary.path)
+      return
+    end
+  end
+end
+
+---`:OrcaTerm pr-create`: in the sidebar, the composer of a new pull request of the worktree under
+---the cursor; anywhere else, of the current tab's worktree, the worktree whose tab is current, or
+---the worktree a review tab or a turn review reviews (`compose.open`). The pull request is not a
+---draft. Anywhere else it says what it needs.
+function M.create_pr_current()
+  if require('orca-term.sidebar').create_pr_here() then
+    return
+  end
+  local path, fleet = current_worktree(
+    "the pull request needs a worktree's tab or its review; go to one, or press . on a worktree in the sidebar"
+  )
+  if not (path and fleet) then
+    return
+  end
+  for _, worktree in ipairs(fleet.worktrees) do
+    if worktree.path == path then
+      compose.open(worktree, fleet.primary.path, false)
       return
     end
   end
