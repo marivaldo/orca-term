@@ -782,4 +782,19 @@ function M.create_pr_here()
   return true
 end
 
+---`:OrcaTerm pr-merge` in the sidebar: merges the pull request of the worktree under the cursor,
+---asking how first (`actions.merge_pr`). `false`, doing nothing, when the current buffer is not the
+---sidebar's; `true`, doing nothing, on a line that is no worktree.
+---@return boolean
+function M.merge_pr_here()
+  if vim.api.nvim_get_current_buf() ~= M.buffer() then
+    return false
+  end
+  local worktree = worktree_under_cursor()
+  if worktree then
+    require('orca-term.actions').merge_pr(worktree, primary_path())
+  end
+  return true
+end
+
 return M

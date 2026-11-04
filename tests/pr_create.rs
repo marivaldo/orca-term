@@ -1,7 +1,7 @@
-//! `orca-term pr compose` and `orca-term pr create`, driven as a black box (seam 1) against a fake
-//! `gh` on the isolated PATH of `tests/agent.rs` and a bare repository as `origin` (#132): the
-//! message a new pull request starts from, the push, gh's arguments, each refusal, and the pull
-//! request recorded in `pr.json` for `worktree ls`.
+//! `orca-term pr compose`, `orca-term pr create` and `orca-term pr merge`, driven as a black box
+//! (seam 1) against a fake `gh` on the isolated PATH of `tests/agent.rs` and a bare repository as
+//! `origin` (#132, #136): the message a new pull request starts from, the push, gh's arguments,
+//! each refusal, the merge, and the pull request recorded in `pr.json` for `worktree ls`.
 
 #![expect(
     clippy::unwrap_used,
@@ -38,11 +38,33 @@ use serde_json::{Value, json};
 /// request 12 (a draft with `--draft`; not when `gh-lag` exists, as GitHub may lag), and prints its
 /// address. `gh pr view` answers for the branch it is asked about (its third argument): what
 /// `gh-<branch>.json` holds, exit 0; else what `gh-<branch>.err` holds on stderr, exit 4; else
-/// gh's own words for a branch with no pull request, exit 1. Shell builtins only: its PATH holds
-/// nothing else.
+/// gh's own words for a branch with no pull request, exit 1. `gh pr merge <number>` (#136) prints
+/// `gh-merge.err` on stderr and exits 1 when that file exists; else it turns `"state":"OPEN"` into
+/// `"state":"MERGED"` in the `gh-<branch>.json` of that number (not when `gh-merge-lag` exists, as
+/// GitHub may lag) and exits 0. Shell builtins only: its PATH holds nothing else.
 const FAKE_GH: &str = r#"#!/bin/sh
 dir="${0%/*}"
 printf '%s|%s\n' "$(pwd -P)" "$*" >> "$dir/gh.calls"
+if [ "$1 $2" = "pr merge" ]; then
+  if [ -f "$dir/gh-merge.err" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line" >&2; done < "$dir/gh-merge.err"
+    exit 1
+  fi
+  [ -f "$dir/gh-merge-lag" ] && exit 0
+  open='"state":"OPEN"'
+  for file in "$dir"/gh-*.json; do
+    [ -f "$file" ] || continue
+    line=""
+    IFS= read -r line < "$file" || :
+    case "$line" in
+      *"\"number\":$3,"*|*"\"number\":$3}"*)
+        case "$line" in
+          *$open*) printf '%s"state":"MERGED"%s\n' "${line%%$open*}" "${line#*$open}" > "$file" ;;
+        esac ;;
+    esac
+  done
+  exit 0
+fi
 if [ "$1 $2" = "pr create" ]; then
   if [ -f "$dir/gh-create.err" ]; then
     while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line" >&2; done < "$dir/gh-create.err"
@@ -554,4 +576,260 @@ fn a_body_file_that_does_not_exist_is_refused_before_the_push() {
         "the body file /nonexistent/body.md does not exist (nothing was pushed)"
     );
     assert_eq!(repo.origin_has("demo"), None, "nothing pushed");
+}
+
+/// What `gh pr view` asks for before a merge, after the branch.
+const MERGE_VIEW_FIELDS: &str =
+    "--json number,title,state,isDraft,url,statusCheckRollup,mergeable,reviewDecision";
+
+/// Makes the fake `gh` answer for the branch `demo` with pull request 12 in `state` (`OPEN`,
+/// `MERGED` or `CLOSED`), a draft or not, with `mergeable` and `reviewDecision` as gh prints them,
+/// and one passing check.
+fn answer_pr(repo: &PrRepo, state: &str, draft: bool, mergeable: &str, review: &str) {
+    let pr = json!({
+        "number": 12, "title": "Fix the login", "state": state, "isDraft": draft,
+        "url": "https://github.com/o/r/pull/12",
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": mergeable, "reviewDecision": review,
+    });
+    fs::write(repo.fixture.bin.join("gh-demo.json"), pr.to_string()).unwrap();
+}
+
+/// The runs of the fake `gh` that merged, their arguments only.
+fn merges(repo: &PrRepo) -> Vec<String> {
+    repo.gh_calls()
+        .iter()
+        .filter_map(|call| call.split_once('|').map(|(_, args)| args.to_owned()))
+        .filter(|args| args.starts_with("pr merge"))
+        .collect()
+}
+
+/// The merged pull request the fake `gh` reports, as `pr refresh` shows it, without `fetched_at`.
+fn merged_pr() -> Value {
+    json!({
+        "number": 12,
+        "title": "Fix the login",
+        "state": "merged",
+        "url": "https://github.com/o/r/pull/12",
+        "checks": "passing",
+    })
+}
+
+#[test]
+fn merge_squashes_by_default_records_it_merged_and_leaves_the_worktree_and_its_branch() {
+    let repo = PrRepo::new();
+    let demo = repo.new_worktree("demo");
+    repo.commit(&demo, "a.txt", "Fix the login");
+    answer_pr(&repo, "OPEN", false, "MERGEABLE", "APPROVED");
+    let head = repo.head(&demo);
+
+    let merged = repo.json_of(&["pr", "merge", "demo"]);
+
+    assert_eq!(merged["contract"], 1);
+    assert_eq!(merged["name"], "demo");
+    assert_eq!(merged["path"], demo.to_str().unwrap());
+    assert_eq!(merged["method"], "squash");
+    assert_eq!(without_time(merged["pr"].clone()), merged_pr());
+    let place = demo.display();
+    assert_eq!(
+        repo.gh_calls(),
+        [
+            format!("{place}|pr view demo {MERGE_VIEW_FIELDS}"),
+            format!("{place}|pr merge 12 --squash"),
+            format!("{place}|pr view demo {VIEW_FIELDS}"),
+        ],
+        "asked with the merge fields, merged by number, then read back as pr refresh reads it"
+    );
+    assert!(
+        repo.gh_calls()
+            .iter()
+            .all(|call| !call.contains("--delete-branch")),
+        "never deletes the branch"
+    );
+    assert_eq!(
+        without_time(repo.listed_pr("demo")),
+        merged_pr(),
+        "worktree ls shows it merged at once"
+    );
+    assert!(demo.is_dir(), "the worktree stays");
+    assert_eq!(repo.head(&demo), head, "the worktree is untouched");
+    let branch = repo
+        .fixture
+        .repo
+        .git(&["rev-parse", "--verify", "refs/heads/demo"]);
+    assert_eq!(branch.trim(), head, "the local branch stays");
+}
+
+#[test]
+fn each_method_passes_its_flag_and_says_it_in_one_line() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    for (flag, method) in [
+        ("--squash", "squash"),
+        ("--merge", "merge"),
+        ("--rebase", "rebase"),
+    ] {
+        answer_pr(&repo, "OPEN", false, "MERGEABLE", "");
+
+        let out = repo.ok(&["pr", "merge", "demo", flag]);
+
+        assert_eq!(
+            out,
+            format!("demo: merged PR #12 ({method}): https://github.com/o/r/pull/12\n")
+        );
+        assert_eq!(
+            merges(&repo).last().unwrap(),
+            &format!("pr merge 12 {flag}")
+        );
+    }
+    assert_eq!(merges(&repo).len(), 3);
+}
+
+#[test]
+fn two_methods_at_once_are_a_usage_error() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    answer_pr(&repo, "OPEN", false, "MERGEABLE", "");
+
+    let out = repo.run(&["pr", "merge", "demo", "--squash", "--rebase"]);
+
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(repo.gh_calls(), Vec::<String>::new());
+}
+
+#[test]
+fn no_open_pull_request_a_draft_a_conflict_or_a_blocking_review_is_refused_merging_nothing() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+
+    let error = repo.error_of(&["pr", "merge", "demo"], 13);
+    assert_eq!(error["kind"], "no_open_pr");
+    assert_eq!(
+        error["message"],
+        "worktree demo has no pull request to merge; create one first with `orca-term pr create \
+         demo` (nothing was merged)"
+    );
+
+    let cases = [
+        (
+            ("MERGED", false, "UNKNOWN", ""),
+            13,
+            "no_open_pr",
+            "PR #12 of worktree demo is merged already; there is nothing to merge",
+        ),
+        (
+            ("CLOSED", false, "UNKNOWN", ""),
+            13,
+            "no_open_pr",
+            "PR #12 of worktree demo is closed; reopen it on GitHub first (nothing was merged)",
+        ),
+        (
+            ("OPEN", true, "MERGEABLE", ""),
+            14,
+            "pr_draft",
+            "PR #12 of worktree demo is a draft; mark it ready for review first (nothing was \
+             merged)",
+        ),
+        (
+            ("OPEN", false, "CONFLICTING", "APPROVED"),
+            15,
+            "pr_conflicting",
+            "PR #12 of worktree demo conflicts with its base branch on GitHub; update the branch \
+             first (nothing was merged)",
+        ),
+        (
+            ("OPEN", false, "MERGEABLE", "CHANGES_REQUESTED"),
+            16,
+            "not_approved",
+            "PR #12 of worktree demo has changes requested in its review; address them and get \
+             it approved first (nothing was merged)",
+        ),
+        (
+            ("OPEN", false, "MERGEABLE", "REVIEW_REQUIRED"),
+            16,
+            "not_approved",
+            "PR #12 of worktree demo needs an approving review first (nothing was merged)",
+        ),
+    ];
+    for ((state, draft, mergeable, review), code, kind, message) in cases {
+        answer_pr(&repo, state, draft, mergeable, review);
+
+        let error = repo.error_of(&["pr", "merge", "demo"], code);
+
+        assert_eq!(error["kind"], kind, "{state} {mergeable} {review}");
+        assert_eq!(error["message"], message);
+    }
+    assert_eq!(merges(&repo), Vec::<String>::new(), "nothing was merged");
+    assert_eq!(repo.listed_pr("demo"), Value::Null, "nothing recorded");
+}
+
+#[test]
+fn gh_missing_or_not_logged_in_is_a_prerequisite_and_nothing_is_merged() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    fs::write(
+        repo.fixture.bin.join("gh-demo.err"),
+        "To get started with GitHub CLI, please run:  gh auth login\n",
+    )
+    .unwrap();
+
+    let error = repo.error_of(&["pr", "merge", "demo"], 9);
+    assert_eq!(error["kind"], "prerequisite");
+    assert_eq!(
+        error["message"],
+        "cannot merge the pull request of worktree demo: To get started with GitHub CLI, please \
+         run:  gh auth login; install the GitHub CLI (gh) and log in with `gh auth login`, then \
+         try again (nothing was merged)"
+    );
+    assert_eq!(merges(&repo), Vec::<String>::new());
+
+    repo.fixture.remove_tool("gh");
+    let error = repo.error_of(&["pr", "merge", "demo"], 9);
+    assert_eq!(error["kind"], "prerequisite");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains(": GitHub CLI is unavailable;"),
+        "{error}"
+    );
+}
+
+#[test]
+fn anything_else_github_refuses_comes_back_as_ghs_first_line() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    answer_pr(&repo, "OPEN", false, "MERGEABLE", "APPROVED");
+    fs::write(
+        repo.fixture.bin.join("gh-merge.err"),
+        "X Pull request o/r#12 is not mergeable: the base branch policy prohibits the merge.\n\
+         To have the pull request merged after all the requirements have been met, add the \
+         `--auto` flag.\n",
+    )
+    .unwrap();
+
+    let error = repo.error_of(&["pr", "merge", "demo"], 1);
+
+    assert_eq!(error["kind"], "other");
+    assert_eq!(
+        error["message"],
+        "gh pr merge failed for PR #12 of worktree demo: X Pull request o/r#12 is not mergeable: \
+         the base branch policy prohibits the merge."
+    );
+    assert_eq!(merges(&repo), ["pr merge 12 --squash"]);
+    assert_eq!(repo.listed_pr("demo"), Value::Null, "nothing recorded");
+}
+
+#[test]
+fn a_merge_github_does_not_show_yet_is_recorded_merged() {
+    let repo = PrRepo::new();
+    repo.new_worktree("demo");
+    answer_pr(&repo, "OPEN", false, "MERGEABLE", "APPROVED");
+    fs::write(repo.fixture.bin.join("gh-merge-lag"), "").unwrap();
+
+    let merged = repo.json_of(&["pr", "merge", "demo", "--rebase"]);
+
+    assert_eq!(merged["method"], "rebase");
+    assert_eq!(without_time(merged["pr"].clone()), merged_pr());
+    assert_eq!(without_time(repo.listed_pr("demo")), merged_pr());
 }

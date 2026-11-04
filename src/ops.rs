@@ -20,6 +20,7 @@ pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
 pub(crate) mod pr_compose;
 pub(crate) mod pr_create;
+pub(crate) mod pr_merge;
 pub(crate) mod pr_refresh;
 pub(crate) mod session_ls;
 pub(crate) mod session_new;

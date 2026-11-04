@@ -1,9 +1,14 @@
-//! gh guard lint: the GitHub CLI runs only from the `pr refresh` op (#87) and the `pr create` op
-//! (#132), and only `pr create` pushes. gh is a program that speaks to GitHub with the person's
-//! credentials, so it is named, as a program to find and run, in those two files alone,
-//! `src/ops/pr_refresh.rs` and `src/ops/pr_create.rs`; this lint rejects the string literal `"gh"`
-//! in every other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client (`lua/`,
-//! `plugin/`, `build.lua`), which only ever asks the core.
+//! gh guard lint: the GitHub CLI runs only from the `pr refresh` op (#87), the `pr create` op
+//! (#132) and the `pr merge` op (#136), and only `pr create` pushes. gh is a program that speaks
+//! to GitHub with the person's credentials, so it is named, as a program to find and run, in two
+//! files alone, `src/ops/pr_refresh.rs` and `src/ops/pr_create.rs`; this lint rejects the string
+//! literal `"gh"` in every other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client
+//! (`lua/`, `plugin/`, `build.lua`), which only ever asks the core. gh is found through
+//! `pr_refresh::find_gh`, which only those three ops may call.
+//!
+//! A merge never deletes the branch (#136): `gh pr merge --delete-branch` fails while the worktree
+//! has the branch checked out, and nothing happens to the worktree after a merge, as in Orca. So
+//! `delete-branch` is refused in the code of every file scanned.
 //!
 //! A push sends the person's commits to the network the same way, so `git push` is started in one
 //! function alone, `push_branch` in `src/adapters/git.rs`, the only file that may hold the literal
@@ -25,6 +30,23 @@ const GH_MODULES: &[&str] = &["src/ops/pr_refresh.rs", "src/ops/pr_create.rs"];
 /// The same files, as the findings name them.
 const GH_MODULES_TEXT: &str =
     "src/ops/pr_refresh.rs (`pr refresh`) and src/ops/pr_create.rs (`pr create`)";
+
+/// The ops that may find gh, through `find_gh`, to run it.
+const GH_OPS: &[&str] = &[
+    "src/ops/pr_refresh.rs",
+    "src/ops/pr_create.rs",
+    "src/ops/pr_merge.rs",
+];
+
+/// The same ops, as the findings name them.
+const GH_OPS_TEXT: &str = "src/ops/pr_refresh.rs (`pr refresh`), src/ops/pr_create.rs \
+     (`pr create`) and src/ops/pr_merge.rs (`pr merge`)";
+
+/// The call that finds gh.
+const FIND_GH_CALL: &str = "find_gh(";
+
+/// gh's flag that deletes the branch after a merge, without its dashes.
+const DELETE_BRANCH: &str = "delete-branch";
 
 /// The one file that may start `git push`: the git adapter, in `push_branch`.
 const PUSH_ADAPTER: &str = "src/adapters/git.rs";
@@ -69,9 +91,6 @@ pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
 /// The findings for the file at `path` holding `text`, each as `path:line: message`.
 fn check_file(path: &str, text: &str) -> Vec<String> {
     let mut problems = check_push(path, text);
-    if GH_MODULES.contains(&path) {
-        return problems;
-    }
     let is_lua = Path::new(path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("lua"));
@@ -82,9 +101,21 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     };
     for (n, line) in text.lines().enumerate() {
         let code = without_comment(line, marker);
-        if literals.iter().any(|literal| code.contains(literal)) {
+        if !GH_MODULES.contains(&path) && literals.iter().any(|literal| code.contains(literal)) {
             problems.push(format!(
                 "{path}:{}: names the program gh; only {GH_MODULES_TEXT} may run it",
+                n + 1
+            ));
+        }
+        if !GH_OPS.contains(&path) && code.contains(FIND_GH_CALL) {
+            problems.push(format!(
+                "{path}:{}: finds gh to run it; only {GH_OPS_TEXT} may",
+                n + 1
+            ));
+        }
+        if code.contains(DELETE_BRANCH) {
+            problems.push(format!(
+                "{path}:{}: names --delete-branch; a merge never deletes the worktree's branch",
                 n + 1
             ));
         }
@@ -129,6 +160,59 @@ mod tests {
         for module in GH_MODULES {
             assert!(check_file(module, "const GH: &str = \"gh\";\n").is_empty());
         }
+    }
+
+    #[test]
+    fn only_the_pr_refresh_pr_create_and_pr_merge_ops_find_gh() {
+        for op in GH_OPS {
+            let finds = "let gh = pr_refresh::find_gh();\n";
+            assert_eq!(check_file(op, finds), Vec::<String>::new());
+        }
+        assert_eq!(
+            check_file(
+                "src/ops/worktree_rm.rs",
+                "if let Some(gh) = pr_refresh::find_gh() {\n"
+            ),
+            [
+                "src/ops/worktree_rm.rs:1: finds gh to run it; only src/ops/pr_refresh.rs (`pr \
+                 refresh`), src/ops/pr_create.rs (`pr create`) and src/ops/pr_merge.rs (`pr \
+                 merge`) may"
+            ]
+        );
+        let comment = "// find_gh() in a comment\n";
+        assert_eq!(
+            check_file("src/ops/worktree_rm.rs", comment),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn delete_branch_is_refused_in_every_file_even_the_merge_op() {
+        let rust = "args.push(\"--delete-branch\".to_owned());\n";
+        assert_eq!(
+            check_file("src/ops/pr_merge.rs", rust),
+            [
+                "src/ops/pr_merge.rs:1: names --delete-branch; a merge never deletes the \
+                 worktree's branch"
+            ]
+        );
+        assert_eq!(
+            check_file("src/domain/pr/merge.rs", "\"delete-branch\",\n").len(),
+            1
+        );
+        assert_eq!(
+            check_file(
+                "lua/orca-term/core.lua",
+                "local args = { '--delete-branch' }\n"
+            )
+            .len(),
+            1
+        );
+        let none = Vec::<String>::new();
+        let comments = "//! never `--delete-branch`\n// delete-branch\n";
+        assert_eq!(check_file("src/domain/pr/merge.rs", comments), none);
+        let lua = "-- no --delete-branch\n";
+        assert_eq!(check_file("lua/orca-term/actions.lua", lua), none);
     }
 
     #[test]

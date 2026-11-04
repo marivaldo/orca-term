@@ -18,6 +18,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod create;
+pub(crate) mod merge;
 
 /// The newest schema of `pr.json` this core reads and writes.
 pub(crate) const PR_SCHEMA: u64 = 1;

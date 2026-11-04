@@ -19,6 +19,7 @@ use crate::domain::launch::SessionId;
 use crate::domain::note::{Anchor, Listed, Note, Noted, NotesSent, PendingNote, Unnoted};
 use crate::domain::operation::Operation;
 use crate::domain::pr::create::{Composed, PrCreated};
+use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Found, PrFacts, Refreshed};
 use crate::domain::prerequisite::Report;
 use crate::domain::review::Reviewed;
@@ -128,6 +129,16 @@ struct PrCreatedView<'a> {
     pr: PrView<'a>,
     pushed: bool,
     uncommitted: usize,
+}
+
+/// `pr merge --json` (#136): the worktree's `name` and `path`, its merged pull request as
+/// `pr refresh` shows it (`pr`), and the `method` used (`squash`, `merge` or `rebase`).
+#[derive(Debug, Serialize)]
+struct PrMergedView<'a> {
+    name: &'a str,
+    path: &'a Path,
+    pr: PrView<'a>,
+    method: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -593,6 +604,16 @@ pub(crate) fn created_pr(created: &PrCreated) -> serde_json::Result<String> {
         pr: pr_view(&created.facts),
         pushed: true,
         uncommitted: created.uncommitted,
+    })
+}
+
+/// What `pr merge` merged, as one JSON document.
+pub(crate) fn merged_pr(merged: &PrMerged) -> serde_json::Result<String> {
+    document(PrMergedView {
+        name: &merged.name,
+        path: &merged.path,
+        pr: pr_view(&merged.facts),
+        method: merged.method.name(),
     })
 }
 
@@ -1206,6 +1227,34 @@ mod tests {
             created_doc,
             format!(
                 r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","pr":{{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"draft","url":"https://github.com/o/r/pull/12","checks":"none"}},"pushed":true,"uncommitted":0}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn merge_keeps_its_shape() {
+        use crate::domain::pr::merge::Method;
+        use crate::domain::pr::{Checks, PrState, PullRequest};
+        let doc = merged_pr(&PrMerged {
+            name: "fix".to_owned(),
+            path: PathBuf::from("/l/fix"),
+            facts: PrFacts {
+                fetched_at: 1_700_000_000_000,
+                found: Found::Pr(PullRequest {
+                    number: 12,
+                    title: "Fix the login".to_owned(),
+                    state: PrState::Merged,
+                    url: "https://github.com/o/r/pull/12".to_owned(),
+                    checks: Checks::Passing,
+                }),
+            },
+            method: Method::Squash,
+        })
+        .unwrap();
+        assert_eq!(
+            doc,
+            format!(
+                r#"{{"contract":1,"version":"{VERSION}","name":"fix","path":"/l/fix","pr":{{"fetched_at":1700000000000,"number":12,"title":"Fix the login","state":"merged","url":"https://github.com/o/r/pull/12","checks":"passing"}},"method":"squash"}}"#
             )
         );
     }

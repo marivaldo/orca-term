@@ -56,7 +56,9 @@ the adapters, and returns a domain value that `output` prints.
   git as the typed `prerequisite` before anything else runs. `pr refresh [<worktree>...]` (#87)
   asks the GitHub CLI about each worktree's pull request. `pr compose <worktree>` (#132) prints
   the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
-  <f>] [--base <b>] [--draft]` pushes the branch and creates it.
+  <f>] [--base <b>] [--draft]` pushes the branch and creates it. `pr merge <worktree>
+  [--squash|--merge|--rebase]` (#136) merges its open pull request, squash by default (clap lets
+  at most one method through).
 - `output.rs`: the only writer to stdout and stderr; renders the fleet table, the reports of
   `worktree new`, `setup`, `rm`, `prune`, `seen|unseen`, `review` and `detail` (a block of lines:
   the state, the whole detail indented, the denials, the setup and the end of its log, the
@@ -83,7 +85,8 @@ the adapters, and returns a domain value that `output` prints.
   unavailable: <reason>`. `pr compose` prints the title, a blank line and the body (the title
   alone when the body is empty); `pr create` prints `<name>: created PR #12 (draft): <url>`
   (without `(draft)` when it is not one), then, when files had uncommitted changes, `1 file with
-  uncommitted changes was left out of the pull request` (`N files ... were`, #132).
+  uncommitted changes was left out of the pull request` (`N files ... were`, #132). `pr merge`
+  prints `<name>: merged PR #12 (squash): <url>` (#136).
 - `output/json.rs`: the JSON documents of `--json` (the fleet, `worktree new`, `worktree setup`,
   `worktree rm` (with `stopped_agent`, whether its agent was stopped first, #94), `worktree review`, `agent start`, `agent swap` (the start document, `previous`, the agent swapped out or
   null, and `stopped`), `agent stop` and errors), built as views from domain values, with the `contract`
@@ -137,7 +140,8 @@ the adapters, and returns a domain value that `output` prints.
   the drift when there are some; the text `worktree ls` is unchanged. `pr compose` (#132) prints
   `title`, `body`, `base` (the default branch), `branch`, `commits` (ahead of the base) and
   `uncommitted` (files with changes not committed); `pr create` prints `name`, `path`, `pr` as
-  `pr refresh` shows it, `pushed` (always `true`) and `uncommitted`.
+  `pr refresh` shows it, `pushed` (always `true`) and `uncommitted`. `pr merge` (#136) prints
+  `name`, `path`, `pr` as `pr refresh` shows it and `method` (`squash`, `merge` or `rebase`).
 
 ### ops
 
@@ -324,6 +328,14 @@ the adapters, and returns a domain value that `output` prints.
   again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`, notifying);
   when gh does not show the new pull request yet, the record is made from the address `gh pr
   create` printed. The only code that pushes (`cargo xtask gh-guard`).
+- `ops/pr_merge.rs`: `pr merge` (#136): find the target (refusing a worktree whose directory is
+  gone; one on no branch is `no_open_pr`), find gh (`pr_refresh::find_gh`; missing is
+  `prerequisite`), ask gh `gh pr view <branch>` with the merge fields through `pr_refresh::view`
+  and refuse what `merge::check_mergeable` refuses, then `gh pr merge <number>
+  --squash|--merge|--rebase` (60 s at most, never `--delete-branch`; a failure is gh's first
+  line), then ask gh again as `pr refresh` does (`pr_refresh::ask`) and keep the merged pull
+  request in `pr.json` (`pr_refresh::keep`, notifying). The worktree and its branch are not
+  touched.
 
 ### adapters
 
@@ -586,6 +598,13 @@ the adapters, and returns a domain value that `output` prints.
   (`create_args`, `Body`, `Readiness`) and time limit, the refusals (`check_title`,
   `check_has_commits`, `check_no_open_pr`), the pull request read from the address gh printed
   (`created_pr`), and what `pr compose` and `pr create` report (`Composed`, `PrCreated`).
+- `domain/pr/merge.rs`: merging a pull request (#136): the method (`Method`, squash by default),
+  gh's arguments to ask (`view_args`, adding `mergeable,reviewDecision` to `pr refresh`'s fields)
+  and to merge (`merge_args`, never `--delete-branch`) and its time limit, the refusals
+  (`check_mergeable`: gh unable to say, no open pull request, a draft, `CONFLICTING`,
+  `CHANGES_REQUESTED` or `REVIEW_REQUIRED`), the pull request kept after the merge (`merged_pr`:
+  gh's answer when it says merged, else the one asked about, marked merged), and what `pr merge`
+  reports (`PrMerged`).
 
 ### Domain types
 
@@ -630,6 +649,10 @@ validate"):
   (`domain/pr/create.rs`, #132): a commit's subject and body, a new pull request's title and body,
   what `pr compose` reports, whether it is `Ready` or a `Draft` (the `--draft` flag), its body for
   gh (a `File` or `Empty`), and what `pr create` reports.
+- `Method`, `PrMerged` (`domain/pr/merge.rs`, #136): how a pull request is merged (`Squash`,
+  `Merge`, `Rebase`) and what `pr merge` reports; `NotOpen` and `Review` (`domain/error.rs`): why
+  there is no open pull request to merge (`None`, `Merged`, `Closed`) and which review decision
+  blocks one (`ChangesRequested`, `Required`).
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
   and socket path, volatile), and a terminal size.
@@ -918,7 +941,8 @@ validate"):
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
   the typed error's (`busy`, `session_gone`, `no_sandbox`, `dirty`, `no_holder`, `untrusted`,
-  `prerequisite`, and since #132 `no_commits`, `pr_exists`, `push_failed`) or `other`. The error of `untrusted` also carries `what` (`setup` or
+  `prerequisite`, and since #132 `no_commits`, `pr_exists`, `push_failed`, since #136
+  `no_open_pr`, `pr_draft`, `pr_conflicting`, `not_approved`) or `other`. The error of `untrusted` also carries `what` (`setup` or
   `sandbox`), the `script` or the `writable` paths as written, and `source` (the committed file).
 - **Exit codes**: 0 on success; 1 for an untyped failure, and for `worktree new` and
   `worktree setup` when the setup failed (the worktree exists and the normal report says it is
@@ -934,7 +958,11 @@ validate"):
   missing or cannot say (not logged in, not a GitHub remote; `GhUnavailable`, kind
   `prerequisite`, whose message names gh's own fix since `doctor` does not check gh); 10 for
   `no_commits`, a branch with no commits ahead of the base; 11 for `pr_exists`, a branch whose
-  pull request is open; 12 for `push_failed`, a `git push` that failed.
+  pull request is open; 12 for `push_failed`, a `git push` that failed. Since #136: 9 also for
+  `pr merge` when gh is missing or cannot say (`MergeGhUnavailable`, kind `prerequisite`); 13 for
+  `no_open_pr`, no pull request or one merged or closed; 14 for `pr_draft`; 15 for
+  `pr_conflicting`, a pull request GitHub reports `CONFLICTING`; 16 for `not_approved`, a review
+  decision of `CHANGES_REQUESTED` or `REVIEW_REQUIRED`.
 
 ## State and schema
 
@@ -1290,6 +1318,8 @@ what they print.
   title, body, draft, cwd, on_done)` runs `pr create <target> --title=<title> [--draft]` without
   waiting (120 s at most), the body written to a `vim.fn.tempname()` file for `--body-file` (none
   for an empty body) and removed once the core ends, typed as `orca_term.PrCreated`.
+  `pr_merge(target, method, cwd, on_done)` (#136) runs `pr merge <target> --<method>` without
+  waiting (90 s at most), typed as `orca_term.PrMerged`.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1572,6 +1602,14 @@ what they print.
   draft pull request`) and from `:OrcaTerm pr-create` and `<Plug>(OrcaTermCreatePr)`
   (`create_pr_current`: the worktree under the cursor in the sidebar, through
   `sidebar.create_pr_here`, else the current tab's worktree, as `:OrcaTerm sessions` finds it).
+- Merging a pull request (#136) lives in `actions.lua`: `menu_items` adds `Merge pull request`
+  (`MERGE_PR`) before `Remove worktree` only while the worktree's cached `pr` is `open` or
+  `draft`; `merge_pr` asks `Merge PR #<n> of <worktree>?` with `MERGE_METHODS` (`Squash and
+  merge` first, `Create a merge commit`, `Rebase and merge`, `Cancel`), then runs `core.pr_merge`
+  without blocking: on success `merged PR #N: <url>` and the sidebar read again, on a refusal the
+  core's message; `merge_pr_current` (`:OrcaTerm pr-merge`, `<Plug>(OrcaTermMergePr)`) does it for
+  the worktree under the cursor in the sidebar (`sidebar.merge_pr_here`), else the current tab's
+  worktree.
 - `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
   `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
   has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
