@@ -24,6 +24,10 @@ use crate::support::Repo;
 /// How long a test waits for something to happen before failing.
 const WAIT: Duration = Duration::from_secs(15);
 
+/// Between two reads of a slow attach's output. The fake claude's flood (4 MiB) then takes over a
+/// second to read, far longer than the agent takes to print it.
+const SLOW_READ_PAUSE: Duration = Duration::from_millis(1);
+
 /// The fake sandbox tools, one set for each OS; all are present so the suite runs the same way
 /// on macOS and Linux.
 const SANDBOX_TOOLS: &[&str] = &["sandbox-exec", "bwrap", "socat"];
@@ -208,6 +212,12 @@ impl AgentRepo {
         Attach::new(self.spawn_attach(name))
     }
 
+    /// Starts `agent attach` on `name` over pipes read with a pause between reads: a client that
+    /// keeps reading but falls far behind an agent that prints a lot at once.
+    pub(crate) fn slow_attach(&self, name: &str) -> Attach {
+        Attach::reading_every(SLOW_READ_PAUSE, self.spawn_attach(name))
+    }
+
     /// Starts `agent attach` on `name` over pipes that nobody reads: once its stdout pipe is
     /// full it stops reading from the holder, like an attach suspended in its shell. Killed when
     /// dropped.
@@ -317,10 +327,15 @@ pub(crate) struct Attach {
 }
 
 impl Attach {
-    fn new(mut child: Child) -> Self {
+    fn new(child: Child) -> Self {
+        Self::reading_every(Duration::ZERO, child)
+    }
+
+    /// An attach whose stdout is read with `pause` between reads.
+    fn reading_every(pause: Duration, mut child: Child) -> Self {
         let stdin = child.stdin.take();
-        let stdout = collect(child.stdout.take().unwrap());
-        let stderr = collect(child.stderr.take().unwrap());
+        let stdout = collect(child.stdout.take().unwrap(), pause);
+        let stderr = collect(child.stderr.take().unwrap(), Duration::ZERO);
         Self {
             child,
             stdin,
@@ -432,8 +447,12 @@ impl Drop for Attach {
     }
 }
 
-/// Collects everything `reader` yields, in a thread, until it closes.
-fn collect(mut reader: impl std::io::Read + Send + 'static) -> Arc<Mutex<Vec<u8>>> {
+/// Collects everything `reader` yields, in a thread, until it closes, waiting `pause` between
+/// reads.
+fn collect(
+    mut reader: impl std::io::Read + Send + 'static,
+    pause: Duration,
+) -> Arc<Mutex<Vec<u8>>> {
     let buffer = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&buffer);
     thread::spawn(move || {
@@ -443,6 +462,7 @@ fn collect(mut reader: impl std::io::Read + Send + 'static) -> Arc<Mutex<Vec<u8>
                 break;
             }
             sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+            thread::sleep(pause);
         }
     });
     buffer

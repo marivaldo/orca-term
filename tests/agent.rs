@@ -269,6 +269,24 @@ fn a_client_that_stops_reading_does_not_keep_the_holder_alive_after_the_agent_ex
 }
 
 #[test]
+fn a_client_that_reads_slowly_still_gets_everything_the_agent_printed() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["agent", "start", "fix"]);
+
+    let mut attach = fx.slow_attach("fix");
+    attach.wait_for("fake claude ready");
+    attach.send("flood\n");
+    attach.wait_for("flooded");
+    attach.send("exit 7\n");
+    let ended = attach.wait_ended();
+
+    assert_eq!(ended.stderr, "[agent ended: exit 7]\n");
+    let flood_line = "x".repeat(4096);
+    assert_eq!(ended.stdout.matches(&flood_line).count(), 1024);
+}
+
+#[test]
 fn stop_ends_the_agent_and_is_idempotent() {
     let fx = AgentRepo::new();
     let worktree = fx.new_worktree("fix");
