@@ -1386,24 +1386,47 @@ function M.new_session(worktree, primary)
   end)
 end
 
----The worktrees of the current directory's repository, in the sidebar's order, or `nil` after
----telling the person why the fleet cannot be read.
----@return orca_term.Worktree[]?
+---The worktrees the sidebar shows, in its order, read from the core, waiting for it: those of
+---every project on the project list, the first project's first (#156), or, with an empty list,
+---those of the current directory's repository. `nil` after telling the person why they cannot be
+---read.
+---@return orca_term.Worktree[]? worktrees
+---@return string? has what has them, for a message: `the projects have` or `this repository has`
 local function worktrees_in_order()
-  local fleet, err = core.worktree_ls(vim.fn.getcwd())
-  if not fleet then
-    fail(err)
+  local cwd = vim.fn.getcwd()
+  local listed, listed_err = core.fleets(cwd)
+  if not listed then
+    fail(listed_err)
     return nil
   end
+  local fleets, order, has = {}, nil, 'the projects have'
+  if #listed.projects > 0 then
+    for _, project in ipairs(listed.projects) do
+      -- A gone or broken project has no fleet, and no worktree to go to.
+      if project.fleet then
+        table.insert(fleets, project.fleet)
+      end
+    end
+    order = render.projects(listed.projects).order
+  else
+    local fleet, err = core.worktree_ls(cwd)
+    if not fleet then
+      fail(err)
+      return nil
+    end
+    fleets, order, has = { fleet }, render.fleet(fleet).order, 'this repository has'
+  end
   local by_path = {}
-  for _, worktree in ipairs(fleet.worktrees) do
-    by_path[worktree.path] = worktree
+  for _, fleet in ipairs(fleets) do
+    for _, worktree in ipairs(fleet.worktrees) do
+      by_path[worktree.path] = worktree
+    end
   end
   local ordered = {}
-  for _, path in ipairs(render.fleet(fleet).order) do
+  for _, path in ipairs(order) do
     table.insert(ordered, by_path[path])
   end
-  return ordered
+  return ordered, has
 end
 
 ---A worktree as the jump list shows it: its name, then its state in words.
@@ -1414,7 +1437,8 @@ function M.jump_item(worktree)
   return worktree.name .. '  ' .. state
 end
 
----Lets the person pick a worktree, in the sidebar's order, and goes to its tab.
+---Lets the person pick a worktree, in the sidebar's order (every project's worktrees when the
+---project list has projects), and goes to its tab.
 function M.jump()
   local worktrees = worktrees_in_order()
   if not worktrees then
@@ -1432,19 +1456,17 @@ function M.jump()
   end)
 end
 
----Goes to the tab of the worktree numbered `n` (from 1) in the sidebar's order.
+---Goes to the tab of the worktree numbered `n` (from 1) in the sidebar's order, counting across
+---the projects when the project list has projects.
 ---@param n integer
 function M.go_to_nth(n)
-  local worktrees = worktrees_in_order()
+  local worktrees, has = worktrees_in_order()
   if not worktrees then
     return
   end
   local worktree = worktrees[n]
   if not worktree then
-    local message = ('orca-term: there is no worktree %d; this repository has %d'):format(
-      n,
-      #worktrees
-    )
+    local message = ('orca-term: there is no worktree %d; %s %d'):format(n, has, #worktrees)
     vim.notify(message, levels.ERROR)
     return
   end
