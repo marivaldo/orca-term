@@ -1420,6 +1420,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   push`, `pr-create` and `pr-merge` against a bare `origin` only the second project has), a
   project with no worktrees, a gone one, a list that cannot be read, and the empty list, where
   the sidebar is `render.fleet`'s.
+  `spec/project_keys_spec.lua` (#155) covers the sidebar's project keys on the same fixtures: `a`
+  on the header and on a worktree of each of two projects, pressed while Neovim sits in the other
+  project (the worktree is listed by the cursor's project only, its tab opens and its row is under
+  that header), under the header of a project with no worktrees, and on a gone project; `P`
+  (the question and its `dir` completion, a path with `~` and a trailing slash, a path inside a
+  project, one already on the list, the two paths the core refuses, a cancelled question, and an
+  empty project list); and `.` on a header (`Remove from list` confirmed, with the directory, the
+  worktree and its branch checked on disk, cancelled at the question and at the menu, a gone
+  project, a line that is neither a header nor a worktree, and a worktree's own menu). It reads
+  the list back through `project ls --json`.
 - **Lints** have their own unit tests in `xtask/src/`.
 - **The project list, seam 1** (#149): `tests/projects.rs` runs `project add|ls|rm` and `fleets`
   against several throwaway repositories, with `XDG_STATE_HOME` set to a temporary directory of
@@ -1524,6 +1534,11 @@ what they print.
   `orca_term.ProjectFleet` (`name`, `path`, `gone`, then its `fleet`, an `orca_term.Fleet` without
   `contract` and `version`, or its `error`). The list belongs to the person, so `cwd` only has to
   exist. A gone or broken project is not an error; a project list that cannot be read is.
+  `project_add(path, cwd, on_done)` (#155) runs `project add <path>` without waiting (10 s at
+  most), typed as `orca_term.ProjectAdded` (`name`, `path`, `added`, `false` for a project already
+  on the list), and `project_rm(path, cwd, on_done)` runs `project rm <path>` the same way, typed
+  as `orca_term.ProjectRemoved` (`name`, `path`); the client always names a project by its path,
+  never by its name, which several projects may share.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1595,6 +1610,8 @@ what they print.
   start three cells in, where a worktree's second line does (`add_under_header`). `order` and the
   selection run over the worktrees of every project, top to bottom, so the card may be in any
   project. `fleet` itself draws what it drew before: it is the sidebar with an empty project list.
+  What `projects` returns also says which line is each project's header (#155): `headers` maps
+  the line to the project's place in the list, and is empty in what `fleet` and `error` return.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
   `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
   `OrcaTermBadge` for a row's icons, `OrcaTermDenied` for the denials and `OrcaTermNote` for the
@@ -1713,8 +1730,17 @@ what they print.
   `primary.path` as the directory the core runs in, with its `remote_base` and `has_origin` for
   the menu; none of those modules changed. `R` reads the fleets again (`live.read_soon`) once the
   core answers, since `pr.lua` compares only with the current directory's fleet. Still on the
-  current directory's repository (`primary_path`), until #155 and #156: `a`, and the pull
+  current directory's repository (`primary_path`), until #156: the pull
   requests refreshed without being asked (`pr.refresh_due`, `pr.follow`).
+  The project keys (#155): `render.projects` says which line is each project's header
+  (`headers`), so `project_headed_at(line)` gives the project headed there and
+  `project_under_cursor` the project the cursor is in, the one whose header is on the cursor's
+  line or the nearest above it; with an empty project list both give `nil`. `a`
+  (`create_worktree`) hands `actions.create` that project's `fleet.primary.path`, or
+  `primary_path()` with an empty list, as before; on a project with no fleet (gone or broken) it
+  only tells the core's reason. `P` is `actions.add_project`, mapped whatever the list holds. `.`
+  (`menu_under_cursor`) opens the worktree's menu on a worktree and `actions.project_menu` on a
+  header, and nothing on any other line. `j` and `k` still move between worktrees only.
 - `lua/orca-term/detail.lua`: the detail float, `K` in the sidebar. `toggle(sidebar, worktree,
   cwd)` asks the core for `worktree detail` without waiting and opens a float of `render.detail`'s
   lines in a scratch buffer (`bufhidden=wipe`, highlights in `NAMESPACE`): `relative = 'win'` on the
@@ -1911,7 +1937,18 @@ what they print.
   says the worktree is not ready. `remove` always asks first, adding `Its agent is running and
   will be stopped.` when the worktree's holder is alive (#94); a
   `dirty` refusal asks once more before `--force`; `busy` is only reported; a removed worktree's
-  tabs close, its review tabs included. It touches no window or buffer.
+  tabs close, its review tabs included. The project list (#155): `add_project` (`P`) asks
+  `Add project: ` through `vim.ui.input` with `completion = 'dir'`, runs `project add` on the
+  answer after `vim.fs.normalize` (which expands `~` and drops a trailing slash) from Neovim's
+  current directory, without blocking, then reads the sidebar again and says `added project
+  <name> at <path>` or `project <name> at <path> is already on the list`; a refusal
+  (`not_a_repository`, a path that is no directory) is told with the core's reason, and an empty
+  answer adds nothing. `project_menu` (`.` on a project's header) offers `PROJECT_MENU`, so far
+  only `Remove from list`: `remove_project` asks `Remove project <name> from the list? Its
+  directory, worktrees and branches are not touched.` with `Remove` or `Cancel`
+  (`REMOVE_PROJECT_ANSWERS`), then runs `project rm` by the project's path, from Neovim's current
+  directory since the project's own may be gone, reads the sidebar again and says `removed
+  project <name> from the list (nothing on disk was touched)`. It touches no window or buffer.
 
 Its rules:
 

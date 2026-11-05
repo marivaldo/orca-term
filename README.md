@@ -37,7 +37,8 @@ agent stopped`. `--force` still deletes the branch whatever its tip.
 
 In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab, or every project's fleet under a
 header of its own once the project list has projects ([Projects](#projects)). Each worktree gets
-a tab of its own, pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
+a tab of its own, pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree
+(in the project the cursor is in), `P` adds a project, `.` runs
 its setup again, copies its path or removes it (always asking first, and saying when its running
 agent will be stopped), `u` toggles its unseen
 mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
@@ -762,10 +763,31 @@ the most recently active first:
 - With no project on the list, the sidebar shows the repository of Neovim's current directory,
   exactly as before.
 
+Three keys work on the projects themselves:
+
+- `a` creates a worktree in the project the cursor is in: on its header, on one of its
+  worktrees, or on any other line under its header, such as `no worktrees yet`. The core runs
+  from that project's primary checkout. On a project that is gone or broken, `a` only says why.
+  With no project on the list, `a` creates the worktree in the repository of Neovim's current
+  directory, as before.
+- `P` asks `Add project: `, completing directories, and adds the repository containing that
+  path, as `orca-term project add` does: `~` and a trailing slash are fine, a relative path is
+  taken from Neovim's current directory, and a path inside a repository adds its primary
+  checkout. It says `added project api at /home/me/src/api`, or that the project is already on
+  the list. A path the core refuses, such as a directory outside every git repository, shows the
+  core's error and adds nothing. `P` works with no project on the list too; the sidebar then
+  shows the list, so add the repository you are in as well (`P`, then `.`) to keep seeing it.
+- `.` on a project's header offers `Remove from list`. It asks first (`Remove` or `Cancel`),
+  then takes the project off the list as `orca-term project rm` does, and never touches the
+  disk: the directory, its worktrees, their branches and their running agents all stay. This is
+  also how a gone project leaves the sidebar.
+
+After each of the three the sidebar is read again and shows the result. `j` and `k` move between
+worktrees only, so reach a header with any other motion: `gg`, `G`, the arrow keys or a search.
+
 Some things still follow only the repository of Neovim's current directory, until their own
 slices of [#150](https://github.com/marivaldo/orca-term/issues/150) land:
 
-- `a` creates its worktree there, whatever project the cursor is on.
 - The live updates: a change in another project shows when Neovim gains focus, after an action
   in the sidebar, and on `R`, which reads every project again once it has refreshed the pull
   request under the cursor.
