@@ -400,6 +400,41 @@ function M.fleets_async(cwd, on_done)
   run_async({ 'fleets' }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
+---What `project add --json` prints: the project, and whether it was added.
+---@class orca_term.ProjectAdded
+---@field name string the basename of its primary checkout
+---@field path string its primary checkout
+---@field added boolean `false` when the project was already on the list, which then did not change
+
+---Adds the repository containing `path` to the project list, by its primary checkout, without
+---waiting: `orca-term project add <path> --json`, stopped after 10 seconds. A relative `path` is
+---taken from `cwd`. A project already on the list is not an error: `added` is then `false`. A
+---directory outside every git repository fails as `not_a_repository`, and a path that is no
+---directory as `other`; nothing is added then.
+---@param path string
+---@param cwd string
+---@param on_done fun(added: orca_term.ProjectAdded?, err: orca_term.Error?)
+function M.project_add(path, cwd, on_done)
+  run_async({ 'project', 'add', path }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---What `project rm --json` prints: the project taken off the list.
+---@class orca_term.ProjectRemoved
+---@field name string
+---@field path string
+
+---Takes the project whose primary checkout is `path` off the project list, without waiting:
+---`orca-term project rm <path> --json`, stopped after 10 seconds. It never touches the project's
+---directory, worktrees or branches, and a project whose directory is gone is removed the same
+---way. The list belongs to the person, so `cwd` only has to exist. A path that is not on the list
+---fails as `other`.
+---@param path string
+---@param cwd string
+---@param on_done fun(removed: orca_term.ProjectRemoved?, err: orca_term.Error?)
+function M.project_rm(path, cwd, on_done)
+  run_async({ 'project', 'rm', path }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
 ---Creates the worktree `name` in the repository `cwd` is in, without waiting:
 ---`orca-term worktree new <name> --json`. The core runs the setup before it finishes, so
 ---`on_done` may come minutes later. A failed setup is a document whose `setup.status` is

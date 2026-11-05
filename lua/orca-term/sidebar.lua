@@ -16,9 +16,13 @@
 -- (`orca-term fleets --json`) on each read. A worktree belongs to the fleet that lists it, and
 -- every key on a worktree runs the core from that fleet's primary checkout
 -- (`worktree_under_cursor`), never from Neovim's current directory. With an empty list it shows
--- the repository of the current directory, as it did before the list existed. `a` still creates
--- its worktree in the current directory's repository, and the live updates and the pull requests
--- refreshed without being asked still follow that repository only.
+-- the repository of the current directory, as it did before the list existed. The live updates
+-- and the pull requests refreshed without being asked still follow that repository only.
+--
+-- The project keys (#155): `a` creates its worktree in the project the cursor is in, on its header
+-- or anywhere under it (`project_under_cursor`), `P` adds a project to the list, with an empty
+-- list too, and `.` on a project's header opens that project's menu, which takes it off the list.
+-- All three go through `actions.lua`, which reads the sidebar again once the core answers.
 --
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains
@@ -342,12 +346,51 @@ local function worktree_under_cursor()
   return nil, nil
 end
 
+---The project whose header is on the sidebar's line `line`, or `nil` on any other line, and
+---always with an empty project list, which draws no project.
+---@param line integer
+---@return orca_term.ProjectFleet?
+local function project_headed_at(line)
+  local index = state.rendered and state.rendered.headers[line]
+  return index and state.projects[index] or nil
+end
+
+---The project the cursor is in: the one whose header is on the cursor's line or, below it, the
+---nearest above, so its worktrees and everything else drawn under that header count as in it.
+---`nil` with an empty project list.
+---@return orca_term.ProjectFleet?
+local function project_under_cursor()
+  for line = vim.api.nvim_win_get_cursor(0)[1], 1, -1 do
+    local project = project_headed_at(line)
+    if project then
+      return project
+    end
+  end
+  return nil
+end
+
 ---The primary checkout of the current directory's repository, or the current directory when its
----fleet could not be read: where the core runs for what belongs to no worktree under the cursor,
----creating a worktree (`a`) and the pull requests refreshed without being asked.
+---fleet could not be read: where the core runs for what belongs to no project, creating a
+---worktree (`a`) with an empty project list and the pull requests refreshed without being asked.
 ---@return string
 local function primary_path()
   return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
+end
+
+---`a`: creates a worktree in the project the cursor is in, on its header, on one of its worktrees
+---or anywhere else under its header: the core runs from that project's primary checkout. A project
+---whose fleet could not be read (it is gone or broken) only says why. With an empty project list
+---the worktree is created in the repository of the current directory, as before the list existed.
+local function create_worktree()
+  local project = project_under_cursor()
+  if not project then
+    actions.create(primary_path())
+  elseif project.fleet then
+    actions.create(project.fleet.primary.path)
+  else
+    local why = project.error and project.error.message or 'its fleet could not be read'
+    vim.notify('orca-term: ' .. why, vim.log.levels.ERROR)
+  end
 end
 
 ---`<CR>`: selects the worktree under the cursor and opens it: its tab, and its agent's terminal.
@@ -361,11 +404,17 @@ local function open_worktree()
   actions.open(worktree, fleet.primary.path)
 end
 
----`.`: the menu of the worktree under the cursor.
-local function worktree_menu()
+---`.`: the menu of the worktree under the cursor or, on a project's header, the menu of that
+---project. Nothing on any other line.
+local function menu_under_cursor()
   local worktree, fleet = worktree_under_cursor()
   if worktree and fleet then
     actions.menu(worktree, fleet.primary.path, fleet.remote_base, fleet.has_origin)
+    return
+  end
+  local project = project_headed_at(vim.api.nvim_win_get_cursor(0)[1])
+  if project then
+    actions.project_menu(project)
   end
 end
 
@@ -515,10 +564,9 @@ local function ensure_buffer()
     move(-1)
   end, 'select the previous worktree')
   map('<CR>', open_worktree, "go to the worktree's tab and show its agent")
-  map('a', function()
-    actions.create(primary_path())
-  end, 'create a worktree')
-  map('.', worktree_menu, 'the actions of the worktree under the cursor')
+  map('a', create_worktree, 'create a worktree in the project under the cursor')
+  map('P', actions.add_project, 'add a project to the project list')
+  map('.', menu_under_cursor, 'the actions of the worktree, or the project, under the cursor')
   map('u', toggle_unseen, 'mark the worktree under the cursor unseen, or seen when it is unseen')
   map('d', open_review, 'open the review of the worktree under the cursor in diffview')
   map('s', list_sessions, 'list the sessions of the worktree under the cursor, to resume one')
