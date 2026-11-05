@@ -16,8 +16,7 @@
 -- (`orca-term fleets --json`) on each read. A worktree belongs to the fleet that lists it, and
 -- every key on a worktree runs the core from that fleet's primary checkout
 -- (`worktree_under_cursor`), never from Neovim's current directory. With an empty list it shows
--- the repository of the current directory, as it did before the list existed. The live updates
--- and the pull requests refreshed without being asked still follow that repository only.
+-- the repository of the current directory, as it did before the list existed.
 --
 -- The project keys (#155): `a` creates its worktree in the project the cursor is in, on its header
 -- or anywhere under it (`project_under_cursor`), `P` adds a project to the list, with an empty
@@ -66,7 +65,8 @@ M.FILETYPE = 'orca-term-sidebar'
 ---@field open boolean whether the sidebar is shown (in every tab)
 ---@field buf? integer the sidebar's buffer
 ---@field group? integer the autocommand group, while open
----The fleet of the current directory's repository last read, `nil` when reading it failed
+---The fleet of the current directory's repository last read, `nil` when reading it failed and,
+---with projects on the project list, always: it is not read then
 ---@field fleet? orca_term.Fleet
 ---@field error? orca_term.Error why that fleet could not be read
 ---The project list last read, each project with its fleet; empty when the list is empty, and
@@ -298,7 +298,7 @@ local function on_fleet(fleet, err)
   local projects, projects_err = live.projects()
   state.projects, state.projects_error = projects or {}, projects_err
   redraw()
-  pr.follow(fleet, state.fleet and state.fleet.primary.path or vim.fn.getcwd())
+  pr.follow(shown_fleets())
 end
 
 ---Reads the fleet again and redraws, when the sidebar is open; does nothing otherwise. The read
@@ -370,8 +370,8 @@ local function project_under_cursor()
 end
 
 ---The primary checkout of the current directory's repository, or the current directory when its
----fleet could not be read: where the core runs for what belongs to no project, creating a
----worktree (`a`) with an empty project list and the pull requests refreshed without being asked.
+---fleet was not read: where the core runs for what belongs to no project, creating a worktree
+---(`a`) with an empty project list.
 ---@return string
 local function primary_path()
   return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
@@ -442,8 +442,8 @@ local function list_sessions()
   end
 end
 
----`R`: refreshes the pull request of the worktree under the cursor through the core, then reads
----the fleets again, so the row shows what was found. A refusal is told.
+---`R`: refreshes the pull request of the worktree under the cursor through the core; `pr.lua`
+---then reads the fleets again when the row shows something else. A refusal is told.
 local function refresh_pr()
   local worktree, fleet = worktree_under_cursor()
   if not (worktree and fleet) then
@@ -453,16 +453,13 @@ local function refresh_pr()
     if err then
       vim.notify(err.message, vim.log.levels.ERROR)
     end
-    -- `pr.lua` reads again only for a worktree of the current directory's repository, the one
-    -- fleet it knows: a worktree of another project is read again here. The two share one read.
-    live.read_soon()
   end)
 end
 
 ---Opening or focusing the sidebar: refreshes the pull requests due for it (`pr.refresh_due`), of
----the current directory's repository.
+---every fleet shown, each from its own primary checkout.
 local function refresh_due_prs()
-  pr.refresh_due(state.fleet, primary_path())
+  pr.refresh_due(shown_fleets())
 end
 
 ---`K`: shows the detail of the worktree under the cursor in a float next to the sidebar, or closes

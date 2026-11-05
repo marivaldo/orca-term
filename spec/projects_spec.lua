@@ -226,12 +226,14 @@ describe('the sidebar, grouped by project', function()
   end)
 
   it("refreshes the pull request of the second project's worktree with R", function()
-    local repo = two_projects()
+    local repo, api = two_projects()
     local ui = support.stub_ui({})
     vim.cmd('OrcaTerm sidebar')
-    -- Opening refreshes only the worktrees of Neovim's current directory's repository, so far.
+    -- Opening refreshes the worktrees of both projects (#156), before `two` has a pull request:
+    -- the core has kept that it has none once this ends.
     support.wait_for(function()
-      return #support.gh_calls(repo) == 1
+      local found = support.listed(api, 'two').pr
+      return #support.gh_calls(repo) == 3 and type(found) == 'table' and found.none == true
     end, 'the refresh on opening')
     support.gh_answer(repo, 'two', {
       number = 12,
@@ -248,7 +250,7 @@ describe('the sidebar, grouped by project', function()
       local row = line_with('· two')
       return row ~= nil and (lines()[row + 1] or ''):find('PR', 1, true) ~= nil
     end, 'the pull request of two in its row')
-    assert.is_true(vim.startswith(support.gh_calls(repo)[2], 'pr view two '))
+    assert.is_true(vim.startswith(support.gh_calls(repo)[4], 'pr view two '))
     assert.are.same({}, ui.notes)
   end)
 

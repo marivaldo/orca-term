@@ -12,6 +12,11 @@
 -- - and whenever the person asks: `R` in the sidebar for the worktree under the cursor,
 --   `:OrcaTerm pr-refresh` (`<Plug>(OrcaTermPrRefresh)`) for every worktree.
 --
+-- The refreshes nobody asked for cover every fleet the sidebar shows, every project's when the
+-- project list has projects (#156): each fleet's worktrees are asked about in one run of the core,
+-- from that fleet's own primary checkout, since the core knows a worktree only inside its
+-- repository.
+--
 -- After a refresh that changes what the sidebar shows (a pull request, its state or its checks),
 -- the live fleet is read again (`live.read_soon()`), so the sidebar shows it even in a Neovim the
 -- core cannot notify; one that changes nothing shown reads nothing. This module touches no window,
@@ -32,13 +37,12 @@ M.POLL_MS = 60 * 1000
 ---What this module holds between calls.
 ---@class orca_term.PrState
 ---@field asked table<string, integer> each worktree's path, and when this client last asked (ms)
----@field states table<string, string> each worktree's path, and its state in the fleet last seen
----@field fleet? orca_term.Fleet the fleet last seen while the sidebar is open
----@field cwd? string where the core runs
+---@field states table<string, string> each worktree's path, and its state in the fleets last seen
+---@field fleets orca_term.Fleet[] the fleets last seen while the sidebar is open
 ---@field timer? uv.uv_timer_t the timer refreshing pending checks, while it runs
 
 ---@type orca_term.PrState
-local state = { asked = {}, states = {} }
+local state = { asked = {}, states = {}, fleets = {} }
 
 ---The time now, in milliseconds since the Unix epoch.
 ---@return integer
@@ -103,14 +107,17 @@ function M.shown(pr)
   return ('%d %s %s'):format(pr.number, pr.state or '', pr.checks or '')
 end
 
----Whether what `refreshed` found changes what the sidebar shows of the fleet last read. A
----worktree that fleet does not hold (another repository's, or one removed since) changes nothing.
+---Whether what `refreshed` found changes what the sidebar shows of the fleets last read, every
+---project's among them. A worktree those fleets do not hold (a repository that is not shown, or
+---one removed since) changes nothing.
 ---@param refreshed orca_term.PrRefreshed
 ---@return boolean
 local function shows_differently(refreshed)
   local before = {}
-  for _, worktree in ipairs((live.fleet() or { worktrees = {} }).worktrees) do
-    before[worktree.path] = M.shown(worktree.pr)
+  for _, fleet in ipairs(live.fleets()) do
+    for _, worktree in ipairs(fleet.worktrees) do
+      before[worktree.path] = M.shown(worktree.pr)
+    end
   end
   for _, worktree in ipairs(refreshed.worktrees) do
     local shown = before[worktree.path]
@@ -163,19 +170,17 @@ local function paths_where(fleet, wanted)
 end
 
 ---Opening the sidebar, or Neovim gaining focus while it is open: refreshes, without waiting, every
----worktree of `fleet` that is due (`M.due`), from `cwd`.
----@param fleet? orca_term.Fleet
----@param cwd string
-function M.refresh_due(fleet, cwd)
-  if not fleet then
-    return
-  end
+---worktree of `fleets` that is due (`M.due`), those of each fleet from its own primary checkout.
+---@param fleets orca_term.Fleet[] the fleets the sidebar shows
+function M.refresh_due(fleets)
   local now = now_ms()
-  local paths = paths_where(fleet, function(worktree)
-    return M.due(worktree, now)
-  end)
-  if #paths > 0 then
-    M.refresh(paths, cwd)
+  for _, fleet in ipairs(fleets) do
+    local paths = paths_where(fleet, function(worktree)
+      return M.due(worktree, now)
+    end)
+    if #paths > 0 then
+      M.refresh(paths, fleet.primary.path)
+    end
   end
 end
 
@@ -188,23 +193,26 @@ local function stop_timer()
   end
 end
 
----One tick of the timer: refreshes the worktrees of the fleet last seen whose checks are pending.
+---One tick of the timer: refreshes the worktrees of the fleets last seen whose checks are pending,
+---those of each fleet from its own primary checkout.
 local function tick()
-  local fleet = state.fleet
-  if not (fleet and state.cwd) then
-    return
-  end
-  local paths = paths_where(fleet, M.pending)
-  if #paths > 0 then
-    M.refresh(paths, state.cwd)
+  for _, fleet in ipairs(state.fleets) do
+    local paths = paths_where(fleet, M.pending)
+    if #paths > 0 then
+      M.refresh(paths, fleet.primary.path)
+    end
   end
 end
 
----Starts the timer while some worktree of the fleet last seen has pending checks, and stops it
+---Starts the timer while some worktree of the fleets last seen has pending checks, and stops it
 ---otherwise. There is one timer at most.
 local function update_timer()
-  local fleet = state.fleet
-  local wanted = fleet ~= nil and #paths_where(fleet, M.pending) > 0
+  local wanted = false
+  for _, fleet in ipairs(state.fleets) do
+    if #paths_where(fleet, M.pending) > 0 then
+      wanted = true
+    end
+  end
   if not wanted then
     stop_timer()
     return
@@ -217,24 +225,28 @@ local function update_timer()
   state.timer = timer
 end
 
----Every fleet the sidebar shows, while it is open: refreshes, without waiting, each worktree whose
----turn ended since the fleet before, and runs the timer while some checks are pending.
----@param fleet? orca_term.Fleet
----@param cwd string
-function M.follow(fleet, cwd)
-  if not fleet then
+---The fleets the sidebar shows, each time it gets them while it is open: refreshes, without
+---waiting, each worktree whose turn ended since the fleets before, those of each fleet from its own
+---primary checkout, and runs the timer while some checks are pending. No fleet (nothing could be
+---read) changes nothing.
+---@param fleets orca_term.Fleet[]
+function M.follow(fleets)
+  if #fleets == 0 then
     return
   end
-  local ended = paths_where(fleet, function(worktree)
-    return M.turn_ended(state.states[worktree.path], worktree.state)
-  end)
+  local before = state.states
   state.states = {}
-  for _, worktree in ipairs(fleet.worktrees) do
-    state.states[worktree.path] = worktree.state
-  end
-  state.fleet, state.cwd = fleet, cwd
-  if #ended > 0 then
-    M.refresh(ended, cwd)
+  state.fleets = fleets
+  for _, fleet in ipairs(fleets) do
+    local ended = paths_where(fleet, function(worktree)
+      return M.turn_ended(before[worktree.path], worktree.state)
+    end)
+    for _, worktree in ipairs(fleet.worktrees) do
+      state.states[worktree.path] = worktree.state
+    end
+    if #ended > 0 then
+      M.refresh(ended, fleet.primary.path)
+    end
   end
   update_timer()
 end
@@ -245,15 +257,14 @@ function M.polling()
   return state.timer ~= nil
 end
 
----The sidebar closed: the timer stops and the fleet seen is forgotten.
+---The sidebar closed: the timer stops and the fleets seen are forgotten.
 function M.stop()
   stop_timer()
-  state.fleet, state.cwd, state.states = nil, nil, {}
+  state.fleets, state.states = {}, {}
 end
 
 ---`:OrcaTerm pr-refresh`: refreshes the pull request of every worktree of the repository Neovim's
----current directory is in (the fleet the sidebar shows), without waiting, then says how many it
----refreshed, or why it could not.
+---current directory is in, without waiting, then says how many it refreshed, or why it could not.
 function M.refresh_all()
   M.refresh({}, vim.fn.getcwd(), function(refreshed, err)
     if not refreshed then

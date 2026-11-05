@@ -1430,6 +1430,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   worktree and its branch checked on disk, cancelled at the question and at the menu, a gone
   project, a line that is neither a header nor a worktree, and a worktree's own menu). It reads
   the list back through `project ls --json`.
+  `spec/projects_live_spec.lua` (#156) checks what follows every project. In child Neovims, as
+  `spec/live_spec.lua` runs them, reading the registry of each repository (`support.registry`):
+  the registration with both projects, from inside one and from outside every repository, a
+  write in either shown, `:qa` unregistering from both, a project added after the sidebar opened
+  and then taken off the list, and the status strip of a Neovim that never opened the sidebar.
+  In its own Neovim: the strip's count over two projects, `:OrcaTerm jump` and `:OrcaTerm
+  worktree N` across them, the pull requests of the second project refreshed on opening, on the
+  timer and after a turn of its fake claude ends, and the number of reads, counted by wrapping
+  `core.fleets` and `core.worktree_ls` (one `fleets` and no `worktree ls` with projects on the
+  list, one of each with an empty list).
 - **Lints** have their own unit tests in `xtask/src/`.
 - **The project list, seam 1** (#149): `tests/projects.rs` runs `project add|ls|rm` and `fleets`
   against several throwaway repositories, with `XDG_STATE_HOME` set to a temporary directory of
@@ -1629,14 +1639,18 @@ what they print.
   policy of #22), touching no window or buffer and starting no process: `refresh(paths, cwd,
   on_done)` runs `core.pr_refresh` and, when what it found changes what the sidebar shows (`shown`:
   a pull request's number, state and checks), reads the live fleet again (`live.read_soon()`);
-  `refresh_due(fleet, cwd)`, on opening the sidebar and on `FocusGained` or entering it while open,
+  `refresh_due(fleets)`, on opening the sidebar and on `FocusGained` or entering it while open,
   refreshes each worktree whose last answer (`fetched_at`) and last request are a minute old
-  (`MIN_AGE_MS`); `follow(fleet, cwd)`, on every fleet the open sidebar gets, refreshes each
+  (`MIN_AGE_MS`); `follow(fleets)`, each time the open sidebar gets its fleets, refreshes each
   worktree whose turn ended (`turn_ended`: it left working or waiting, or reached finished, failed or
   interrupted) and runs one timer every `POLL_MS` (60 s) refreshing the worktrees whose checks are
   pending, stopped once none is or the sidebar closes (`stop()`); `refresh_all()` is `:OrcaTerm
   pr-refresh`, every worktree of the current directory's repository, then `refreshed the pull
-  request of N worktrees` or the error. A broken worktree is never asked about.
+  request of N worktrees` or the error. A broken worktree is never asked about. Since #156 those
+  three take the fleets the sidebar shows, every project's when the project list has projects,
+  and ask for the worktrees of each fleet in a `pr refresh` of its own, run from that fleet's
+  `primary.path`: the core knows a worktree only inside its repository. What a refresh found is
+  compared with every fleet `live.fleets()` keeps, so a change in any project reads again.
 - `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
   no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
   that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
@@ -1651,10 +1665,22 @@ what they print.
   waiting, and registers again; both are ignored while nobody is subscribed. These autocommands
   live in the `orca-term-live` group, made at the first subscription and never deleted. Since
   #154 every read, waited for or not, first reads the project list with each project's fleet
-  (`core.fleets`, `core.fleets_async`) and keeps it beside the fleet: `projects()` gives the
-  projects last kept (an empty table for an empty list) and why the list could not be read. The
-  subscribers are still handed the current directory's fleet, which the status strip and the
-  notes show, and this Neovim still registers with that repository only.
+  (`core.fleets`, `core.fleets_async`) and keeps it: `projects()` gives the projects last kept
+  (an empty table for an empty list) and why the list could not be read. Since #156, with
+  projects on the list that one run of the core is the whole read: `worktree ls` is not run,
+  `fleet()` is `nil` and the subscribers are called with nothing. With an empty list, or one that
+  could not be read, the read goes on to `worktree ls` in the current directory and hands the
+  subscribers that fleet, as before the list existed. `fleets()` gives every fleet last kept
+  either way: each project's that could be read, in the list's order, or the current directory's
+  alone; the status strip, `pr.lua` and the registrations go through it. Every subscription
+  registers from the primary checkout of each of those fleets (`register`; from the current
+  directory while none is kept), and `VimLeavePre` unregisters from them all. After every read
+  that is kept, before the subscribers are told, the registrations follow it (`follow_fleets`):
+  this Neovim unregisters, waiting 1 second at most, from each project whose fleet was kept
+  before and no longer is (a project taken off the list, or one whose directory is gone), and,
+  while anyone is subscribed, registers from each fleet it is not registered from yet (a project
+  added to the list, or the repository of a new current directory). The project list belongs to
+  no repository, so changing it fires no event: the registrations follow at the next read.
 - `lua/orca-term/strip.lua`: the status strip, the fleet's health for a statusline while the
   sidebar is closed. `statusline()` returns the strip as a statusline expression (each item as
   `%#Group#text%*`, a space between items), for `%{%v:lua.require'orca-term.strip'.statusline()%}`;
@@ -1665,12 +1691,14 @@ what they print.
   (`vim.schedule`), since a statusline is drawn under textlock: the start defines the highlight
   groups, makes the `orca-term-strip` autocommand group (`ColorScheme` defines them again,
   `DirChanged` of the global or a tab directory reads the fleet again, `read_soon()`), subscribes
-  to `live.lua` as `strip`, shows the fleet already kept (when the sidebar read it) and reads it
-  again without waiting. Every fleet the live fleet keeps is turned into the strip once, through
-  `render.strip`; when what it shows changed, `redrawstatus!` and `redrawtabline` (only while a UI
+  to `live.lua` as `strip`, shows the fleets already kept (when the sidebar read them) and reads
+  them again without waiting. After every read the live fleet keeps, the worktrees of every fleet
+  it keeps (`live.fleets()`: every project's with projects on the list, #156, else the current
+  directory's) are turned into the strip once, through `render.strip`, as one count; when what it
+  shows changed, `redrawstatus!` and `redrawtabline` (only while a UI
   is attached: with none, a redraw writes the screen's mode message to the terminal) and, when
-  lualine is loaded, `require('lualine').refresh()` draw it. `_reset()` forgets it, for the specs. After a read, when the fleet's primary checkout is not
-  the one it registered from, it subscribes again, which registers this Neovim from there. It stays
+  lualine is loaded, `require('lualine').refresh()` draw it. `_reset()` forgets it, for the specs.
+  It registers nothing itself: `live.lua` registers this Neovim from the fleets of each read. It stays
   subscribed for the rest of the session, open sidebar or not, and touches no window or buffer.
 - `lua/lualine/components/orca-term.lua`: the strip as a lualine component, `lualine_x = {
   'orca-term' }`; lualine finds it by name. It extends `lualine.component`: `init` (run again by
@@ -1703,7 +1731,7 @@ what they print.
   activity; while a listed worktree is working, one timer turns its glyph through
   `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
   nothing works or the sidebar closes. Opening the sidebar subscribes to `live.lua` after its first
-  read, which registers this Neovim from that fleet's primary checkout; closing it unsubscribes, so
+  read, which registers this Neovim from the primary checkout of every fleet read; closing it unsubscribes, so
   the core's events read nothing for it while it is closed. A session saved with `blank` while the
   sidebar was open (#113) keeps each sidebar window as `enew` and `file orca-term://sidebar`:
   `name_taken` renames each such buffer that is not the sidebar's own to
@@ -1728,10 +1756,11 @@ what they print.
   `.`, `u`, `d`, `s`, `K`, `R`, and `create_pr_here`, `merge_pr_here`, `push_here`,
   `list_sessions_here`) hands `actions.lua`, `detail.lua`, `pr.lua` or `compose.lua` that fleet's
   `primary.path` as the directory the core runs in, with its `remote_base` and `has_origin` for
-  the menu; none of those modules changed. `R` reads the fleets again (`live.read_soon`) once the
-  core answers, since `pr.lua` compares only with the current directory's fleet. Still on the
-  current directory's repository (`primary_path`), until #156: the pull
-  requests refreshed without being asked (`pr.refresh_due`, `pr.follow`).
+  the menu; none of those modules changed. Since #156 the pull requests refreshed without being
+  asked are every shown fleet's: the sidebar hands `shown_fleets()` to `pr.refresh_due` and
+  `pr.follow`, and `R` leaves reading again to `pr.lua`, which compares with every fleet. With
+  projects on the list `live.lua` reads no fleet for the current directory, so the sidebar's own
+  `fleet` is `nil` then.
   The project keys (#155): `render.projects` says which line is each project's header
   (`headers`), so `project_headed_at(line)` gives the project headed there and
   `project_under_cursor` the project the cursor is in, the one whose header is on the cursor's
@@ -1928,7 +1957,10 @@ what they print.
   worktree's tab, runs `agent swap` without blocking and attaches its terminal to the new agent
   through `terminal.reattach`; `untrusted` writable paths are asked about as for `<CR>`, any other
   refusal, such as `busy`, is told), `jump` (`:OrcaTerm jump`) and `go_to_nth`
-  (`:OrcaTerm worktree N`), the last two in the sidebar's order (`render.fleet(...).order`).
+  (`:OrcaTerm worktree N`), the last two in the sidebar's order: they read `core.fleets` themselves
+  (`worktrees_in_order`, #156) and, with projects on the list, take every project's worktrees in
+  `render.projects(...).order`; with an empty list they read `worktree ls` in the current directory
+  and take `render.fleet(...).order`, as before. A project list that cannot be read is told.
   `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
   they start (showing *setting up*) and when they finish. When either fails as `untrusted`, a
   `vim.ui.select` (`approval_prompt`: the worktree, the source and the script's lines) asks

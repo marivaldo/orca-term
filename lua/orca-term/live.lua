@@ -12,10 +12,16 @@
 -- Unsubscribing unregisters nothing: Neovim unregisters as it exits. While nobody is subscribed
 -- the events and the focus are ignored, and nothing is read. The fleet is never polled.
 --
--- Every read also reads the project list, each project with its fleet (`fleets`), and keeps it
--- beside the fleet of the current directory's repository: `M.projects()` gives it, to the sidebar,
--- which shows every project (#154). The subscribers still get the current directory's fleet, and
--- this Neovim still registers with that repository only.
+-- Every read first reads the project list, each project with its fleet, in one run of the core
+-- (`fleets`), and keeps it: `M.projects()` gives it (#154). With projects on the list that is the
+-- whole read (#156): the subscribers are handed no fleet, and take every project's from
+-- `M.fleets()`. With an empty list, or one that could not be read, the read goes on to the fleet of
+-- the current directory's repository (`worktree ls`), as before the list existed, and `M.fleets()`
+-- is that one fleet.
+--
+-- This Neovim registers with the primary checkout of every fleet kept, so a change in any project
+-- reaches it. After each read that is kept the registrations follow the project list: a project
+-- added to the list is registered with, and one taken off it is unregistered from.
 --
 -- This module touches no window, tab or buffer and starts no process (`cargo xtask
 -- client-boundary` checks it): it reads the fleet and registers through `core.lua`.
@@ -39,8 +45,10 @@ M.DELAY_MS = 100
 ---What the live fleet holds between calls.
 ---@class orca_term.LiveState
 ---@field subscribers table<string, fun(fleet: orca_term.Fleet?, err: orca_term.Error?)> by name
----@field fleet? orca_term.Fleet the fleet last kept, `nil` before the first read or when it failed
----@field error? orca_term.Error why the fleet last kept could not be read
+---The fleet of the current directory's repository last kept; `nil` before the first read, when it
+---failed, and while the project list has projects
+---@field fleet? orca_term.Fleet
+---@field error? orca_term.Error why that fleet could not be read
 ---The project list last kept, each project with its fleet; empty when the list is empty, `nil`
 ---before the first read or when it could not be read
 ---@field projects? orca_term.ProjectFleet[]
@@ -62,34 +70,6 @@ local function subscribed()
   return next(state.subscribers) ~= nil
 end
 
----Keeps the fleet (or why it could not be read) and the project list read with it (`listed`, or
----why it could not be read), then hands the fleet to every subscriber, in the order of their
----names.
----@param fleet? orca_term.Fleet
----@param err? orca_term.Error
----@param listed? orca_term.Fleets
----@param listed_err? orca_term.Error
-local function keep(fleet, err, listed, listed_err)
-  state.fleet, state.error = fleet, err
-  state.projects, state.projects_error = listed and listed.projects, listed_err
-  -- The names are taken first, so a subscriber may unsubscribe (or subscribe) while being told.
-  local names = vim.tbl_keys(state.subscribers)
-  table.sort(names)
-  for _, name in ipairs(names) do
-    local on_change = state.subscribers[name]
-    if on_change then
-      on_change(fleet, err)
-    end
-  end
-end
-
----The primary checkout's path of the fleet last kept, where the core runs to register; the current
----directory when the fleet was not read.
----@return string
-local function primary_path()
-  return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
-end
-
 ---Where the core can reach this Neovim: `v:servername` when it is the absolute path of a unix
 ---socket, the only kind of address the core takes; `nil` otherwise (no server, or a TCP address).
 ---@return string?
@@ -101,28 +81,48 @@ local function server_address()
   return nil
 end
 
----Registers this Neovim with the core, without waiting, from the primary checkout of the fleet
----last kept, and remembers it for `unregister()`. It is remembered before the core answers, so
----Neovim exiting meanwhile still unregisters it; unregistering a registration that failed is
----harmless. A failure is silent: the subscribers then get the fleet on focus and when they ask
----only. It runs again on `FocusGained`, as the core forgets a Neovim it could not reach (one
----suspended long enough stops answering); registering again changes nothing.
+---Whether this Neovim, at `address`, is remembered as registered from `cwd`.
+---@param address string
+---@param cwd string
+---@return boolean
+local function is_registered(address, cwd)
+  for _, registration in ipairs(state.registered) do
+    if registration.address == address and registration.cwd == cwd then
+      return true
+    end
+  end
+  return false
+end
+
+---Registers this Neovim, at `address`, with the repository `cwd` is in, without waiting, and
+---remembers it for `unregister()`. It is remembered before the core answers, so Neovim exiting
+---meanwhile still unregisters it; unregistering a registration that failed is harmless. A failure
+---is silent: the subscribers then get that repository's changes on focus and when they ask only.
+---@param address string
+---@param cwd string
+local function register_from(address, cwd)
+  if not is_registered(address, cwd) then
+    table.insert(state.registered, { address = address, cwd = cwd })
+  end
+  core.nvim_register(address, cwd, function() end)
+end
+
+---Registers this Neovim with the core from the primary checkout of every fleet last kept, every
+---project's when the project list has some; from the current directory when no fleet is kept.
+---It runs again on `FocusGained`, as the core forgets a Neovim it could not reach (one suspended
+---long enough stops answering); registering again changes nothing.
 local function register()
   local address = server_address()
   if not address then
     return
   end
-  local cwd = primary_path()
-  local known = false
-  for _, registration in ipairs(state.registered) do
-    if registration.address == address and registration.cwd == cwd then
-      known = true
-    end
+  local fleets = M.fleets()
+  if #fleets == 0 then
+    register_from(address, vim.fn.getcwd())
   end
-  if not known then
-    table.insert(state.registered, { address = address, cwd = cwd })
+  for _, fleet in ipairs(fleets) do
+    register_from(address, fleet.primary.path)
   end
-  core.nvim_register(address, cwd, function() end)
 end
 
 ---Undoes every registration, waiting for each (1 second at most). Errors are ignored: Neovim is
@@ -134,16 +134,109 @@ local function unregister()
   state.registered = {}
 end
 
----Reads the project list and the fleet of the current directory's repository, waiting for both,
----keeps them and hands the fleet to every subscriber. A read without waiting that is still running
----is dropped as it ends.
----@return orca_term.Fleet? fleet `nil` when it could not be read
+---Undoes the registrations made from `cwd`, waiting for each (1 second at most), and forgets
+---them. Errors are ignored, as in `unregister()`.
+---@param cwd string
+local function unregister_from(cwd)
+  local others = {}
+  for _, registration in ipairs(state.registered) do
+    if registration.cwd == cwd then
+      core.nvim_unregister(registration.address, cwd)
+    else
+      table.insert(others, registration)
+    end
+  end
+  state.registered = others
+end
+
+---The primary checkout of every project whose fleet is kept, as a set. Empty while the project
+---list is empty.
+---@return table<string, true>
+local function project_primaries()
+  local paths = {}
+  for _, project in ipairs(state.projects or {}) do
+    if project.fleet then
+      paths[project.fleet.primary.path] = true
+    end
+  end
+  return paths
+end
+
+---Makes the registrations follow the fleets just kept. This Neovim unregisters from every
+---project of `before` whose fleet is no longer kept: a project taken off the list, or one whose
+---directory is gone. While anyone is subscribed, it registers from the primary checkout of every
+---fleet it is not registered from yet: a project added to the list.
+---@param before table<string, true> the primary checkouts of the projects kept before this read
+local function follow_fleets(before)
+  local fleets = M.fleets()
+  local kept = {}
+  for _, fleet in ipairs(fleets) do
+    kept[fleet.primary.path] = true
+  end
+  for path in pairs(before) do
+    if not kept[path] then
+      unregister_from(path)
+    end
+  end
+  local address = server_address()
+  if not (address and subscribed()) then
+    return
+  end
+  for _, fleet in ipairs(fleets) do
+    if not is_registered(address, fleet.primary.path) then
+      register_from(address, fleet.primary.path)
+    end
+  end
+end
+
+---Keeps the fleet (or why it could not be read) and the project list read before it (`listed`, or
+---why it could not be read), makes the registrations follow them, then tells every subscriber, in
+---the order of their names. With projects on the list there is no fleet to hand over: the
+---subscribers take every project's from `M.fleets()`.
+---@param fleet? orca_term.Fleet
+---@param err? orca_term.Error
+---@param listed? orca_term.Fleets
+---@param listed_err? orca_term.Error
+local function keep(fleet, err, listed, listed_err)
+  local before = project_primaries()
+  state.fleet, state.error = fleet, err
+  state.projects, state.projects_error = listed and listed.projects, listed_err
+  follow_fleets(before)
+  -- The names are taken first, so a subscriber may unsubscribe (or subscribe) while being told.
+  local names = vim.tbl_keys(state.subscribers)
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local on_change = state.subscribers[name]
+    if on_change then
+      on_change(fleet, err)
+    end
+  end
+end
+
+---Whether `listed`, what `fleets` printed, has projects: then it is the whole read, and
+---`worktree ls` is not run.
+---@param listed? orca_term.Fleets
+---@return boolean
+local function has_projects(listed)
+  return listed ~= nil and #listed.projects > 0
+end
+
+---Reads the project list with every project's fleet, waiting for it, keeps it and tells every
+---subscriber. With an empty list, or one that cannot be read, it then reads the fleet of the
+---current directory's repository, waiting too, and hands it to them. A read without waiting that is
+---still running is dropped as it ends.
+---@return orca_term.Fleet? fleet the current directory's; `nil` when it could not be read, and
+---with projects on the list
 ---@return orca_term.Error? err why it could not be read
 function M.read()
   state.reads = state.reads + 1
   local cwd = vim.fn.getcwd()
+  -- Both looked up on each call, not kept in locals: the specs count the reads by wrapping them.
   local listed, listed_err = core.fleets(cwd)
-  -- Looked up on each call, not kept in a local: the specs count the reads by wrapping it.
+  if has_projects(listed) then
+    keep(nil, nil, listed, nil)
+    return nil, nil
+  end
   local fleet, err = core.worktree_ls(cwd)
   keep(fleet, err, listed, listed_err)
   return fleet, err
@@ -170,9 +263,10 @@ function M.read_soon()
   end
 end
 
----Reads the project list, then the fleet, without waiting, and keeps them as `read()` does. A read
----that ends after a newer read started (waited for or not), or once nobody is subscribed, is
----dropped. When an event came during the read, one more read follows.
+---Reads the project list and, when it is empty or cannot be read, the fleet of the current
+---directory's repository, without waiting, and keeps them as `read()` does. A read that ends after
+---a newer read started (waited for or not), or once nobody is subscribed, is dropped. When an
+---event came during the read, one more read follows.
 read_now = function()
   if not subscribed() then
     return
@@ -180,26 +274,58 @@ read_now = function()
   state.reads = state.reads + 1
   local this_read = state.reads
   state.reading = true
+
+  ---The read ended, with what it found.
+  ---@param fleet? orca_term.Fleet
+  ---@param err? orca_term.Error
+  ---@param listed? orca_term.Fleets
+  ---@param listed_err? orca_term.Error
+  local function done(fleet, err, listed, listed_err)
+    state.reading = false
+    if subscribed() and state.reads == this_read then
+      keep(fleet, err, listed, listed_err)
+    end
+    if state.again then
+      state.again = false
+      M.read_soon()
+    end
+  end
+
   local cwd = vim.fn.getcwd()
   core.fleets_async(cwd, function(listed, listed_err)
+    if has_projects(listed) then
+      done(nil, nil, listed, nil)
+      return
+    end
     core.worktree_ls_async(cwd, function(fleet, err)
-      state.reading = false
-      if subscribed() and state.reads == this_read then
-        keep(fleet, err, listed, listed_err)
-      end
-      if state.again then
-        state.again = false
-        M.read_soon()
-      end
+      done(fleet, err, listed, listed_err)
     end)
   end)
 end
 
----The fleet last kept and why it could not be read; both `nil` before the first read.
+---The fleet of the current directory's repository last kept and why it could not be read; both
+---`nil` before the first read, and while the project list has projects (`M.fleets()` then).
 ---@return orca_term.Fleet? fleet
 ---@return orca_term.Error? err
 function M.fleet()
   return state.fleet, state.error
+end
+
+---Every fleet last kept: each project's that could be read, in the project list's order; with an
+---empty list (or one that could not be read), the fleet of the current directory's repository
+---alone. Empty before the first read and when nothing could be read.
+---@return orca_term.Fleet[]
+function M.fleets()
+  if state.projects and #state.projects > 0 then
+    local fleets = {}
+    for _, project in ipairs(state.projects) do
+      if project.fleet then
+        table.insert(fleets, project.fleet)
+      end
+    end
+    return fleets
+  end
+  return { state.fleet }
 end
 
 ---The project list last kept, each project with its fleet, and why it could not be read; both
@@ -245,13 +371,15 @@ local function ensure_autocmds()
   })
 end
 
----Calls `on_change` with the fleet after every read that is kept, until `unsubscribe(name)`.
----Subscribing again under the same name replaces the function. Every subscription registers this
----Neovim with the core, from the primary checkout of the fleet last kept: read the fleet first
----(`read()`) to register from the right repository. Nothing is read here.
+---Calls `on_change` after every read that is kept, until `unsubscribe(name)`, with the fleet of
+---the current directory's repository; with projects on the project list it is called with
+---nothing, and takes every project's fleet from `M.fleets()`. Subscribing again under the same
+---name replaces the function. Every subscription registers this Neovim with the core, from the
+---primary checkout of every fleet last kept (the current directory before the first read); the
+---registrations then follow each read that is kept. Nothing is read here.
 ---@param name string who subscribes, such as `sidebar`
 ---@param on_change fun(fleet: orca_term.Fleet?, err: orca_term.Error?) `fleet` is `nil` when it
----could not be read, and `err` says why
+---could not be read, and `err` says why; both are `nil` with projects on the list
 function M.subscribe(name, on_change)
   state.subscribers[name] = on_change
   ensure_autocmds()

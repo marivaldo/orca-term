@@ -4,6 +4,9 @@
 --
 --   ?1 ●1 ●1 !1 △1 ◐1 ◌1 ●2 ○2 ·2 •4
 --
+-- With projects on the project list it counts the worktrees of every project together (#156);
+-- with an empty list, those of the current directory's repository.
+--
 -- `render.strip` decides what it shows; this module keeps it up to date and hands it to a plain
 -- statusline (`statusline()`), to lualine (lua/lualine/components/orca-term.lua, through
 -- `items()`) and to whoever builds their own (`counts()`). It never adds itself to a statusline,
@@ -13,10 +16,10 @@
 -- start, because a statusline is drawn where Neovim allows no change (textlock): the start then
 -- defines the colours, subscribes to the live fleet as `strip` (which registers this Neovim with
 -- the core, so `User OrcaTermWorktreeChanged` reaches it) and reads the fleet without waiting.
--- After that, every fleet the live fleet keeps is turned into the strip once, and the statuslines
--- are drawn again. Drawing a statusline only returns what was kept: it never waits and never
--- starts a process. The strip stays subscribed for the rest of the session, whether the sidebar is
--- open or not.
+-- After that, the fleets the live fleet keeps are turned into the strip once after every read, and
+-- the statuslines are drawn again. Drawing a statusline only returns what was kept: it never waits
+-- and never starts a process. The strip stays subscribed for the rest of the session, whether the
+-- sidebar is open or not.
 --
 -- This module touches no window, tab or buffer and starts no process (`cargo xtask
 -- client-boundary` checks it): it reads the fleet through `live.lua`.
@@ -34,10 +37,9 @@ M.SUBSCRIBER = 'strip'
 ---@class orca_term.StripState
 ---@field scheduled boolean whether the start was scheduled, so it is scheduled once
 ---@field started boolean whether the start ran
----@field items orca_term.StripItem[] the strip of the fleet last kept
----@field counts orca_term.Counts the counts of the fleet last kept
+---@field items orca_term.StripItem[] the strip of the fleets last kept
+---@field counts orca_term.Counts the counts of the fleets last kept
 ---@field line string the strip as a statusline expression
----@field registered_from? string the primary checkout this Neovim last registered from
 
 ---The name of the strip's autocommand group.
 local GROUP = 'orca-term-strip'
@@ -90,25 +92,27 @@ local function redraw()
   end
 end
 
----Called by the live fleet after every read it keeps: keeps the strip of `fleet` and draws the
----statuslines again. A fleet that could not be read shows nothing: the strip never shows an error.
----@param fleet? orca_term.Fleet
----@param err? orca_term.Error
-local function on_fleet(fleet, err)
-  if err then
-    fleet = nil
+---Every worktree the strip counts: those of every fleet the live fleet keeps, every project's
+---when the project list has some. A fleet that could not be read has none.
+---@return orca_term.Worktree[]
+local function kept_worktrees()
+  local worktrees = {}
+  for _, fleet in ipairs(live.fleets()) do
+    vim.list_extend(worktrees, fleet.worktrees)
   end
+  return worktrees
+end
+
+---Called by the live fleet after every read it keeps: keeps the strip of the fleets kept and draws
+---the statuslines again. A fleet that could not be read shows nothing: the strip never shows an
+---error.
+local function on_fleet()
   local shown = state.line
-  state.items = render.strip(fleet)
-  state.counts = render.counts(fleet)
+  -- `render.strip` and `render.counts` read only a fleet's worktrees.
+  local counted = { worktrees = kept_worktrees() }
+  state.items = render.strip(counted)
+  state.counts = render.counts(counted)
   state.line = statusline_of(state.items)
-  -- Subscribing registered this Neovim from the primary checkout of the fleet kept then, or from
-  -- the current directory before any read; register again from this fleet's when it differs.
-  -- Registering again is harmless.
-  if fleet and fleet.primary.path ~= state.registered_from then
-    state.registered_from = fleet.primary.path
-    live.subscribe(M.SUBSCRIBER, on_fleet)
-  end
   -- Most reads change nothing the strip shows (an agent's activity, say): nothing to draw then.
   if state.line ~= shown then
     redraw()
@@ -116,9 +120,9 @@ local function on_fleet(fleet, err)
 end
 
 ---Starts the strip, once: defines the colours (again after every `:colorscheme`), subscribes to
----the live fleet, shows the fleet already kept (when the sidebar read it) and reads it again
----without waiting. A change of the current directory reads the fleet again, since the strip shows
----the fleet of `getcwd()`.
+---the live fleet, shows the fleets already kept (when the sidebar read them) and reads them again
+---without waiting. A change of the current directory reads again, since with an empty project list
+---the strip shows the fleet of `getcwd()`.
 local function start()
   if state.started then
     return
@@ -140,12 +144,8 @@ local function start()
     end,
   })
 
-  local kept, err = live.fleet()
-  state.registered_from = kept and kept.primary.path or nil
   live.subscribe(M.SUBSCRIBER, on_fleet)
-  if kept or err then
-    on_fleet(kept, err)
-  end
+  on_fleet()
   live.read_soon()
 end
 
@@ -165,7 +165,8 @@ end
 
 ---The strip as a statusline expression, such as
 ---`%#OrcaTermStateWaiting#?1%* %#OrcaTermUnseen#•2%*`, or the empty string when there is no
----worktree, the fleet could not be read or was not read yet.
+---worktree, the fleet could not be read or was not read yet. It counts every project's worktrees
+---when the project list has projects.
 ---Use it as `%{%v:lua.require'orca-term.strip'.statusline()%}`. The first call starts the strip.
 ---@return string
 function M.statusline()
@@ -181,9 +182,9 @@ function M.items()
   return state.items
 end
 
----How many worktrees are in each state, and how many are unseen, in the fleet last kept: for a
----statusline of one's own. `{ states = {}, unseen = 0 }` before the first read. The first call
----starts the strip.
+---How many worktrees are in each state, and how many are unseen, in the fleets last kept (every
+---project's when the project list has projects): for a statusline of one's own.
+---`{ states = {}, unseen = 0 }` before the first read. The first call starts the strip.
 ---@return orca_term.Counts
 function M.counts()
   ensure_started()
