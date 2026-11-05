@@ -11,6 +11,15 @@
 -- (`K`, through `detail.lua`) and refresh its pull request (`R`, through `pr.lua`). The selection
 -- follows the current tab when it is a worktree's. The sidebar is never shown in a review tab (`review.lua`), where diffview lays out the whole tab.
 --
+-- With projects on the project list (#154) it shows them all, one header per project above that
+-- project's worktrees, in the list's order: `live.lua` reads the list with every project's fleet
+-- (`orca-term fleets --json`) on each read. A worktree belongs to the fleet that lists it, and
+-- every key on a worktree runs the core from that fleet's primary checkout
+-- (`worktree_under_cursor`), never from Neovim's current directory. With an empty list it shows
+-- the repository of the current directory, as it did before the list existed. `a` still creates
+-- its worktree in the current directory's repository, and the live updates and the pull requests
+-- refreshed without being asked still follow that repository only.
+--
 -- The fleet comes from `live.lua`, the live fleet: the sidebar reads it when it opens and after an
 -- action changes it, and subscribes to it while open, so it is drawn again whenever Neovim gains
 -- focus or the core says a worktree changed; it is never polled. Opening the sidebar registers this
@@ -53,15 +62,20 @@ M.FILETYPE = 'orca-term-sidebar'
 ---@field open boolean whether the sidebar is shown (in every tab)
 ---@field buf? integer the sidebar's buffer
 ---@field group? integer the autocommand group, while open
----@field fleet? orca_term.Fleet the fleet last read, `nil` when reading it failed
----@field error? orca_term.Error why the fleet could not be read
+---The fleet of the current directory's repository last read, `nil` when reading it failed
+---@field fleet? orca_term.Fleet
+---@field error? orca_term.Error why that fleet could not be read
+---The project list last read, each project with its fleet; empty when the list is empty, and
+---when it could not be read
+---@field projects orca_term.ProjectFleet[]
+---@field projects_error? orca_term.Error why the project list could not be read
 ---@field selected? string the selected worktree's path
 ---@field rendered? orca_term.Rendered what the buffer shows
 ---@field frame integer the spinner frame the working glyph shows
 ---@field timer? uv.uv_timer_t the timer turning the working glyph, while one is working
 
 ---@type orca_term.SidebarState
-local state = { open = false, frame = 0 }
+local state = { open = false, frame = 0, projects = {} }
 
 ---The name the sidebar subscribes to the live fleet under.
 local SUBSCRIBER = 'sidebar'
@@ -177,22 +191,70 @@ local function stop_spinning()
   state.frame = 0
 end
 
----One turn of the working glyph: the next frame of the fleet already read, painted without moving
----any cursor or the selection. The fleet is not read again.
+---The fleets the sidebar shows: the fleet of every project on the project list that could be
+---read, in the list's order; with an empty list, the fleet of the current directory's repository
+---alone. None when the project list, or that one fleet, could not be read.
+---@return orca_term.Fleet[]
+local function shown_fleets()
+  if state.projects_error then
+    return {}
+  end
+  if #state.projects == 0 then
+    return { state.fleet }
+  end
+  local fleets = {}
+  for _, project in ipairs(state.projects) do
+    if project.fleet then
+      table.insert(fleets, project.fleet)
+    end
+  end
+  return fleets
+end
+
+---What was last read, as lines and colours, at the current selection and spinner frame: the
+---projects under their headers when the project list has some, the current directory's repository
+---as before the list existed when it is empty, or why either could not be read.
+---@return orca_term.Rendered
+local function render_shown()
+  if state.projects_error then
+    return render.error(state.projects_error.message)
+  end
+  if #state.projects > 0 then
+    return render.projects(state.projects, state.selected, nil, state.frame)
+  end
+  if state.fleet then
+    return render.fleet(state.fleet, state.selected, nil, state.frame)
+  end
+  return render.error(state.error and state.error.message or 'orca-term: the fleet was not read')
+end
+
+---One turn of the working glyph: the next frame of the fleets already read, painted without moving
+---any cursor or the selection. Nothing is read again.
 local function spin()
   local before = state.rendered
-  if not (state.timer and state.fleet and before) then
+  if not (state.timer and before) then
     return
   end
   state.frame = state.frame + 1
-  state.rendered = render.fleet(state.fleet, state.selected, nil, state.frame)
+  state.rendered = render_shown()
   repaint(before)
 end
 
+---Whether a worktree the sidebar shows is working, so its glyph spins.
+---@return boolean
+local function any_spins()
+  for _, fleet in ipairs(shown_fleets()) do
+    if render.spins(fleet) then
+      return true
+    end
+  end
+  return false
+end
+
 ---Starts the timer turning the working glyph while the sidebar is open and a worktree of the
----fleet last read is working, and stops it otherwise. There is one timer at most.
+---fleets last read is working, and stops it otherwise. There is one timer at most.
 local function update_spinning()
-  local wanted = state.open and state.fleet ~= nil and render.spins(state.fleet)
+  local wanted = state.open and any_spins()
   if not wanted then
     stop_spinning()
     return
@@ -211,21 +273,17 @@ function M.spinning()
   return state.timer ~= nil
 end
 
----Renders the fleet last read, keeping the selection, and paints it.
+---Renders what was last read, keeping the selection, and paints it.
 local function redraw()
-  if state.fleet then
-    state.rendered = render.fleet(state.fleet, state.selected, nil, state.frame)
-    state.selected = state.rendered.selected
-  else
-    local message = state.error and state.error.message or 'orca-term: the fleet was not read'
-    state.rendered = render.error(message)
-  end
+  state.rendered = render_shown()
+  -- An error shows no worktree: the selection is kept for when the fleets are read again.
+  state.selected = state.rendered.selected or state.selected
   paint()
   update_spinning()
 end
 
----Keeps the fleet the live fleet read (or why it could not be read) and redraws, while the sidebar
----is open; does nothing once it closed.
+---Keeps the fleet the live fleet read (or why it could not be read) and the project list it read
+---with it, and redraws, while the sidebar is open; does nothing once it closed.
 ---@param fleet? orca_term.Fleet
 ---@param err? orca_term.Error
 local function on_fleet(fleet, err)
@@ -233,6 +291,8 @@ local function on_fleet(fleet, err)
     return
   end
   state.fleet, state.error = fleet, err
+  local projects, projects_err = live.projects()
+  state.projects, state.projects_error = projects or {}, projects_err
   redraw()
   pr.follow(fleet, state.fleet and state.fleet.primary.path or vim.fn.getcwd())
 end
@@ -248,38 +308,43 @@ end
 ---Selects the worktree whose directory is the current tab's, when there is one. In any other tab,
 ---such as the primary checkout's, the selection stays where it was.
 local function follow_tab()
-  if not state.fleet then
-    return
-  end
-  for _, worktree in ipairs(state.fleet.worktrees) do
-    if tabs.is_current(worktree.path) then
-      if state.selected ~= worktree.path then
-        state.selected = worktree.path
-        redraw()
+  for _, fleet in ipairs(shown_fleets()) do
+    for _, worktree in ipairs(fleet.worktrees) do
+      if tabs.is_current(worktree.path) then
+        if state.selected ~= worktree.path then
+          state.selected = worktree.path
+          redraw()
+        end
+        return
       end
-      return
     end
   end
 end
 
----The worktree on the cursor's line, or `nil` on the header, a heading or a blank line.
----@return orca_term.Worktree?
+---The worktree on the cursor's line and the fleet it belongs to, its own project's: the core runs
+---from that fleet's primary checkout for everything done to the worktree, never from Neovim's
+---current directory. Both `nil` on a header, a heading or a blank line.
+---@return orca_term.Worktree? worktree
+---@return orca_term.Fleet? fleet
 local function worktree_under_cursor()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   local path = state.rendered and state.rendered.paths[line]
-  if not (path and state.fleet) then
-    return nil
+  if not path then
+    return nil, nil
   end
-  for _, worktree in ipairs(state.fleet.worktrees) do
-    if worktree.path == path then
-      return worktree
+  for _, fleet in ipairs(shown_fleets()) do
+    for _, worktree in ipairs(fleet.worktrees) do
+      if worktree.path == path then
+        return worktree, fleet
+      end
     end
   end
-  return nil
+  return nil, nil
 end
 
----The primary checkout's path, where the core runs for the actions; the current directory when the
----fleet could not be read.
+---The primary checkout of the current directory's repository, or the current directory when its
+---fleet could not be read: where the core runs for what belongs to no worktree under the cursor,
+---creating a worktree (`a`) and the pull requests refreshed without being asked.
 ---@return string
 local function primary_path()
   return state.fleet and state.fleet.primary.path or vim.fn.getcwd()
@@ -287,63 +352,66 @@ end
 
 ---`<CR>`: selects the worktree under the cursor and opens it: its tab, and its agent's terminal.
 local function open_worktree()
-  local worktree = worktree_under_cursor()
-  if not worktree then
+  local worktree, fleet = worktree_under_cursor()
+  if not (worktree and fleet) then
     return
   end
   state.selected = worktree.path
   redraw()
-  actions.open(worktree, primary_path())
+  actions.open(worktree, fleet.primary.path)
 end
 
 ---`.`: the menu of the worktree under the cursor.
 local function worktree_menu()
-  local worktree = worktree_under_cursor()
-  if worktree then
-    local fleet = state.fleet
-    actions.menu(worktree, primary_path(), fleet and fleet.remote_base, fleet and fleet.has_origin)
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    actions.menu(worktree, fleet.primary.path, fleet.remote_base, fleet.has_origin)
   end
 end
 
 ---`u`: toggles the unseen mark of the worktree under the cursor.
 local function toggle_unseen()
-  local worktree = worktree_under_cursor()
-  if worktree then
-    actions.toggle_unseen(worktree, primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    actions.toggle_unseen(worktree, fleet.primary.path)
   end
 end
 
 ---`d`: opens the review of the worktree under the cursor.
 local function open_review()
-  local worktree = worktree_under_cursor()
-  if worktree then
-    actions.review(worktree.path, primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    actions.review(worktree.path, fleet.primary.path)
   end
 end
 
 ---`s`: lists the sessions of the worktree under the cursor, to resume one.
 local function list_sessions()
-  local worktree = worktree_under_cursor()
-  if worktree then
-    actions.sessions(worktree, primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    actions.sessions(worktree, fleet.primary.path)
   end
 end
 
----`R`: refreshes the pull request of the worktree under the cursor through the core; the row
----shows what was found once the fleet is read again. A refusal is told.
+---`R`: refreshes the pull request of the worktree under the cursor through the core, then reads
+---the fleets again, so the row shows what was found. A refusal is told.
 local function refresh_pr()
-  local worktree = worktree_under_cursor()
-  if not worktree then
+  local worktree, fleet = worktree_under_cursor()
+  if not (worktree and fleet) then
     return
   end
-  pr.refresh({ worktree.path }, primary_path(), function(_, err)
+  pr.refresh({ worktree.path }, fleet.primary.path, function(_, err)
     if err then
       vim.notify(err.message, vim.log.levels.ERROR)
     end
+    -- `pr.lua` reads again only for a worktree of the current directory's repository, the one
+    -- fleet it knows: a worktree of another project is read again here. The two share one read.
+    live.read_soon()
   end)
 end
 
----Opening or focusing the sidebar: refreshes the pull requests due for it (`pr.refresh_due`).
+---Opening or focusing the sidebar: refreshes the pull requests due for it (`pr.refresh_due`), of
+---the current directory's repository.
 local function refresh_due_prs()
   pr.refresh_due(state.fleet, primary_path())
 end
@@ -351,7 +419,9 @@ end
 ---`K`: shows the detail of the worktree under the cursor in a float next to the sidebar, or closes
 ---it (`detail.lua`).
 local function toggle_detail()
-  detail.toggle(vim.api.nvim_get_current_win(), worktree_under_cursor(), primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  local cwd = fleet and fleet.primary.path or primary_path()
+  detail.toggle(vim.api.nvim_get_current_win(), worktree, cwd)
 end
 
 ---Moves the selection `step` worktrees down (1) or up (-1), stopping at the first and the last.
@@ -776,9 +846,9 @@ function M.create_pr_here()
   if vim.api.nvim_get_current_buf() ~= M.buffer() then
     return false
   end
-  local worktree = worktree_under_cursor()
-  if worktree then
-    require('orca-term.compose').open(worktree, primary_path(), false)
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    require('orca-term.compose').open(worktree, fleet.primary.path, false)
   end
   return true
 end
@@ -791,9 +861,9 @@ function M.merge_pr_here()
   if vim.api.nvim_get_current_buf() ~= M.buffer() then
     return false
   end
-  local worktree = worktree_under_cursor()
-  if worktree then
-    require('orca-term.actions').merge_pr(worktree, primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    require('orca-term.actions').merge_pr(worktree, fleet.primary.path)
   end
   return true
 end
@@ -806,9 +876,9 @@ function M.push_here()
   if vim.api.nvim_get_current_buf() ~= M.buffer() then
     return false
   end
-  local worktree = worktree_under_cursor()
-  if worktree then
-    require('orca-term.actions').push(worktree, primary_path())
+  local worktree, fleet = worktree_under_cursor()
+  if worktree and fleet then
+    require('orca-term.actions').push(worktree, fleet.primary.path)
   end
   return true
 end

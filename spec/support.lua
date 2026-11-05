@@ -213,6 +213,28 @@ function M.git(repo, args)
   return M.run(vim.list_extend({ 'git', '-C', repo.root }, args))
 end
 
+---Another repository with one commit on `main`, at `<tmp>/<name>`, in the fixture of `repo`: the
+---same HOME, XDG directories and fake `gh`, and the same fake claude when `repo` is an
+---`agent_repo()`. `cleanup()` stops its agents too.
+---@param repo spec.Repo
+---@param name string its directory's name, which is its project's name
+---@return spec.Repo
+function M.sibling_repo(repo, name)
+  local sibling = vim.tbl_extend('force', {}, repo, { root = repo.tmp .. '/' .. name })
+  vim.fn.mkdir(sibling.root, 'p')
+  M.git(sibling, { 'init', '--quiet' })
+  M.git(sibling, { 'commit', '--quiet', '--allow-empty', '-m', 'init' })
+  table.insert(agent_repos, sibling)
+  return sibling
+end
+
+---Adds `repo` to the project list (`project add`), which lives in the fixture's XDG_STATE_HOME,
+---never in the developer's.
+---@param repo spec.Repo
+function M.add_project(repo)
+  M.run({ M.binary, 'project', 'add' }, repo.root)
+end
+
 ---Adds a worktree by hand, as a person would with plain git, on a new branch.
 ---@param repo spec.Repo
 ---@param path string
@@ -442,6 +464,10 @@ end
 ---fails: it runs while a failed spec is cleaned up.
 ---@param repo spec.Repo
 local function stop_agents(repo)
+  -- A spec may have removed the repository, to show a gone project: no process starts there.
+  if vim.fn.isdirectory(repo.root) == 0 then
+    return
+  end
   local ls = M.core(repo, { 'worktree', 'ls', '--json' })
   local decoded, fleet = pcall(vim.json.decode, ls.stdout or '')
   if not decoded or type(fleet) ~= 'table' then

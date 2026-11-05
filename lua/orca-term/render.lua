@@ -1,7 +1,7 @@
 -- orca-term's sidebar: what it shows, as lines of text and the colours on them.
 --
--- Pure: it takes the fleet (or an error) and returns lines, highlight spans and which worktree
--- each line belongs to. It never touches a buffer or a window; `sidebar.lua` paints the result.
+-- Pure: it takes the fleet, or the project list with each project's fleet, or an error, and
+-- returns lines, highlight spans and which worktree each line belongs to. It never touches a buffer or a window; `sidebar.lua` paints the result.
 -- It also counts the fleet for the status strip (`M.strip`, `M.counts`), which `strip.lua` and the
 -- lualine component draw, and lays out a worktree's detail (`M.detail`), which `detail.lua` shows in
 -- a float.
@@ -54,6 +54,9 @@
 --
 -- Nothing reaches the last column: rows end one cell before `width`, where the card's right
 -- border ends.
+--
+-- With projects on the project list (#154), `M.projects` draws that look once per project, one
+-- under the other in the list's order, each under its own header; its comment has the picture.
 
 local fleet_order = require('orca-term.fleet')
 local highlights = require('orca-term.highlights')
@@ -601,6 +604,60 @@ function M.clock()
   return os.time() * 1000
 end
 
+---Adds the paths of the worktrees of `sections` to `order`, top to bottom.
+---@param order string[]
+---@param sections orca_term.Section[]
+local function add_paths(order, sections)
+  for _, section in ipairs(sections) do
+    for _, worktree in ipairs(section.worktrees) do
+      table.insert(order, worktree.path)
+    end
+  end
+end
+
+---The path selected among `order`: `selected` when a worktree shown has that path, the first
+---worktree shown otherwise (`nil` when none is shown).
+---@param order string[]
+---@param selected? string
+---@return string?
+local function selection(order, selected)
+  for _, path in ipairs(order) do
+    if path == selected then
+      return selected
+    end
+  end
+  return order[1]
+end
+
+---Adds the sections of one fleet to `built`: before each, a blank line and its heading, then its
+---worktrees, the one at path `selected` inside the card.
+---@param built orca_term.Line[]
+---@param sections orca_term.Section[]
+---@param selected? string
+---@param width integer
+---@param frame integer the spinner frame
+---@param now integer the time ages are measured from, in milliseconds since the Unix epoch
+local function add_sections(built, sections, selected, width, frame, now)
+  for _, section in ipairs(sections) do
+    table.insert(built, new_line(width - 1))
+    local heading = new_line(width - 1)
+    add(heading, ' ')
+    add(heading, section.title:upper() .. ' ' .. #section.worktrees, 'OrcaTermMuted')
+    table.insert(built, heading)
+
+    local needs_you = section.title == fleet_order.TITLES[1]
+    for _, worktree in ipairs(section.worktrees) do
+      if worktree.path == selected then
+        -- Inside the card, a row has 4 cells fewer: ` │` on its left and `│` on its right.
+        local body = worktree_lines(worktree, needs_you, width - 5, frame, now)
+        add_card(built, body, worktree.path, width)
+      else
+        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1, frame, now))
+      end
+    end
+  end
+end
+
 ---The sidebar for `fleet`, with the worktree at path `selected` in the card. When no worktree
 ---has that path (it is `nil`, or the worktree is gone), the first worktree shown is selected.
 ---A working worktree's glyph is the spinner's frame `frame`. The age of each worktree's last
@@ -618,18 +675,8 @@ function M.fleet(fleet, selected, width, frame, now)
   local sections = fleet_order.sections(fleet.worktrees)
 
   local order = {}
-  local known = false
-  for _, section in ipairs(sections) do
-    for _, worktree in ipairs(section.worktrees) do
-      table.insert(order, worktree.path)
-      if worktree.path == selected then
-        known = true
-      end
-    end
-  end
-  if not known then
-    selected = order[1]
-  end
+  add_paths(order, sections)
+  selected = selection(order, selected)
 
   local repo = vim.fs.basename(fleet.primary.path)
   local built = { header(repo, fleet.primary.branch or 'detached', width) }
@@ -645,22 +692,85 @@ function M.fleet(fleet, selected, width, frame, now)
     return finish(built, order, selected)
   end
 
-  for _, section in ipairs(sections) do
-    table.insert(built, new_line(width - 1))
-    local heading = new_line(width - 1)
-    add(heading, ' ')
-    add(heading, section.title:upper() .. ' ' .. #section.worktrees, 'OrcaTermMuted')
-    table.insert(built, heading)
+  add_sections(built, sections, selected, width, frame, now)
+  return finish(built, order, selected)
+end
 
-    local needs_you = section.title == fleet_order.TITLES[1]
-    for _, worktree in ipairs(section.worktrees) do
-      if worktree.path == selected then
-        -- Inside the card, a row has 4 cells fewer: ` │` on its left and `│` on its right.
-        local body = worktree_lines(worktree, needs_you, width - 5, frame, now)
-        add_card(built, body, worktree.path, width)
-      else
-        vim.list_extend(built, worktree_lines(worktree, needs_you, width - 1, frame, now))
-      end
+---Adds `text` to `built` under a project's header, muted and wrapped to the width, after three
+---cells, where a worktree's second line starts: that the project has no worktrees, or why its
+---fleet could not be read.
+---@param built orca_term.Line[]
+---@param text string
+---@param width integer
+local function add_under_header(built, text, width)
+  for _, wrapped in ipairs(wrap(text, width - 4)) do
+    local line = new_line(width - 1)
+    add(line, '   ')
+    add(line, wrapped, 'OrcaTermMuted')
+    table.insert(built, line)
+  end
+end
+
+---The sidebar for the project list (`projects`, as `fleets --json` prints them), in the list's
+---order: each project's header, then its worktrees in their sections, as `M.fleet` draws one
+---repository's; a blank line parts two projects. A project with no worktrees says so under its
+---header, and one whose fleet could not be read (it is gone or broken) shows the core's reason
+---there, wrapped, both muted; its header then has no branch.
+---
+---   ▾ app  main
+---
+---   QUIET 1
+---   ╭────────────────────────────────╮
+---   │ · fix-login                    │
+---   ╰────────────────────────────────╯
+---
+---   ▾ api  main
+---     no worktrees yet
+---
+---   ▾ old
+---     the project's directory
+---     /home/me/src/old is gone; take
+---     it off the list with `orca-term
+---     project rm /home/me/src/old`
+---
+---`selected`, `width`, `frame` and `now` are `M.fleet`'s. The selection and `order` run over the
+---worktrees of every project, top to bottom, so the first worktree shown is the first project's
+---that has one.
+---@param projects orca_term.ProjectFleet[]
+---@param selected? string
+---@param width? integer
+---@param frame? integer 0 or more; `nil` is frame 0
+---@param now? integer
+---@return orca_term.Rendered
+function M.projects(projects, selected, width, frame, now)
+  width = width or M.WIDTH
+  frame = frame or 0
+  now = now or M.clock()
+
+  -- Each project's sections, and the worktrees of them all in the order shown.
+  local sections_of = {}
+  local order = {}
+  for index, project in ipairs(projects) do
+    sections_of[index] = project.fleet and fleet_order.sections(project.fleet.worktrees) or {}
+    add_paths(order, sections_of[index])
+  end
+  selected = selection(order, selected)
+
+  local built = {}
+  for index, project in ipairs(projects) do
+    if index > 1 then
+      table.insert(built, new_line(width - 1))
+    end
+    local fleet = project.fleet
+    local branch = fleet and (fleet.primary.branch or 'detached') or nil
+    table.insert(built, header(project.name, branch, width))
+    if not fleet then
+      local why = project.error and project.error.message or 'its fleet could not be read'
+      add_under_header(built, why, width)
+    elseif #sections_of[index] == 0 then
+      add_under_header(built, 'no worktrees yet', width)
+    else
+      add_sections(built, sections_of[index], selected, width, frame, now)
     end
   end
   return finish(built, order, selected)

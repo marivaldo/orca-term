@@ -77,6 +77,36 @@ describe('core', function()
     }, fleet.worktrees)
   end)
 
+  it("reads every project's fleet, and why a gone project has none, from anywhere", function()
+    orca_term.setup({ binary = support.binary })
+    local repo = support.repo()
+    local gone = support.sibling_repo(repo, 'gone')
+    local path = support.add_worktree(repo, repo.tmp .. '/fix', 'fix')
+    -- Outside every repository, with no project yet: an empty list, not an error.
+    assert.are.same({}, assert(core.fleets(repo.tmp)).projects)
+    support.add_project(repo)
+    support.add_project(gone)
+    vim.fn.delete(gone.root, 'rf')
+
+    local listed, err = core.fleets(repo.tmp)
+
+    assert.is_nil(err)
+    assert(listed)
+    local first, second = listed.projects[1], listed.projects[2]
+    assert.are.equal('repo', first.name)
+    assert.are.equal(repo.root, first.path)
+    assert.is_nil(first.error)
+    -- The project's fleet is what `worktree ls` prints for it.
+    local fleet = assert(core.worktree_ls(repo.root))
+    assert.are.same(fleet.primary, first.fleet.primary)
+    assert.are.same(fleet.worktrees, first.fleet.worktrees)
+    assert.are.equal(path, first.fleet.worktrees[1].path)
+    assert.are.equal('gone', second.name)
+    assert.is_true(second.gone)
+    assert.is_nil(second.fleet)
+    assert(second.error.message:find('is gone', 1, true), second.error.message)
+  end)
+
   it('returns the error the core prints as JSON, outside a git repository', function()
     orca_term.setup({ binary = support.binary })
     local outside = support.isolate().tmp
