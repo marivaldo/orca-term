@@ -785,15 +785,25 @@ Three keys work on the projects themselves:
 After each of the three the sidebar is read again and shows the result. `j` and `k` move between
 worktrees only, so reach a header with any other motion: `gg`, `G`, the arrow keys or a search.
 
-Some things still follow only the repository of Neovim's current directory, until their own
-slices of [#150](https://github.com/marivaldo/orca-term/issues/150) land:
+With projects on the list, everything that follows the fleet follows every project's:
 
-- The live updates: a change in another project shows when Neovim gains focus, after an action
-  in the sidebar, and on `R`, which reads every project again once it has refreshed the pull
-  request under the cursor.
-- The pull requests refreshed without being asked (on opening, after a turn ends, while checks
-  are pending).
-- The status strip, `:OrcaTerm jump` and `:OrcaTerm worktree N`.
+- **Live updates.** Neovim registers with every project's primary checkout, so a change in any
+  project (a worktree created or removed, an agent's turn) redraws the sidebar at once, from any
+  directory. The project list itself belongs to no repository, so adding or removing a project
+  from a terminal tells nobody: it shows at the next read (the next change in a project already
+  shown, or Neovim gaining focus), and Neovim then registers with the project added and
+  unregisters from the one removed. Quitting Neovim unregisters it from every project.
+- **The status strip** counts the worktrees of every project together
+  ([Status strip](#status-strip)).
+- **`:OrcaTerm jump` and `:OrcaTerm worktree N`** cover every project's worktrees, in the
+  sidebar's order: the first project's worktrees, then the next project's. `:OrcaTerm worktree 3`
+  is the third worktree from the top of the sidebar, whichever project it is in.
+- **The pull requests refreshed without being asked** (when the sidebar opens or Neovim gains
+  focus with it open, after a turn ends, while checks are pending) are every project's, each
+  project's asked for from its own primary checkout. `:OrcaTerm pr-refresh` still refreshes only
+  the repository of Neovim's current directory.
+- Each read of the sidebar runs the core once (`orca-term fleets`), whatever the number of
+  projects.
 
 ## Status strip
 
@@ -802,6 +812,10 @@ each state, then how many are unseen, such as `?1 ◐2 ●3 •2`. orca-term nev
 statusline, tabline or winbar: you place it, and pad it, where you want. It shows nothing when the
 repository has no worktree, outside a git repository and before the fleet is first read. It
 updates when the core says a worktree changed, as the sidebar does.
+
+With projects on the [project list](#projects), it counts the worktrees of every project
+together, from any directory, and updates on a change in any of them. With an empty list it
+counts those of the repository of Neovim's current directory.
 
 In a plain statusline, as an expression:
 
@@ -834,7 +848,7 @@ red), `●` interrupted (muted), `!` broken, `△` not ready, `◐` working, `�
 `OrcaTermState*` group, and `•` of `OrcaTermUnseen`.
 
 To build a strip of your own, `require('orca-term.strip').counts()` gives the counts of the fleet
-last read: `{ states = { { state = 'waiting', count = 1 }, ... }, unseen = 2 }`, in the same order,
+last read (of every project's, with projects on the list): `{ states = { { state = 'waiting', count = 1 }, ... }, unseen = 2 }`, in the same order,
 leaving out the states no worktree is in.
 
 ## Doctor
