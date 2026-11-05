@@ -684,7 +684,9 @@ impl Cli {
     /// Whether the command runs git, and so checks git first. `doctor` reports on git instead,
     /// the hook must stay fast and silent, and the holder is started by `agent start`, which
     /// checked. `project ls` reads only the project list, and `project rm` needs git only to
-    /// match a path inside a project, which it then skips.
+    /// match a path inside a project, which it then skips. The launcher (`open` and no command)
+    /// asks git for the repository to add to the project list, and opens Neovim without it when
+    /// git is missing (#152).
     fn runs_git(&self) -> bool {
         match &self.command {
             None | Some(Command::Doctor { .. } | Command::Hook { .. } | Command::Open) => false,

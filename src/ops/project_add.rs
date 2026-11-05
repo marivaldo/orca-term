@@ -28,8 +28,9 @@ pub(crate) fn run(path: Option<&Path>) -> Result<ProjectAdded> {
 
 /// Adds the repository containing the directory `dir` to the project list, by its primary
 /// checkout, and says what it did; `None`, adding nothing, when `dir` is not inside a git
-/// repository. The launcher (`orca-term` with no arguments, #148) is meant to call this with the
-/// current directory before it opens Neovim, so that a repository the person works in is listed.
+/// repository. The launcher (`orca-term` with no arguments and `orca-term open`, `ops/open.rs`)
+/// calls this with the current directory before it opens Neovim, so that a repository the person
+/// works in is listed (#152).
 pub(crate) fn add_repository_of(dir: &Path) -> Result<Option<ProjectAdded>> {
     let Some(primary) = git::repository_of(dir)? else {
         return Ok(None);
