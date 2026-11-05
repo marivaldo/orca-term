@@ -20,6 +20,7 @@ pub(crate) mod operation;
 pub(crate) mod porcelain;
 pub(crate) mod pr;
 pub(crate) mod prerequisite;
+pub(crate) mod project;
 pub(crate) mod protocol;
 pub(crate) mod push;
 pub(crate) mod rebase;

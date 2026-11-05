@@ -684,6 +684,34 @@ and `Cancel`. Each runs through the core without blocking Neovim, tells the resu
 sidebar again. `:OrcaTerm push` (`<Plug>(OrcaTermPush)`) does the same for the worktree under the
 cursor in the sidebar, or for the worktree whose tab you are in.
 
+## Projects
+
+As in Orca, orca-term keeps a list of the repositories you work on, its projects (ADR 0011). A
+project is a repository's primary checkout, and its name is that directory's basename. The list
+keeps the order projects were added in, and lives outside every repository, in
+`$XDG_STATE_HOME/orca-term/projects.json` (or `~/.local/state/orca-term/projects.json`):
+
+```json
+{"schema":1,"projects":[{"path":"/home/me/src/app"},{"path":"/home/me/src/api"}]}
+```
+
+- `orca-term project add [<path>]` adds the repository containing `<path>`, or the current
+  directory. From a linked worktree or a subdirectory it adds the primary checkout. Adding a
+  project already on the list changes nothing and says `project app at /home/me/src/app is already
+  on the list`. A directory outside every git repository is refused (`not_a_repository`, exit code
+  22). With `--json` it prints the project's `name` and `path` and whether it was `added`.
+- `orca-term project ls [--json]` lists the projects in order. A project whose directory is gone
+  stays on the list, marked `gone` (`"gone": true` with `--json`).
+- `orca-term project rm <path or name>` takes a project off the list. It never touches the disk,
+  the worktrees or the branches. A path inside the project, such as one of its worktrees or `.`,
+  names it too. A name several projects share is refused, naming them (`ambiguous_project`, exit
+  code 23, the paths in `candidates` in the `--json` error): remove one by its path.
+- `orca-term fleets [--json]` reads every project's fleet in one call. With `--json`, each entry of
+  `projects` carries the project's `name`, `path` and `gone`, then `fleet`, exactly what
+  `worktree ls --json` prints for it without `contract` and `version`, and `error`, as any
+  command's error prints it. A gone or broken project has a `null` fleet and its error, and the
+  others are still read.
+
 ## Status strip
 
 The status strip shows the fleet's health while the sidebar is closed: how many worktrees are in

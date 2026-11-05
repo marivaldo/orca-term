@@ -37,9 +37,22 @@ const DEFAULT_BASE: &str = "~/orca-term/worktrees";
 pub(crate) struct Env {
     pub(crate) home: Option<PathBuf>,
     pub(crate) xdg_config_home: Option<PathBuf>,
+    pub(crate) xdg_state_home: Option<PathBuf>,
 }
 
 impl Env {
+    /// orca-term's own state directory, outside any repository: `$XDG_STATE_HOME/orca-term`, or
+    /// `~/.local/state/orca-term`. A relative `XDG_STATE_HOME` is ignored, as the XDG spec says.
+    /// `None` when neither variable gives one.
+    pub(crate) fn state_dir(&self) -> Option<PathBuf> {
+        let dir = self
+            .xdg_state_home
+            .clone()
+            .filter(|p| p.is_absolute())
+            .or_else(|| self.home.as_ref().map(|h| h.join(".local").join("state")))?;
+        Some(dir.join("orca-term"))
+    }
+
     /// The global config file. A relative `XDG_CONFIG_HOME` is ignored, as the XDG spec says.
     fn global_file(&self) -> Option<PathBuf> {
         let dir = self
@@ -455,6 +468,7 @@ mod tests {
         Env {
             home: Some(PathBuf::from("/home/me")),
             xdg_config_home: None,
+            xdg_state_home: None,
         }
     }
 
@@ -842,5 +856,23 @@ mod tests {
             env.global_file(),
             Some(PathBuf::from("/home/me/.config/orca-term/config.yaml"))
         );
+    }
+
+    #[test]
+    fn the_state_dir_follows_xdg_and_ignores_a_relative_xdg_dir() {
+        let mut env = env();
+        assert_eq!(
+            env.state_dir(),
+            Some(PathBuf::from("/home/me/.local/state/orca-term"))
+        );
+        env.xdg_state_home = Some(PathBuf::from("/state"));
+        assert_eq!(env.state_dir(), Some(PathBuf::from("/state/orca-term")));
+        env.xdg_state_home = Some(PathBuf::from("rel"));
+        assert_eq!(
+            env.state_dir(),
+            Some(PathBuf::from("/home/me/.local/state/orca-term"))
+        );
+        env.home = None;
+        assert_eq!(env.state_dir(), None);
     }
 }

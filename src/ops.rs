@@ -2,7 +2,7 @@
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
 //! notes, reading its turns and its sessions, changing its current session, telling the running Neovims that a worktree changed and checking the
-//! programs a command needs (git, the agents).
+//! programs a command needs (git, the agents), and reading and changing the project list.
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
@@ -11,6 +11,7 @@ pub(crate) mod agent_start;
 pub(crate) mod agent_stop;
 pub(crate) mod agent_swap;
 pub(crate) mod doctor;
+pub(crate) mod fleets;
 pub(crate) mod hook;
 pub(crate) mod note_add;
 pub(crate) mod note_edit;
@@ -24,6 +25,9 @@ pub(crate) mod pr_compose;
 pub(crate) mod pr_create;
 pub(crate) mod pr_merge;
 pub(crate) mod pr_refresh;
+pub(crate) mod project_add;
+pub(crate) mod project_ls;
+pub(crate) mod project_rm;
 pub(crate) mod session_ls;
 pub(crate) mod session_new;
 pub(crate) mod session_resume;
@@ -62,6 +66,7 @@ use crate::domain::nvim::{self, Address};
 use crate::domain::operation::{self, Operation, RebaseStep};
 use crate::domain::pr::{self, PrFacts, PrRead};
 use crate::domain::prerequisite::{self, Check, Probe, Requirement};
+use crate::domain::project::{self, Projects};
 use crate::domain::seen::{self, Seen};
 use crate::domain::session::{self, Session};
 use crate::domain::setup::{self, SetupOutcome, SetupRecord, SetupReport};
@@ -634,6 +639,44 @@ fn lock_trust(common: &Path) -> Result<FileLock> {
     fs::lock_file_waiting(&lock, TRUST_LOCK_WAIT)?.ok_or_else(|| {
         anyhow!("another orca-term command is recording an approval; try again once it finishes")
     })
+}
+
+/// How long a change to the project list waits for another command holding its lock.
+const PROJECTS_LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// orca-term's state directory, which holds the project list (#149): `$XDG_STATE_HOME/orca-term`
+/// or `~/.local/state/orca-term`.
+fn state_dir() -> Result<PathBuf> {
+    env::config_env().state_dir().ok_or_else(|| {
+        anyhow!("cannot find orca-term's state directory: neither XDG_STATE_HOME nor HOME is set")
+    })
+}
+
+/// The project list, read with no lock: a change replaces the file whole. Empty when there is
+/// none yet. Never writes.
+pub(crate) fn read_projects() -> Result<Projects> {
+    let file = project::projects_file(&state_dir()?);
+    project::read(fs::read_optional(&file)?.as_deref())
+}
+
+/// Changes the project list through `change`, holding its lock from the read to the write
+/// (waiting for another command at most [`PROJECTS_LOCK_WAIT`]). The file is replaced whole, and
+/// only when `change` changed the list; nothing is written when `change` fails.
+pub(crate) fn change_projects<T>(change: impl FnOnce(&mut Projects) -> Result<T>) -> Result<T> {
+    let dir = state_dir()?;
+    fs::create_dir_all(&dir)?;
+    let _lock = fs::lock_file_waiting(&project::projects_lock(&dir), PROJECTS_LOCK_WAIT)?
+        .ok_or_else(|| {
+            anyhow!("another orca-term command is changing the project list; try again")
+        })?;
+    let file = project::projects_file(&dir);
+    let before = project::read(fs::read_optional(&file)?.as_deref())?;
+    let mut projects = before.clone();
+    let result = change(&mut projects)?;
+    if projects != before {
+        fs::write_atomically(&file, &projects.to_bytes()?)?;
+    }
+    Ok(result)
 }
 
 /// The registry of running Neovims of the repository containing the current directory, in its

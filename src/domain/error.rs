@@ -222,6 +222,33 @@ pub(crate) enum TypedError {
          origin/{branch} with it (nothing was pushed)"
     )]
     PushDiverged { name: String, branch: String },
+    /// `project add` was given a directory that is not inside a git repository, so there is no
+    /// primary checkout to add (#149). Nothing was added.
+    #[error(
+        "{} is not inside a git repository, so it cannot be added as a project (nothing was \
+         added)",
+        path.display()
+    )]
+    NotARepository { path: PathBuf },
+    /// `project rm` was given a name that several projects share, the `candidates` (#149).
+    /// Nothing was removed.
+    #[error(
+        "several projects are named {name}: {}; remove one by its path (nothing was removed)",
+        listed_paths(candidates)
+    )]
+    AmbiguousProject {
+        name: String,
+        candidates: Vec<PathBuf>,
+    },
+}
+
+/// `paths` as a refusal lists them: comma-separated.
+fn listed_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// What was asked of a rebase that is not in progress (#141).
@@ -494,6 +521,8 @@ impl TypedError {
             Self::RebaseConflict { .. } => "rebase_conflict",
             Self::NoRebase { .. } => "no_rebase",
             Self::PushDiverged { .. } => "push_diverged",
+            Self::NotARepository { .. } => "not_a_repository",
+            Self::AmbiguousProject { .. } => "ambiguous_project",
         }
     }
 
@@ -521,6 +550,8 @@ impl TypedError {
             Self::RebaseConflict { .. } => 19,
             Self::NoRebase { .. } => 20,
             Self::PushDiverged { .. } => 21,
+            Self::NotARepository { .. } => 22,
+            Self::AmbiguousProject { .. } => 23,
         }
     }
 }
@@ -1068,6 +1099,29 @@ mod tests {
             12,
             "could not push branch demo of worktree demo to origin: ! [rejected] demo -> demo \
              (stale info)",
+        );
+    }
+
+    #[test]
+    fn the_project_refusals_have_their_kinds_and_exit_codes() {
+        assert_typed(
+            TypedError::NotARepository {
+                path: PathBuf::from("/tmp/notes"),
+            },
+            "not_a_repository",
+            22,
+            "/tmp/notes is not inside a git repository, so it cannot be added as a project \
+             (nothing was added)",
+        );
+        assert_typed(
+            TypedError::AmbiguousProject {
+                name: "app".to_owned(),
+                candidates: vec![PathBuf::from("/a/app"), PathBuf::from("/b/app")],
+            },
+            "ambiguous_project",
+            23,
+            "several projects are named app: /a/app, /b/app; remove one by its path (nothing was \
+             removed)",
         );
     }
 

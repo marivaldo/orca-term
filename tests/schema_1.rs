@@ -187,3 +187,31 @@ fn the_schema_1_approvals_still_approve_their_setup_script_and_writable_list() {
         "using the approvals rewrote a state file"
     );
 }
+
+#[test]
+fn the_schema_1_project_list_still_reads_and_reading_rewrites_it_not() {
+    let fx = AgentRepo::new();
+    let sampled = schema_samples::build_projects(&fx, 1);
+    let root = fx.repo.root.to_str().unwrap();
+    let gone = sampled.gone.to_str().unwrap();
+
+    let listed = json_of(&fx, &["project", "ls"]);
+    assert_eq!(
+        listed["projects"],
+        json!([
+            {"name": "repo", "path": root, "gone": false},
+            {"name": "gone", "path": gone, "gone": true},
+        ]),
+        "projects.json: the list, in order"
+    );
+
+    let fleets = json_of(&fx, &["fleets"]);
+    assert_eq!(fleets["projects"][0]["fleet"]["primary"]["path"], root);
+    assert_eq!(fleets["projects"][1]["gone"], true);
+
+    assert_eq!(
+        sampled.changed_files(),
+        Vec::<std::path::PathBuf>::new(),
+        "a read rewrote the project list"
+    );
+}

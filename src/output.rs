@@ -27,6 +27,7 @@ use crate::domain::pr::create::{Composed, PrCreated};
 use crate::domain::pr::merge::PrMerged;
 use crate::domain::pr::{Checks, Found, PrState, Refreshed};
 use crate::domain::prerequisite::Report;
+use crate::domain::project::{self, ListedProject, ProjectAdded, ProjectFleet, ProjectRemoved};
 use crate::domain::push::Pushed;
 use crate::domain::rebase::{Aborted, Rebased, ResolveSent};
 use crate::domain::review::Reviewed;
@@ -182,6 +183,97 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         }
     }
     render_columns(&lines)
+}
+
+/// Prints what `project add` did: one line, or one JSON document.
+pub(crate) fn project_added(added: &ProjectAdded, format: Format) -> anyhow::Result<()> {
+    let (name, path) = (project::name_of(&added.path), added.path.display());
+    match format {
+        Format::Text if added.added => out(&format!("added project {name} at {path}")),
+        Format::Text => out(&format!("project {name} at {path} is already on the list")),
+        Format::Json => out(&json::project_added(added)?),
+    }
+    Ok(())
+}
+
+/// Prints what `project rm` took off the list: one line, or one JSON document.
+pub(crate) fn project_removed(removed: &ProjectRemoved, format: Format) -> anyhow::Result<()> {
+    let (name, path) = (project::name_of(&removed.path), removed.path.display());
+    match format {
+        Format::Text => out(&format!(
+            "removed project {name} at {path} from the list (nothing on disk was touched)"
+        )),
+        Format::Json => out(&json::project_removed(removed)?),
+    }
+    Ok(())
+}
+
+/// Prints the project list: an aligned table in the order projects were added, or one JSON
+/// document.
+pub(crate) fn projects_listed(projects: &[ListedProject], format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_projects(projects)),
+        Format::Json => out(&json::projects(projects)?),
+    }
+    Ok(())
+}
+
+/// The project list as a table: `NAME` and `PATH`, then `STATE`, `gone`, only when a project's
+/// directory is gone.
+fn render_projects(projects: &[ListedProject]) -> String {
+    if projects.is_empty() {
+        return "no projects yet; add one with `orca-term project add`".to_owned();
+    }
+    let any_gone = projects.iter().any(|listed| listed.gone);
+    let mut header = vec!["NAME".to_owned(), "PATH".to_owned()];
+    if any_gone {
+        header.push("STATE".to_owned());
+    }
+    let rows = projects.iter().map(|listed| {
+        let mut row = vec![
+            project::name_of(&listed.path),
+            listed.path.display().to_string(),
+        ];
+        if any_gone {
+            row.push(if listed.gone { "gone" } else { "" }.to_owned());
+        }
+        row
+    });
+    let lines: Vec<Vec<String>> = [header].into_iter().chain(rows).collect();
+    render_columns(&lines)
+}
+
+/// Prints every project's fleet: per project, a line with its name and path, then its fleet as
+/// `worktree ls` prints it, or why it could not be read, indented; or one JSON document.
+pub(crate) fn fleets(fleets: &[ProjectFleet], format: Format) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&render_fleets(fleets)),
+        Format::Json => out(&json::fleets(fleets)?),
+    }
+    Ok(())
+}
+
+fn render_fleets(fleets: &[ProjectFleet]) -> String {
+    if fleets.is_empty() {
+        return "no projects yet; add one with `orca-term project add`".to_owned();
+    }
+    let blocks: Vec<String> = fleets
+        .iter()
+        .map(|read| {
+            let body = match &read.fleet {
+                Ok(fleet) => render_fleet_table(fleet),
+                Err(err) => format!("{err:#}"),
+            };
+            let indented: Vec<String> = body.lines().map(|line| format!("  {line}")).collect();
+            format!(
+                "{}  {}\n{}",
+                project::name_of(&read.path),
+                read.path.display(),
+                indented.join("\n")
+            )
+        })
+        .collect();
+    blocks.join("\n\n")
 }
 
 /// The worktree's state as the table shows it, followed by `(unseen)` when its latest turn ended

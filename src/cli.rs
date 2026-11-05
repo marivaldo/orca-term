@@ -17,6 +17,7 @@ use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
 use crate::domain::pr::create::Readiness;
 use crate::domain::pr::merge::Method;
+use crate::domain::project::ProjectTarget;
 use crate::domain::seen::Mark;
 use crate::domain::setup::SetupReport;
 use crate::domain::state::AdminDir;
@@ -24,11 +25,11 @@ use crate::domain::trust::{self, Unapproved};
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_resolve, agent_start, agent_stop, agent_swap,
-    check_git, doctor, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_register,
-    nvim_unregister, open, pr_compose, pr_create, pr_merge, pr_refresh, session_ls, session_new,
-    session_resume, turn_blame, turn_diff, turn_ls, worktree_detail, worktree_ls, worktree_new,
-    worktree_prune, worktree_push, worktree_rebase, worktree_review, worktree_rm, worktree_seen,
-    worktree_setup,
+    check_git, doctor, fleets, hook, note_add, note_edit, note_ls, note_rm, note_send,
+    nvim_register, nvim_unregister, open, pr_compose, pr_create, pr_merge, pr_refresh, project_add,
+    project_ls, project_rm, session_ls, session_new, session_resume, turn_blame, turn_diff,
+    turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_push,
+    worktree_rebase, worktree_review, worktree_rm, worktree_seen, worktree_setup,
 };
 use crate::output::{self, Format};
 
@@ -82,6 +83,19 @@ enum Command {
     /// Open Neovim in the current directory with the orca-term sidebar showing, as `orca-term`
     /// with no arguments does at a terminal. Works without a terminal too; refused inside Neovim.
     Open,
+    /// Work with the project list: the repositories whose worktrees orca-term shows, in the order
+    /// they were added. It lives outside every repository, in orca-term's state directory.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// Read the fleet of every project at once: per project, what `worktree ls --json` prints, or
+    /// why it could not be read (a gone or broken project does not fail the others).
+    Fleets {
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check every program orca-term needs (git, claude's sandbox, the agents) and say how to fix
     /// what is missing; installs nothing. Works outside a repository.
     Doctor {
@@ -105,6 +119,35 @@ enum Command {
     Nvim {
         #[command(subcommand)]
         command: NvimCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// Add the repository containing a directory to the project list, by its primary checkout,
+    /// even from a linked worktree or a subdirectory. Adding it twice changes nothing.
+    Add {
+        /// A directory inside the repository (default: the current directory).
+        path: Option<PathBuf>,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the projects in the order they were added; a project whose directory is gone is
+    /// marked, not dropped.
+    Ls {
+        /// Print JSON carrying the contract integer instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a project off the list. Never touches the disk, its worktrees or its branches.
+    Rm {
+        /// The project's name (its directory's basename), or a path to it when several projects
+        /// share a name.
+        project: ProjectTarget,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -624,7 +667,12 @@ impl Cli {
                 | PrCommand::Create { json, .. }
                 | PrCommand::Merge { json, .. } => *json,
             },
-            Command::Doctor { json } => *json,
+            Command::Project { command } => match command {
+                ProjectCommand::Add { json, .. }
+                | ProjectCommand::Ls { json }
+                | ProjectCommand::Rm { json, .. } => *json,
+            },
+            Command::Fleets { json } | Command::Doctor { json } => *json,
             Command::Hook { .. } | Command::Open => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
@@ -635,13 +683,16 @@ impl Cli {
 
     /// Whether the command runs git, and so checks git first. `doctor` reports on git instead,
     /// the hook must stay fast and silent, and the holder is started by `agent start`, which
-    /// checked.
+    /// checked. `project ls` reads only the project list, and `project rm` needs git only to
+    /// match a path inside a project, which it then skips.
     fn runs_git(&self) -> bool {
         match &self.command {
             None | Some(Command::Doctor { .. } | Command::Hook { .. } | Command::Open) => false,
             Some(Command::Agent { command }) => !matches!(command, AgentCommand::Holder { .. }),
+            Some(Command::Project { command }) => matches!(command, ProjectCommand::Add { .. }),
             Some(
-                Command::Worktree { .. }
+                Command::Fleets { .. }
+                | Command::Worktree { .. }
                 | Command::Note { .. }
                 | Command::Turn { .. }
                 | Command::Session { .. }
@@ -673,6 +724,11 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Turn { command } => run_turn(command, cli.format()),
         Command::Session { command } => run_session(command, cli.format()),
         Command::Pr { command } => run_pr(command, cli.format()),
+        Command::Project { command } => run_project(command, cli.format()),
+        Command::Fleets { .. } => {
+            output::fleets(&fleets::run()?, cli.format())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Hook { args } => {
             run_hook(&HookArgs::parse(args));
             Ok(ExitCode::SUCCESS)
@@ -1139,6 +1195,19 @@ fn run_session(command: &SessionCommand, format: Format) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn run_project(command: &ProjectCommand, format: Format) -> Result<ExitCode> {
+    match command {
+        ProjectCommand::Add { path, .. } => {
+            output::project_added(&project_add::run(path.as_deref())?, format)?;
+        }
+        ProjectCommand::Ls { .. } => output::projects_listed(&project_ls::run()?, format)?,
+        ProjectCommand::Rm { project, .. } => {
+            output::project_removed(&project_rm::run(project)?, format)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_nvim(command: &NvimCommand, format: Format) -> Result<ExitCode> {
     match command {
         NvimCommand::Register { address, .. } => {
@@ -1203,6 +1272,8 @@ mod tests {
         let runs_git = |args: &[&str]| Cli::try_parse_from(args).unwrap().runs_git();
         assert!(!runs_git(&["orca-term", "doctor"]));
         assert!(!runs_git(&["orca-term", "hook", "claude", "Stop"]));
+        assert!(!runs_git(&["orca-term", "project", "ls"]));
+        assert!(!runs_git(&["orca-term", "project", "rm", "app"]));
         assert!(!runs_git(&[
             "orca-term",
             "agent",
@@ -1226,6 +1297,8 @@ mod tests {
             &["orca-term", "turn", "ls", "fix"],
             &["orca-term", "pr", "refresh"],
             &["orca-term", "nvim", "unregister", "/tmp/n.sock"],
+            &["orca-term", "project", "add"],
+            &["orca-term", "fleets", "--json"],
         ] {
             assert!(runs_git(args), "{args:?}");
         }

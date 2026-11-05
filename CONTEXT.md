@@ -24,6 +24,13 @@ _Avoid_: bootstrap, provision, init script, post-create hook
 Every worktree of one repository. No fleet spans repositories.
 _Avoid_: swarm, pool, roster
 
+**Project**:
+A repository the person works on, as orca-term remembers it: the path of its primary checkout, on
+the person's project list, which keeps the order projects were added in. Its name is that
+directory's basename. A project has one fleet; the list groups fleets and never merges them.
+Taking a project off the list never touches its directory, its worktrees or its branches.
+_Avoid_: tracked repository, registered repository, repo entry
+
 **Primary checkout**:
 The repository's main working tree, the one the person works in. It is listed by git alongside the
 worktrees but is not one of them, so no agent runs in it.
