@@ -484,9 +484,10 @@ the adapters, and returns a domain value that `output` prints.
   `flock` on `agent.lock` (retried for half a second, since `ls` probes it), the socket, the PTY
   and the agent on it, `agent.json`; then, until the agent exits, its threads: the main thread
   reaps the agent, the reader pumps the PTY into the scrollback (8 MiB) and to every client's
-  bounded queue, the acceptor starts a client thread per connection, each client has a writer
+  queue (`holder/client_queue.rs`), the acceptor starts a client thread per connection, each client has a writer
   (replay first, then the queue), and a stop spawns the escalation (hang up, terminate after 3 s,
-  kill after 3 more); a write to a client that blocks for 3 s drops that client as stuck, and
+  kill after 3 more); a write to a client that blocks for 3 s drops that client as stuck, a
+  client with more than 8 MiB waiting in its queue is dropped as too far behind, and
   the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
   a second later) so the agent redraws for the new terminal. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
@@ -494,6 +495,11 @@ the adapters, and returns a domain value that `output` prints.
   `--events <agent>` it also opens the events pipe before starting the agent, which inherits its
   write end under `ORCA_TERM_EVENTS_FD`, keeps only the read end, starts the events thread once
   the agent runs, and on the agent's exit waits up to 5 s for it before leaving.
+- `adapters/holder/client_queue.rs`: the frames waiting to be written to one client. The reader
+  never waits for a client, so each client has a queue, limited by the bytes waiting in it (as
+  many as the scrollback keeps, 8 MiB) and not by the number of frames: a client that reads
+  slowly stays attached through a burst of output, and one further behind than a reattach would
+  replay is dropped.
 - `adapters/holder/events.rs`: an agent's events pipe (#35): the pipe (its write end made
   inheritable, its read end close-on-exec) and the thread that reads it line by line (a line past
   256 KiB dropped whole) and runs `orca-term hook <agent> --admin <dir>` in the worktree for each,

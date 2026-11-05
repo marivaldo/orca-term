@@ -29,7 +29,6 @@ use std::os::fd::AsFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Child, ExitStatus};
-use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -39,6 +38,7 @@ use pty_process::blocking::Pty;
 use rustix::process::{Pid, Signal};
 
 use crate::adapters::fs::{self, FileLock};
+use crate::adapters::holder::client_queue::{ClientFrames, ClientQueue, client_queue};
 use crate::adapters::holder::{HolderArgs, error_line, events, peer, ready_line};
 use crate::domain::agent::{HolderRecord, Size};
 use crate::domain::hook::EVENTS_FD_VAR;
@@ -54,8 +54,11 @@ const LOCK_RETRY: Duration = Duration::from_millis(25);
 /// dies at once (bad settings, no sandbox) is reported as such instead of as started.
 const EARLY_EXIT_GRACE: Duration = Duration::from_millis(500);
 
-/// Frames a client may have queued before it is dropped as stuck.
-const CLIENT_QUEUE: usize = 1024;
+/// How many bytes may wait for a client before it is dropped as too far behind: as many as the
+/// scrollback keeps, since an attach that comes back is replayed the scrollback and nothing older.
+/// A client that only reads slowly, or that waits a moment, stays attached through a burst of
+/// output.
+const CLIENT_BACKLOG: usize = SCROLLBACK_CAP;
 
 /// Between the two halves of a jiggle, and before the jiggle repeated after an attach.
 const JIGGLE_PAUSE: Duration = Duration::from_millis(150);
@@ -112,7 +115,7 @@ struct Holder {
 /// byte lands either in the replay or in the queue, never in both or in neither.
 struct Shared {
     scrollback: Scrollback,
-    clients: HashMap<u64, SyncSender<Vec<u8>>>,
+    clients: HashMap<u64, ClientQueue>,
     writers: Vec<JoinHandle<()>>,
     next_client: u64,
     /// Set once the agent ended: a client attaching afterwards gets the replay and the exit.
@@ -293,7 +296,7 @@ fn run(holder: &Arc<Holder>, listener: UnixListener) -> Result<()> {
         let text = protocol::exit_text(status.code(), status.signal());
         let frame = Frame::Exit(text.clone()).encode();
         for queue in shared.clients.values() {
-            let _ = queue.try_send(frame.clone());
+            let _ = queue.push(frame.clone());
         }
         shared.exit = Some(text);
         // Dropping the queues lets each writer drain what it holds, then close its socket.
@@ -338,10 +341,8 @@ fn start_reader(holder: &Arc<Holder>) {
             let mut shared = lock_shared(&holder);
             shared.scrollback.push(&buf[..n]);
             let frame = Frame::Output(buf[..n].to_vec()).encode();
-            // A client whose queue is full, or whose writer is gone, is dropped here.
-            shared
-                .clients
-                .retain(|_, queue| queue.try_send(frame.clone()).is_ok());
+            // A client too far behind, or whose writer is gone, is dropped here.
+            shared.clients.retain(|_, queue| queue.push(frame.clone()));
         }
         lock_shared(&holder).reader_done = true;
     });
@@ -375,7 +376,7 @@ fn serve_client(holder: &Arc<Holder>, connection: UnixStream) {
     let Ok(writer_stream) = connection.try_clone() else {
         return;
     };
-    let (queue, frames) = mpsc::sync_channel::<Vec<u8>>(CLIENT_QUEUE);
+    let (queue, frames) = client_queue(CLIENT_BACKLOG);
     let (id, replay, exit) = {
         let mut shared = lock_shared(holder);
         let id = shared.next_client;
@@ -399,7 +400,7 @@ fn write_client(
     mut stream: UnixStream,
     replay: Vec<u8>,
     exit: Option<String>,
-    frames: &mpsc::Receiver<Vec<u8>>,
+    frames: &ClientFrames,
 ) {
     if stream
         .set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))
@@ -415,7 +416,7 @@ fn write_client(
             let _ = stream.write_all(&Frame::Exit(text).encode());
         }
         None => {
-            for frame in frames {
+            while let Some(frame) = frames.next() {
                 if stream.write_all(&frame).is_err() {
                     break;
                 }
