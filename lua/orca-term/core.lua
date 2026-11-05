@@ -2,9 +2,9 @@
 --
 -- This is the only module that starts a process (`cargo xtask client-boundary` checks it). It
 -- finds the binary, runs one of its commands with `--json`, and checks that the binary speaks this
--- client's contract. `worktree ls` is waited for, or read without waiting when the core says a
--- worktree changed; the commands that may run a setup (`worktree new`, `setup`, `rm`), `agent
--- start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
+-- client's contract. `worktree ls` and `fleets` (every project's fleet) are waited for, or read
+-- without waiting when the core says a worktree changed; the commands that may run a setup
+-- (`worktree new`, `setup`, `rm`), `agent start`, the marks `worktree seen` and `unseen`, `worktree review`, `worktree detail`, the note
 -- commands (`note add`, `ls`, `edit`, `rm`, `send`), `turn ls`, the session commands (`session ls`,
 -- `resume`, `new`), `pr refresh`, `pr create`, `pr merge`, `worktree rebase` (with or without
 -- `--abort`), `agent resolve` and `worktree push` are not waited for, and hand their
@@ -360,6 +360,44 @@ end
 ---@param on_done fun(fleet: orca_term.Fleet?, err: orca_term.Error?)
 function M.worktree_ls_async(cwd, on_done)
   run_async({ 'worktree', 'ls' }, cwd, on_done, TIMEOUT_SECONDS)
+end
+
+---One project of the project list with its fleet, as `fleets --json` prints it (`CONTEXT.md`,
+---**Project**).
+---@class orca_term.ProjectFleet
+---@field name string the basename of its primary checkout
+---@field path string its primary checkout
+---@field gone boolean whether its directory is gone
+---Its fleet, as `worktree ls --json` prints it but without `contract` and `version`; `nil` when it
+---could not be read (the project is gone or broken)
+---@field fleet? orca_term.Fleet
+---Why its fleet could not be read, `kind` and `message` as the core prints any error; `nil` when
+---it was read
+---@field error? { kind: string, message: string }
+
+---What `fleets --json` prints: every project of the project list, in the list's order.
+---@class orca_term.Fleets
+---@field contract integer
+---@field version string
+---@field projects orca_term.ProjectFleet[] empty when the project list is empty
+
+---The fleet of every project on the project list, in one call: `orca-term fleets --json`. The list
+---belongs to the person, not to a repository, so `cwd` only has to exist. A project that is gone
+---or broken is not an error: it comes with no fleet and its own `error`. A project list that
+---cannot be read is one.
+---@param cwd string
+---@return orca_term.Fleets? fleets
+---@return orca_term.Error? err
+function M.fleets(cwd)
+  return run({ 'fleets' }, cwd)
+end
+
+---The fleet of every project on the project list, without waiting: `orca-term fleets --json`,
+---handed to `on_done` in Neovim's main loop. It is stopped after 10 seconds, as `fleets` is.
+---@param cwd string
+---@param on_done fun(fleets: orca_term.Fleets?, err: orca_term.Error?)
+function M.fleets_async(cwd, on_done)
+  run_async({ 'fleets' }, cwd, on_done, TIMEOUT_SECONDS)
 end
 
 ---Creates the worktree `name` in the repository `cwd` is in, without waiting:

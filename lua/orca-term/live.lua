@@ -12,6 +12,11 @@
 -- Unsubscribing unregisters nothing: Neovim unregisters as it exits. While nobody is subscribed
 -- the events and the focus are ignored, and nothing is read. The fleet is never polled.
 --
+-- Every read also reads the project list, each project with its fleet (`fleets`), and keeps it
+-- beside the fleet of the current directory's repository: `M.projects()` gives it, to the sidebar,
+-- which shows every project (#154). The subscribers still get the current directory's fleet, and
+-- this Neovim still registers with that repository only.
+--
 -- This module touches no window, tab or buffer and starts no process (`cargo xtask
 -- client-boundary` checks it): it reads the fleet and registers through `core.lua`.
 
@@ -36,6 +41,10 @@ M.DELAY_MS = 100
 ---@field subscribers table<string, fun(fleet: orca_term.Fleet?, err: orca_term.Error?)> by name
 ---@field fleet? orca_term.Fleet the fleet last kept, `nil` before the first read or when it failed
 ---@field error? orca_term.Error why the fleet last kept could not be read
+---The project list last kept, each project with its fleet; empty when the list is empty, `nil`
+---before the first read or when it could not be read
+---@field projects? orca_term.ProjectFleet[]
+---@field projects_error? orca_term.Error why the project list last kept could not be read
 ---@field group? integer the autocommand group, made at the first subscription, never deleted
 ---@field timer? uv.uv_timer_t the timer waiting `DELAY_MS` to read the fleet after an event
 ---@field reading boolean whether a read started by an event is running
@@ -53,12 +62,16 @@ local function subscribed()
   return next(state.subscribers) ~= nil
 end
 
----Keeps the fleet (or why it could not be read) and hands it to every subscriber, in the order of
----their names.
+---Keeps the fleet (or why it could not be read) and the project list read with it (`listed`, or
+---why it could not be read), then hands the fleet to every subscriber, in the order of their
+---names.
 ---@param fleet? orca_term.Fleet
 ---@param err? orca_term.Error
-local function keep(fleet, err)
+---@param listed? orca_term.Fleets
+---@param listed_err? orca_term.Error
+local function keep(fleet, err, listed, listed_err)
   state.fleet, state.error = fleet, err
+  state.projects, state.projects_error = listed and listed.projects, listed_err
   -- The names are taken first, so a subscriber may unsubscribe (or subscribe) while being told.
   local names = vim.tbl_keys(state.subscribers)
   table.sort(names)
@@ -121,15 +134,18 @@ local function unregister()
   state.registered = {}
 end
 
----Reads the fleet of the current directory's repository, waiting for it, keeps it and hands it to
----every subscriber. A read without waiting that is still running is dropped as it ends.
+---Reads the project list and the fleet of the current directory's repository, waiting for both,
+---keeps them and hands the fleet to every subscriber. A read without waiting that is still running
+---is dropped as it ends.
 ---@return orca_term.Fleet? fleet `nil` when it could not be read
 ---@return orca_term.Error? err why it could not be read
 function M.read()
   state.reads = state.reads + 1
+  local cwd = vim.fn.getcwd()
+  local listed, listed_err = core.fleets(cwd)
   -- Looked up on each call, not kept in a local: the specs count the reads by wrapping it.
-  local fleet, err = core.worktree_ls(vim.fn.getcwd())
-  keep(fleet, err)
+  local fleet, err = core.worktree_ls(cwd)
+  keep(fleet, err, listed, listed_err)
   return fleet, err
 end
 
@@ -154,9 +170,9 @@ function M.read_soon()
   end
 end
 
----Reads the fleet without waiting, then keeps it as `read()` does. A read that ends after a newer
----read started (waited for or not), or once nobody is subscribed, is dropped. When an event came
----during the read, one more read follows.
+---Reads the project list, then the fleet, without waiting, and keeps them as `read()` does. A read
+---that ends after a newer read started (waited for or not), or once nobody is subscribed, is
+---dropped. When an event came during the read, one more read follows.
 read_now = function()
   if not subscribed() then
     return
@@ -164,15 +180,18 @@ read_now = function()
   state.reads = state.reads + 1
   local this_read = state.reads
   state.reading = true
-  core.worktree_ls_async(vim.fn.getcwd(), function(fleet, err)
-    state.reading = false
-    if subscribed() and state.reads == this_read then
-      keep(fleet, err)
-    end
-    if state.again then
-      state.again = false
-      M.read_soon()
-    end
+  local cwd = vim.fn.getcwd()
+  core.fleets_async(cwd, function(listed, listed_err)
+    core.worktree_ls_async(cwd, function(fleet, err)
+      state.reading = false
+      if subscribed() and state.reads == this_read then
+        keep(fleet, err, listed, listed_err)
+      end
+      if state.again then
+        state.again = false
+        M.read_soon()
+      end
+    end)
   end)
 end
 
@@ -181,6 +200,14 @@ end
 ---@return orca_term.Error? err
 function M.fleet()
   return state.fleet, state.error
+end
+
+---The project list last kept, each project with its fleet, and why it could not be read; both
+---`nil` before the first read. An empty list is an empty table, never `nil`.
+---@return orca_term.ProjectFleet[]? projects
+---@return orca_term.Error? err
+function M.projects()
+  return state.projects, state.projects_error
 end
 
 ---Makes the autocommands of the live fleet, the first time anyone subscribes. Their group outlives

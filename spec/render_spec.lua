@@ -616,6 +616,124 @@ describe('render', function()
   end)
 end)
 
+---A project named `name` at `/src/<name>`, on `main`, with `worktrees` at `/src/wt/<name>/`, as
+---`fleets --json` prints it.
+---@param name string
+---@param names string[] its worktrees' names
+---@return orca_term.ProjectFleet
+local function project(name, names)
+  local worktrees = {}
+  for _, worktree_name in ipairs(names) do
+    local path = '/src/wt/' .. name .. '/' .. worktree_name
+    table.insert(worktrees, worktree(worktree_name, { path = path }))
+  end
+  local path = '/src/' .. name
+  local read = { primary = { path = path, branch = 'main' }, worktrees = worktrees }
+  return { name = name, path = path, gone = false, fleet = read }
+end
+
+---A project whose fleet could not be read, for `message`, as `fleets --json` prints it.
+---@param name string
+---@param message string
+---@return orca_term.ProjectFleet
+local function broken_project(name, message)
+  local path = '/src/' .. name
+  return { name = name, path = path, gone = true, error = { kind = 'other', message = message } }
+end
+
+describe('render.projects, the project list', function()
+  it("draws one header per project, in the list's order, above its own worktrees", function()
+    local rendered = render.projects({ project('web', { 'b', 'a' }), project('api', { 'c' }) })
+    assert.are.same({
+      ' ▾ web  main',
+      '',
+      ' QUIET 2',
+      ' ╭────────────────────────────────╮',
+      ' │ · a                            │',
+      ' ╰────────────────────────────────╯',
+      ' · b',
+      '',
+      ' ▾ api  main',
+      '',
+      ' QUIET 1',
+      ' · c',
+    }, rendered.lines)
+    assert.are.same({ 'OrcaTermMuted', 'OrcaTermHeader', 'OrcaTermMuted' }, groups_on(rendered, 1))
+    assert.are.same({ 'OrcaTermMuted', 'OrcaTermHeader', 'OrcaTermMuted' }, groups_on(rendered, 9))
+    assert_fits(rendered, render.WIDTH)
+  end)
+
+  it("orders the worktrees across the projects, each within its own project's sections", function()
+    local web = project('web', { 'quiet' })
+    local api = project('api', { 'idle', 'urgent' })
+    api.fleet.worktrees[2].state = 'waiting'
+    local rendered = render.projects({ web, api })
+    assert.are.same(
+      { '/src/wt/web/quiet', '/src/wt/api/urgent', '/src/wt/api/idle' },
+      rendered.order
+    )
+    -- The first worktree shown is selected, however urgent a later project's are.
+    assert.are.equal('/src/wt/web/quiet', rendered.selected)
+    assert.truthy(line_with(rendered, ' NEEDS YOU 1'))
+    assert.is_true(line_with(rendered, ' ▾ api  main') < line_with(rendered, ' NEEDS YOU 1'))
+  end)
+
+  it('draws the card around the selected worktree, whichever project it is in', function()
+    local projects = { project('web', { 'a' }), project('api', { 'a' }) }
+    local rendered = render.projects(projects, '/src/wt/api/a')
+    assert.are.equal('/src/wt/api/a', rendered.selected)
+    local name_line = rendered.firsts['/src/wt/api/a']
+    assert.are.equal(' │ · a                            │', rendered.lines[name_line])
+    assert.are.equal(' · a', rendered.lines[rendered.firsts['/src/wt/web/a']])
+    assert.are.equal('/src/wt/api/a', rendered.paths[name_line])
+    -- A header belongs to no worktree.
+    assert.is_nil(rendered.paths[line_with(rendered, ' ▾ api  main')])
+  end)
+
+  it('says a project with no worktrees has none yet, under its header, muted', function()
+    local rendered = render.projects({ project('empty', {}), project('api', { 'c' }) })
+    assert.are.same({
+      ' ▾ empty  main',
+      '   no worktrees yet',
+      '',
+      ' ▾ api  main',
+      '',
+      ' QUIET 1',
+      ' ╭────────────────────────────────╮',
+      ' │ · c                            │',
+      ' ╰────────────────────────────────╯',
+    }, rendered.lines)
+    assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, 2))
+    assert.are.equal('/src/wt/api/c', rendered.selected)
+  end)
+
+  it('shows why a project could not be read under its header, wrapped and muted', function()
+    local message = "the project's directory /a/very/long/path/that/does/not/fit/on/one/line "
+      .. 'is gone; take it off the list with `orca-term project rm /a/very/long/path`'
+    local rendered = render.projects({ broken_project('gone', message), project('api', { 'c' }) })
+    -- No fleet was read, so the header has no branch.
+    assert.are.equal(' ▾ gone', rendered.lines[1])
+    assert_fits(rendered, render.WIDTH)
+    local last = line_with(rendered, ' ▾ api  main') - 2
+    local words = {}
+    for index = 2, last do
+      assert.are.same({ 'OrcaTermMuted' }, groups_on(rendered, index))
+      assert.are.equal('   ', rendered.lines[index]:sub(1, 3))
+      table.insert(words, vim.trim(rendered.lines[index]))
+    end
+    -- Nothing is lost: joined back, the lines hold the whole message.
+    assert.are.equal((message:gsub('%s', '')), (table.concat(words):gsub('%s', '')))
+    -- The projects after it are still drawn.
+    assert.are.equal('/src/wt/api/c', rendered.selected)
+  end)
+
+  it('selects nothing when no project has a worktree', function()
+    local rendered = render.projects({ project('empty', {}) })
+    assert.is_nil(rendered.selected)
+    assert.are.same({}, rendered.order)
+  end)
+end)
+
 describe("render.detail, a worktree's detail", function()
   ---A detail document shaped like `worktree detail --json`, for the worktree `fix`; a worktree
   ---field set to `vim.NIL` is left out.
