@@ -55,7 +55,9 @@ the adapters, and returns a domain value that `output` prints.
   help on stderr, exit 2) when no command runs inside Neovim or without a terminal.
   `doctor [--json]` needs no repository; every other command but `open`, the hidden `hook` and
   `agent holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
-  git as the typed `prerequisite` before anything else runs. `pr refresh [<worktree>...]` (#87)
+  git as the typed `prerequisite` before anything else runs. `open` and no command run git only
+  to add the repository to the project list (#152), and open Neovim without it, so they do not
+  check it. `pr refresh [<worktree>...]` (#87)
   asks the GitHub CLI about each worktree's pull request. `pr compose <worktree>` (#132) prints
   the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
   <f>] [--base <b>] [--draft]` pushes the branch and creates it. `pr merge <worktree>
@@ -342,7 +344,13 @@ the adapters, and returns a domain value that `output` prints.
   (`ORCA_TERM_NVIM`, a path as it is or a name on PATH, else `nvim` on PATH; missing is the typed
   `prerequisite`) and replace the process with it running `-c 'OrcaTerm sidebar'`. With no
   arguments it opens only at a terminal outside Neovim, and otherwise returns for `cli` to print
-  the usage; `open` opens without a terminal too, and refuses inside Neovim.
+  the usage; `open` opens without a terminal too, and refuses inside Neovim. Once the Neovim is
+  found and just before the process is replaced, both add the repository of the current
+  directory to the project list (#152) through `project_add::add_repository_of`, saying nothing.
+  `add_current_repository` ignores its result: a list that cannot be changed (a broken
+  `projects.json`, a newer schema, `projects.lock` held, git missing, no state directory) adds
+  nothing and never stops the launch. Nothing is added when Neovim is not opened: the usage, the
+  refusal inside Neovim, a missing Neovim.
 - `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
   none is named; a named one whose directory is gone, the primary checkout or an unknown one is
   refused), find gh on PATH, run `gh pr view <branch> --json
@@ -410,7 +418,8 @@ the adapters, and returns a domain value that `output` prints.
   `ops/project_add.rs`: `project add`: refuse a path that is not a directory, then
   `add_repository_of`, which finds the primary checkout with `git::repository_of` and adds it;
   `None` outside every repository, which `run` turns into the typed `not_a_repository`. The
-  launcher (#148) is meant to call `add_repository_of` with the current directory.
+  launcher (`ops/open.rs`) calls `add_repository_of` with the current directory before it opens
+  Neovim (#152).
   `ops/project_ls.rs`: `project ls`: the list, each project marked gone when its directory is not
   one; runs no git. `ops/project_rm.rs`: `project rm`: under the lock, a name through
   `Projects::find_by_name` (`ambiguous_project` when several match), a path matched with
@@ -1408,6 +1417,14 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   at once (all kept, under the lock), and outside a repository; a gone project; removing by path, by name and with an ambiguous name,
   checking nothing on disk changed; and `fleets` with two repositories, a broken one (its `.git`
   removed) and a gone one, the readable fleet compared with `worktree ls --json`.
+- **The launcher adding the repository, seam 1** (#152): `tests/open.rs` runs `orca-term` with no
+  arguments (on a pseudo-terminal) and `orca-term open` with the fake `nvim`, the real `git`
+  linked onto the isolated PATH and `XDG_STATE_HOME` inside the sandbox, in a throwaway
+  repository, in one of its linked worktrees and outside every repository, and reads
+  `projects.json` itself: the primary checkout added, nothing changed for one already listed,
+  nothing added by the usage, the refusal inside Neovim or a missing Neovim, and Neovim still
+  opened, with nothing said, over a broken file, a newer schema, a held `projects.lock` and a PATH
+  with no git.
 
 ## Neovim client
 

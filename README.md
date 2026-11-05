@@ -146,6 +146,14 @@ terminal launchers; inside Neovim it refuses with
 program `ORCA_TERM_NVIM` names) is not there, both fail with the error `prerequisite` (exit code
 9). `orca-term doctor` does not check Neovim or its config.
 
+Just before they open Neovim, `orca-term` with no arguments and `orca-term open` add the
+repository you are in to your [project list](#projects), by its primary checkout, as
+`orca-term project add` does, and say nothing. A repository already on the list is left as it
+is, and outside a repository nothing is added. A project list that cannot be changed (a broken
+`projects.json`, one written by a newer orca-term, another command still changing it after 2
+seconds, git missing) never stops Neovim from opening: nothing is added then. Nothing is added
+either when Neovim is not opened: the usage, the refusal inside Neovim, a missing Neovim.
+
 ## Setup
 
 `worktree new` runs the setup script `scripts.setup` from `orca-term.yaml` in the new worktree, and
@@ -700,6 +708,9 @@ keeps the order projects were added in, and lives outside every repository, in
   project already on the list changes nothing and says `project app at /home/me/src/app is already
   on the list`. A directory outside every git repository is refused (`not_a_repository`, exit code
   22). With `--json` it prints the project's `name` and `path` and whether it was `added`.
+  `orca-term` with no arguments and `orca-term open` add the repository of the current directory
+  the same way, silently, just before they open Neovim (see [Start](#start)), so a repository
+  you start orca-term in is listed without `project add`.
 - `orca-term project ls [--json]` lists the projects in order. A project whose directory is gone
   stays on the list, marked `gone` (`"gone": true` with `--json`).
 - `orca-term project rm <path or name>` takes a project off the list. It never touches the disk,
