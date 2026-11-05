@@ -46,6 +46,9 @@ groups worktrees by project is [issue #150](https://github.com/marivaldo/orca-te
 
 - `PROJECTS_SCHEMA` joins the state schemas, with its sample in
   `tests/fixtures/schema-1/state/orca-term/projects.json`.
-- The launcher (`orca-term` with no arguments, #148) adds the repository of the current directory
-  through `ops::project_add::add_repository_of`, a change left to the launcher's own slice.
+- The launcher (`orca-term` with no arguments and `orca-term open`, #148) adds the repository of
+  the current directory through `ops::project_add::add_repository_of` before it opens Neovim
+  ([issue #152](https://github.com/marivaldo/orca-term/issues/152)). A project list that cannot
+  be changed never stops the launch: nothing is added, and the sidebar shows the problem when it
+  reads the same list through `fleets`.
 - The Neovim client registers with every project's primary checkout for live updates (#150).
