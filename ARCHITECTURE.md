@@ -1410,6 +1410,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   which refreshes the pull requests, never runs the real GitHub CLI; `spec/pr_spec.lua` makes it
   answer pull requests (`support.gh_answer`) and checks the `PR` icon and its colours, `R`, `K`,
   `:OrcaTerm pr-refresh`, the refresh on opening, after a turn ends and on the timer.
+  `spec/projects_spec.lua` (#154) puts two repositories of one fixture on the project list
+  (`support.sibling_repo` makes the second beside the first, `support.add_project` runs `project
+  add`; the list lives in the fixture's `XDG_STATE_HOME`, never the developer's) and checks the
+  sidebar grouped by project: the headers in the list's order, `j` and `k` across projects, every
+  key pressed on a worktree of the second project while Neovim sits in the first (`u`, `K`, `s`,
+  `R`, `.` to remove it, `<CR>` starting its fake claude; `d` only as far as what it hands
+  `actions.review`, the review being `spec/review_spec.lua`'s; the menu's entries and `:OrcaTerm
+  push`, `pr-create` and `pr-merge` against a bare `origin` only the second project has), a
+  project with no worktrees, a gone one, a list that cannot be read, and the empty list, where
+  the sidebar is `render.fleet`'s.
 - **Lints** have their own unit tests in `xtask/src/`.
 - **The project list, seam 1** (#149): `tests/projects.rs` runs `project add|ls|rm` and `fleets`
   against several throwaway repositories, with `XDG_STATE_HOME` set to a temporary directory of
@@ -1508,7 +1518,12 @@ what they print.
   `orca_term.RebaseAborted`) and `agent_resolve` runs `agent resolve <target>` (10 s at most,
   `orca_term.ResolveSent`); the fleet carries `remote_base`. `worktree_push(target, with_lease,
   cwd, on_done)` (#146) runs `worktree push <target> [--force-with-lease]` without waiting (120 s
-  at most), typed as `orca_term.Pushed`; the fleet carries `has_origin`.
+  at most), typed as `orca_term.Pushed`; the fleet carries `has_origin`. `fleets(cwd)` (#154)
+  waits for `orca-term fleets` (10 s at most) and `fleets_async(cwd, on_done)` reads it without
+  waiting, typed as `orca_term.Fleets`: its `projects`, in the list's order, each an
+  `orca_term.ProjectFleet` (`name`, `path`, `gone`, then its `fleet`, an `orca_term.Fleet` without
+  `contract` and `version`, or its `error`). The list belongs to the person, so `cwd` only has to
+  exist. A gone or broken project is not an error; a project list that cannot be read is.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
@@ -1571,7 +1586,15 @@ what they print.
   none), else `OrcaTermPrMerged`, `OrcaTermPrClosed` or `OrcaTermPrDraft`; no pull request, one gh
   could not tell and one never fetched show nothing. `detail` adds, after the branch, `PR #12 open,
   checks passing (2 min ago)` (`pr_text`, the age by `ago` from `now`) in that group and the address,
-  muted, only for a pull request.
+  muted, only for a pull request. `projects(projects, selected, width, frame, now)` (#154) draws
+  the project list, what `fleets --json` printed, in the list's order: per project its header
+  (`▾ <name>  <branch of its primary checkout>`), then its sections and worktrees exactly as
+  `fleet` draws one repository's (they share `add_sections`), a blank line between two projects.
+  A project with no worktrees gets `no worktrees yet` under its header, and one with no fleet (gone
+  or broken) the core's reason there, wrapped, and a header with no branch; both are muted and
+  start three cells in, where a worktree's second line does (`add_under_header`). `order` and the
+  selection run over the worktrees of every project, top to bottom, so the card may be in any
+  project. `fleet` itself draws what it drew before: it is the sidebar with an empty project list.
 - `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
   `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
   `OrcaTermBadge` for a row's icons, `OrcaTermDenied` for the denials and `OrcaTermNote` for the
@@ -1609,7 +1632,12 @@ what they print.
   of the fleet last kept; it unregisters on `VimLeavePre`, and unsubscribing unregisters nothing.
   `User OrcaTermWorktreeChanged` (`EVENT`) calls `read_soon()`, and `FocusGained` reads the fleet,
   waiting, and registers again; both are ignored while nobody is subscribed. These autocommands
-  live in the `orca-term-live` group, made at the first subscription and never deleted.
+  live in the `orca-term-live` group, made at the first subscription and never deleted. Since
+  #154 every read, waited for or not, first reads the project list with each project's fleet
+  (`core.fleets`, `core.fleets_async`) and keeps it beside the fleet: `projects()` gives the
+  projects last kept (an empty table for an empty list) and why the list could not be read. The
+  subscribers are still handed the current directory's fleet, which the status strip and the
+  notes show, and this Neovim still registers with that repository only.
 - `lua/orca-term/strip.lua`: the status strip, the fleet's health for a statusline while the
   sidebar is closed. `statusline()` returns the strip as a statusline expression (each item as
   `%#Group#text%*`, a space between items), for `%{%v:lua.require'orca-term.strip'.statusline()%}`;
@@ -1672,7 +1700,21 @@ what they print.
   session loads, since the session counts its tabs' windows; `session_loaded` gives the name back
   at once and, scheduled, shows the open sidebar in every tab, also when the session kept no
   sidebar window. `open` gives the name back too, for a session that failed before
-  `SessionLoadPost`.
+  `SessionLoadPost`. Grouped by project (#154): on every fleet `live.lua` hands it, the sidebar
+  also takes `live.projects()`. `render_shown` draws `render.projects` when the list has
+  projects, `render.fleet` of the current directory's repository when it is empty (the sidebar
+  as it was before the list), and `render.error` when the list, or that fleet, could not be read.
+  `shown_fleets` gives the fleets on screen (every project's that was read, or that one fleet),
+  which the selection following the tab and the spinner go through. The project of a worktree
+  is kept nowhere else: `worktree_under_cursor` finds the worktree of the cursor's line among
+  those fleets and returns it with the fleet that lists it, and every key on a worktree (`<CR>`,
+  `.`, `u`, `d`, `s`, `K`, `R`, and `create_pr_here`, `merge_pr_here`, `push_here`,
+  `list_sessions_here`) hands `actions.lua`, `detail.lua`, `pr.lua` or `compose.lua` that fleet's
+  `primary.path` as the directory the core runs in, with its `remote_base` and `has_origin` for
+  the menu; none of those modules changed. `R` reads the fleets again (`live.read_soon`) once the
+  core answers, since `pr.lua` compares only with the current directory's fleet. Still on the
+  current directory's repository (`primary_path`), until #155 and #156: `a`, and the pull
+  requests refreshed without being asked (`pr.refresh_due`, `pr.follow`).
 - `lua/orca-term/detail.lua`: the detail float, `K` in the sidebar. `toggle(sidebar, worktree,
   cwd)` asks the core for `worktree detail` without waiting and opens a float of `render.detail`'s
   lines in a scratch buffer (`bufhidden=wipe`, highlights in `NAMESPACE`): `relative = 'win'` on the

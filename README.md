@@ -35,8 +35,9 @@ A merged branch is deleted only at the tip that was checked: if the agent commit
 being stopped, the branch is kept with that commit, saying `kept branch <name>: it moved while the
 agent stopped`. `--force` still deletes the branch whatever its tip.
 
-In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab. Each worktree gets a tab of its own,
-pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
+In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab, or every project's fleet under a
+header of its own once the project list has projects ([Projects](#projects)). Each worktree gets
+a tab of its own, pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree, `.` runs
 its setup again, copies its path or removes it (always asking first, and saying when its running
 agent will be stopped), `u` toggles its unseen
 mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
@@ -722,6 +723,55 @@ keeps the order projects were added in, and lives outside every repository, in
   `worktree ls --json` prints for it without `contract` and `version`, and `error`, as any
   command's error prints it. A gone or broken project has a `null` fleet and its error, and the
   others are still read.
+
+In Neovim, the sidebar shows every project on the list, as Orca's shows its repositories: one
+header per project, its name and the branch of its primary checkout, in the list's order, above
+that project's worktrees. Within a project the worktrees keep their sections and their order,
+the most recently active first:
+
+```
+ ▾ app  main
+
+ NEEDS YOU 1
+ ╭────────────────────────────────╮
+ │ ? pick-colour           cc now │
+ │   Which colour?                │
+ ╰────────────────────────────────╯
+
+ QUIET 1
+ · docs
+
+ ▾ api  main
+   no worktrees yet
+
+ ▾ old
+   the project's directory
+   /home/me/src/old is gone; take
+   it off the list with `orca-term
+   project rm /home/me/src/old`
+```
+
+- A project with no worktrees shows `no worktrees yet` under its header.
+- A project whose directory is gone, or is no longer a git repository, shows the core's reason
+  under its header, muted. The other projects are still shown.
+- Every key on a worktree (`<CR>`, `.`, `u`, `d`, `s`, `K`, `R`, and its pull request, rebase and
+  push from the `.` menu or their commands) acts on that worktree's own project: the core runs
+  from that project's primary checkout, never from Neovim's current directory. The sidebar is
+  the same from any directory, inside a repository or not.
+- `j` and `k` go from the last worktree of a project to the first of the next.
+- With no project on the list, the sidebar shows the repository of Neovim's current directory,
+  exactly as before.
+
+Some things still follow only the repository of Neovim's current directory, until their own
+slices of [#150](https://github.com/marivaldo/orca-term/issues/150) land:
+
+- `a` creates its worktree there, whatever project the cursor is on.
+- The live updates: a change in another project shows when Neovim gains focus, after an action
+  in the sidebar, and on `R`, which reads every project again once it has refreshed the pull
+  request under the cursor.
+- The pull requests refreshed without being asked (on opening, after a turn ends, while checks
+  are pending).
+- The status strip, `:OrcaTerm jump` and `:OrcaTerm worktree N`.
 
 ## Status strip
 
