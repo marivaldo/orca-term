@@ -141,6 +141,9 @@ M.SPINNER = { '◐', '◓', '◑', '◒' }
 ---@field paths table<integer, string> each line that belongs to a worktree, and that worktree's path
 ---@field firsts table<string, integer> each worktree's path, and the line holding its name
 ---@field order string[] the worktrees' paths, top to bottom
+---Each line that is a project's header, and that project's place in the project list (from 1);
+---empty unless `M.projects` drew it
+---@field headers table<integer, integer>
 ---@field selected? string the selected worktree's path; `nil` when there is no worktree
 
 ---A line being built: its text so far, its spans, and how many cells it may take.
@@ -150,6 +153,7 @@ M.SPINNER = { '◐', '◓', '◑', '◒' }
 ---@field budget integer
 ---@field path? string
 ---@field first? boolean whether this line holds the worktree's name
+---@field project? integer on a project's header, the project's place in the project list
 
 ---The width of `text` in screen cells.
 ---@param text string
@@ -575,6 +579,7 @@ local function finish(built, order, selected)
     paths = {},
     firsts = {},
     order = order,
+    headers = {},
     selected = selected,
   }
   for index, line in ipairs(built) do
@@ -592,6 +597,9 @@ local function finish(built, order, selected)
       if line.first then
         rendered.firsts[line.path] = index
       end
+    end
+    if line.project then
+      rendered.headers[index] = line.project
     end
   end
   return rendered
@@ -735,7 +743,8 @@ end
 ---
 ---`selected`, `width`, `frame` and `now` are `M.fleet`'s. The selection and `order` run over the
 ---worktrees of every project, top to bottom, so the first worktree shown is the first project's
----that has one.
+---that has one. `headers` says which line is which project's header, so the sidebar knows the
+---project the cursor is in.
 ---@param projects orca_term.ProjectFleet[]
 ---@param selected? string
 ---@param width? integer
@@ -763,7 +772,9 @@ function M.projects(projects, selected, width, frame, now)
     end
     local fleet = project.fleet
     local branch = fleet and (fleet.primary.branch or 'detached') or nil
-    table.insert(built, header(project.name, branch, width))
+    local top = header(project.name, branch, width)
+    top.project = index
+    table.insert(built, top)
     if not fleet then
       local why = project.error and project.error.message or 'its fleet could not be read'
       add_under_header(built, why, width)

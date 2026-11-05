@@ -8,6 +8,9 @@
 -- number (`:OrcaTerm worktree N`), the list of the current tab's notes (`:OrcaTerm notes`, through
 -- `notes.lua`), and the list of its turns, to review one (`:OrcaTerm turns`).
 --
+-- It also changes the project list (#155): add a project (`P` in the sidebar) and the menu of the
+-- project whose header is under the cursor (`.`: take it off the list, asking first).
+--
 -- It asks the person through `vim.ui.input` and `vim.ui.select`, runs the core through `core.lua`,
 -- moves between tabs through `tabs.lua`, shows agents through `terminal.lua` and reviews through
 -- `review.lua`; it touches no window or buffer itself. The commands that may run a setup, and
@@ -478,6 +481,76 @@ function M.create(primary)
         create_worktree(name, choice ~= M.NO_AGENT and choice or nil, primary)
       end
     end)
+  end)
+end
+
+---`P` in the sidebar: asks `Add project: `, completing directories, and adds the repository
+---containing that path to the project list through the core (`project add`, without blocking).
+---The path may be written as the completion writes it, with `~` and a trailing slash; a relative
+---one is taken from Neovim's current directory. It says `added project api at <path>`, or that
+---the project is already on the list, and reads the sidebar again. A path the core refuses, such
+---as one outside every git repository, is told with the core's reason. Cancelling, or an empty
+---answer, adds nothing.
+function M.add_project()
+  vim.ui.input({ prompt = 'Add project: ', completion = 'dir' }, function(input)
+    local path = vim.trim(input or '')
+    if path == '' then
+      return
+    end
+    core.project_add(vim.fs.normalize(path), vim.fn.getcwd(), function(added, err)
+      if not added then
+        fail(err)
+        return
+      end
+      refresh_sidebar()
+      if added.added then
+        info(('added project %s at %s'):format(added.name, added.path))
+      else
+        info(('project %s at %s is already on the list'):format(added.name, added.path))
+      end
+    end)
+  end)
+end
+
+---The entries of the menu of a project, in the order shown.
+M.PROJECT_MENU = { 'Remove from list' }
+
+---The answers offered before a project is taken off the project list.
+M.REMOVE_PROJECT_ANSWERS = { 'Remove', 'Cancel' }
+
+---`Remove from list` in the menu of a project: asks first, then takes `project` off the project
+---list through the core (`project rm`, by its path, without blocking), says so and reads the
+---sidebar again. Nothing on disk is touched: its directory, its worktrees and its branches stay,
+---and so do its running agents and its tabs. `Cancel` changes nothing. A refusal is told with the
+---core's reason.
+---@param project orca_term.ProjectFleet
+function M.remove_project(project)
+  local prompt = ('Remove project %s from the list? Its directory, worktrees and branches are not touched.'):format(
+    project.name
+  )
+  vim.ui.select(M.REMOVE_PROJECT_ANSWERS, { prompt = prompt }, function(choice)
+    if choice ~= M.REMOVE_PROJECT_ANSWERS[1] then
+      return
+    end
+    -- The project's own directory may be gone: the core runs from Neovim's current directory.
+    core.project_rm(project.path, vim.fn.getcwd(), function(removed, err)
+      refresh_sidebar()
+      if not removed then
+        fail(err)
+        return
+      end
+      info(('removed project %s from the list (nothing on disk was touched)'):format(removed.name))
+    end)
+  end)
+end
+
+---The menu of what can be done with `project`, the project whose header is under the cursor.
+---@param project orca_term.ProjectFleet
+function M.project_menu(project)
+  vim.ui.select(M.PROJECT_MENU, { prompt = 'Project ' .. project.name }, function(choice)
+    if choice == M.PROJECT_MENU[1] then
+      M.remove_project(project)
+    end
   end)
 end
 
