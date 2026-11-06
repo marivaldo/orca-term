@@ -1,765 +1,1003 @@
-//! Where everything goes (`layout`) and how it is painted (`draw`), for the three variants. The
-//! live loop and the snapshot mode share both.
-
-use std::time::Duration;
+//! Where everything goes (`layout`) and how it is painted (`draw`): the design's "Quiet v2"
+//! (`design/README.md`, section 4 of `design/orca-term TUI.dc.html`). The live loop and the
+//! snapshot mode share both.
+//!
+//! 180 columns: CANVAS gutters at 0, 35, 144 and 179; the side menu card x1 w34, the centre card
+//! x36 w108, the right card x145 w34; every card from row 0 to the row above the status bar.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
-use tui_term::widget::{Cursor, PseudoTerminal};
+use ratatui::layout::Rect;
 
-use crate::app::{AGENT, App, Focus, NVIM, SHELL, TERMINALS, Variant};
-use crate::fleet::{CHECKS, Stop};
-use crate::menu::{
-    ACCENT, BAR, FAINT, GREEN, MUTED, MenuLines, RED, YELLOW, fit, menu_lines, state_colour,
+use crate::app::{AGENT, App, Focus, NVIM, SHELL, TERMINALS};
+use crate::fleet::{FileChange, Key};
+use crate::mock;
+use crate::paint::{
+    self, Mode, Painter, Seg, bold, c, fg, italic, key, len, pill, seg, segs_len, trunc, trunc_left,
+};
+use crate::theme::{
+    self, ACCENT, BG, BORDER, CANVAS, DONE, FAILED, FOCUS_BG, FOCUS_SEL, PANEL, RAISED, SELECTION,
+    State, TEXT, TEXT_2, VEIL, WAITING, WORKING,
 };
 
-const MENU_WIDTH: u16 = 36;
-const RIGHT_WIDTH: u16 = 30;
-/// The keys of the side menu and of the right column, which need no prefix.
-const MENU_KEYS: &str = "j/k move  ⏎ terminal  q quit";
-const RIGHT_KEYS: &str = "j/k move  ⏎ open  h back";
-/// The same, for either of them drawn on top of the centre.
-const ON_TOP_KEYS: &str = "j/k move  ⏎ open  esc close";
-/// How long a message stays in the status bar.
-const MESSAGE_FOR: Duration = Duration::from_secs(8);
-
-/// One terminal on screen: which of the worktree's three, its title row and its body.
+/// One terminal on screen: which of the worktree's three, its card and the PTY's area.
 #[derive(Clone, Copy, Debug)]
 pub struct Pane {
     pub which: usize,
-    pub title: Option<Rect>,
+    pub card: Rect,
     pub body: Rect,
 }
 
-/// Where each part of a frame goes.
+/// Where each part of a frame went, for the mouse and the terminals' sizes.
 #[derive(Clone, Debug, Default)]
 pub struct Geometry {
-    /// The side menu's and the right column's content.
-    pub menu: Option<Rect>,
+    pub sidebar: Option<Rect>,
     pub right: Option<Rect>,
-    /// Their boxes, when they are drawn on top of the centre.
-    pub menu_frame: Option<Rect>,
-    pub right_frame: Option<Rect>,
-    /// Variant C's one-line strip of worktrees.
-    pub strip: Option<Rect>,
     pub panes: Vec<Pane>,
-    /// The one title row lists all three terminals, as tabs do (variant A, not split).
-    pub title_lists_all: bool,
-    /// The centre, when no worktree is selected and it only says so.
-    pub note: Option<Rect>,
-    /// The vertical lines between columns.
-    pub rules: Vec<Rect>,
     pub status: Rect,
+    /// Filled while drawing: the tab labels, the side menu's items (top row, row after, key)
+    /// and the right card's file rows (row, index).
+    pub tabs: Vec<(Rect, usize)>,
+    pub items: Vec<(u16, u16, Key)>,
+    pub files: Vec<(u16, usize)>,
     pub too_small: bool,
 }
 
-/// A terminal's name in a title row: ` 1 agent `.
-pub fn terminal_label(which: usize, name: &str) -> String {
-    format!(" {} {name} ", which + 1)
-}
-
-fn titled(which: usize, area: Rect) -> Pane {
-    Pane {
-        which,
-        title: Some(Rect { height: 1, ..area }),
-        body: Rect {
-            y: area.y + 1,
-            height: area.height.saturating_sub(1),
-            ..area
-        },
+/// A pane's PTY area inside its card: from the third row (under the tabs and a blank row) to
+/// the last row of the body; two columns of margin, fewer for nvim, whose sign column sits at
+/// the card's edge as in the design (one column zoomed or alone, none in the split).
+fn body(card: Rect, which: usize, split: bool) -> Rect {
+    let inset = match (which, split) {
+        (NVIM, true) => 0,
+        (NVIM, false) => 1,
+        _ => 2,
+    };
+    Rect {
+        x: card.x + inset,
+        y: card.y + 3,
+        width: card.width.saturating_sub(2 * inset),
+        height: card.height.saturating_sub(4),
     }
-}
-
-/// `area` cut in two side by side, with the rule between them.
-fn side_by_side(area: Rect, left_width: u16) -> (Rect, Rect, Rect) {
-    let left = Rect {
-        width: left_width,
-        ..area
-    };
-    let rule = Rect {
-        x: area.x + left_width,
-        width: 1,
-        ..area
-    };
-    let right = Rect {
-        x: area.x + left_width + 1,
-        width: area.width - left_width - 1,
-        ..area
-    };
-    (left, rule, right)
 }
 
 pub fn layout(app: &App, area: Rect) -> Geometry {
+    let (w, h) = (area.width, area.height);
     let mut g = Geometry {
-        status: Rect {
-            y: area.bottom().saturating_sub(1),
-            height: 1,
-            ..area
-        },
+        status: Rect::new(0, h.saturating_sub(1), w, 1),
         ..Geometry::default()
     };
-    if area.width < 70 || area.height < 14 {
+    if w < 60 || h < 16 {
         g.too_small = true;
         return g;
     }
-    let body = Rect {
-        height: area.height - 1,
-        ..area
-    };
-    let has_worktree = app.worktree().is_some();
-
-    if app.zoom {
-        // The panel with the focus takes everything but the status bar.
-        match app.focus {
-            Focus::Menu => g.menu = Some(body),
-            Focus::Right => g.right = Some(body),
-            Focus::Centre if has_worktree => g.panes.push(Pane {
-                which: app.current(),
-                title: None,
-                body,
-            }),
-            Focus::Centre => g.note = Some(body),
-        }
-        return g;
-    }
-
-    // Narrower columns on a narrow screen, so the centre keeps most of it.
-    let menu_width = MENU_WIDTH.min(area.width * 3 / 10);
-    let right_width = RIGHT_WIDTH.min(area.width / 4);
-    let mut centre = body;
-    if app.variant == Variant::C {
-        g.strip = Some(Rect { height: 1, ..body });
-        centre.y += 1;
-        centre.height -= 1;
-    } else {
-        if app.show_menu {
-            let (menu, rule, rest) = side_by_side(centre, menu_width);
-            g.menu = Some(menu);
-            g.rules.push(rule);
-            centre = rest;
-        }
-        if app.variant == Variant::A && app.show_right {
-            let (rest, rule, right) = side_by_side(centre, centre.width - right_width - 1);
-            g.right = Some(right);
-            g.rules.push(rule);
-            centre = rest;
-        }
-    }
-
-    // The side menu or the right column on top of the centre, in a box.
-    let inner = |frame: Rect| Rect {
-        x: frame.x + 1,
-        y: frame.y + 1,
-        width: frame.width - 2,
-        height: frame.height - 2,
-    };
-    match app.overlay {
-        Some(Focus::Menu) => {
-            let frame = Rect {
-                width: menu_width + 2,
-                ..centre
-            };
-            g.menu_frame = Some(frame);
-            g.menu = Some(inner(frame));
-        }
-        Some(Focus::Right) => {
-            let frame = Rect {
-                x: centre.right() - (right_width + 2),
-                width: right_width + 2,
-                ..centre
-            };
-            g.right_frame = Some(frame);
-            g.right = Some(inner(frame));
-        }
-        _ => {}
-    }
-
-    if !has_worktree {
-        g.note = Some(centre);
-        return g;
-    }
-    let titles = app.variant != Variant::C;
-    let pane = |which: usize, area: Rect| {
-        if titles {
-            titled(which, area)
-        } else {
-            Pane {
-                which,
-                title: None,
-                body: area,
+    let ch = h - 1;
+    let mut centre = Rect::new(1, 0, w - 2, ch);
+    if !app.zoom {
+        if w >= 150 {
+            g.sidebar = Some(Rect::new(1, 0, 34, ch));
+            centre = Rect::new(36, 0, w - 37, ch);
+            if app.right_as_column() {
+                g.right = Some(Rect::new(w - 35, 0, 34, ch));
+                centre.width = w - 72;
             }
+        } else if w >= 100 {
+            g.sidebar = Some(Rect::new(1, 0, 28, ch));
+            centre = Rect::new(30, 0, w - 31, ch);
         }
+    }
+    if app.right_overlay {
+        g.right = Some(Rect::new(w - 35, 0, 34, ch));
+    }
+    let split = app.split && !app.zoom;
+    let pane = |which: usize, card: Rect| Pane {
+        which,
+        card,
+        body: body(card, which, split),
     };
-    match app.variant {
-        Variant::B => {
-            // The agent large on the left with the shell as a strip under it, nvim on the right.
-            let (left, rule, right) = side_by_side(centre, centre.width * 55 / 100);
-            let strip = (centre.height / 4).clamp(5, 10);
-            let agent = Rect {
-                height: left.height - strip - 1,
-                ..left
-            };
-            let shell = Rect {
-                y: agent.bottom(),
-                height: strip + 1,
-                ..left
-            };
-            g.panes.push(pane(AGENT, agent));
-            g.panes.push(pane(SHELL, shell));
-            g.panes.push(pane(NVIM, right));
-            g.rules.push(rule);
-        }
-        _ if app.split => {
-            let (left, rule, right) = side_by_side(centre, centre.width / 2);
-            g.panes.push(pane(AGENT, left));
-            g.panes.push(pane(NVIM, right));
-            g.rules.push(rule);
-        }
-        _ => {
-            g.panes.push(pane(app.current(), centre));
-            g.title_lists_all = titles;
-        }
+    if split {
+        let left = Rect {
+            width: (centre.width - 1) / 2,
+            ..centre
+        };
+        let right = Rect {
+            x: left.right() + 1,
+            width: centre.width - left.width - 1,
+            ..centre
+        };
+        g.panes.push(pane(AGENT, left));
+        g.panes.push(pane(app.side(), right));
+    } else {
+        g.panes.push(pane(app.current(), centre));
     }
     g
 }
 
-/// The side menu ready to paint in `area`: its lines, how many of them are scrolled away so
-/// that the selection stays on screen, the screen row of the first one shown and how many rows
-/// there are for them.
-pub struct MenuView {
-    pub menu: MenuLines,
-    pub offset: usize,
-    pub first_row: u16,
-    pub rows: u16,
-}
-
-pub fn menu_view(app: &App, area: Rect, titled: bool) -> MenuView {
-    let focused = app.focus == Focus::Menu;
-    let menu = menu_lines(app, area.width, focused);
-    // As a column it has a title row above and a row for its keys below.
-    let first_row = area.y + u16::from(titled);
-    let rows = area.height.saturating_sub(2 * u16::from(titled));
-    let last_selected = menu
-        .stops
-        .iter()
-        .rposition(|stop| *stop == Some(app.selected))
-        .unwrap_or(0);
-    let offset = (last_selected + 1).saturating_sub(usize::from(rows));
-    MenuView {
-        menu,
-        offset,
-        first_row,
-        rows,
-    }
-}
-
-/// The style of a name in a title row: lit when it has the focus, marked when it is only the
-/// one shown, quiet otherwise.
-fn label_style(shown: bool, focused: bool) -> Style {
-    if shown && focused {
-        Style::new()
-            .fg(Color::Black)
-            .bg(ACCENT)
-            .add_modifier(Modifier::BOLD)
-    } else if shown {
-        Style::new()
-            .fg(Color::White)
-            .bg(FAINT)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().fg(MUTED).bg(BAR)
-    }
-}
-
-fn bar(frame: &mut Frame, area: Rect, line: Line<'_>) {
-    frame.render_widget(Paragraph::new(line).style(Style::new().bg(BAR)), area);
-}
-
-pub fn draw(frame: &mut Frame, app: &App, g: &Geometry) {
-    if g.too_small {
-        frame.render_widget(
-            Paragraph::new("the prototype needs at least 70 columns by 14 rows"),
-            frame.area(),
-        );
-        return;
-    }
-    for rule in &g.rules {
-        let lines: Vec<Line> = (0..rule.height).map(|_| Line::raw("│")).collect();
-        frame.render_widget(Paragraph::new(lines).style(Style::new().fg(FAINT)), *rule);
-    }
-    if let Some(area) = g.strip {
-        draw_strip(frame, app, area);
-    }
-    if let Some(area) = g.note {
-        draw_note(frame, app, area);
-    }
-    for pane in &g.panes {
-        draw_pane(frame, app, g, pane);
-    }
-    if let Some(area) = g.menu {
-        match g.menu_frame {
-            Some(outer) => draw_box(frame, outer, " worktrees ", ON_TOP_KEYS),
-            None => draw_keys(frame, app, area, Focus::Menu, MENU_KEYS),
-        }
-        draw_menu(frame, app, area, g.menu_frame.is_none());
-    }
-    if let Some(area) = g.right {
-        match g.right_frame {
-            Some(outer) => draw_box(frame, outer, " changes and checks ", ON_TOP_KEYS),
-            None => draw_keys(frame, app, area, Focus::Right, RIGHT_KEYS),
-        }
-        draw_right(frame, app, area, g.right_frame.is_none());
-    }
-    draw_status(frame, app, g.status);
-    if app.help {
-        draw_help(frame, app);
-    }
-}
-
-/// The box around the side menu or the right column when it is on top of the centre, with its
-/// keys on the bottom edge.
-fn draw_box(frame: &mut Frame, area: Rect, title: &str, keys: &str) {
-    frame.render_widget(Clear, area);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ACCENT))
-        .title(title.to_owned())
-        .title_bottom(format!(" {keys} "));
-    frame.render_widget(block, area);
-}
-
-/// A column's own keys on its last row, while it has the focus.
-fn draw_keys(frame: &mut Frame, app: &App, area: Rect, column: Focus, keys: &str) {
-    if app.focus != column {
-        return;
-    }
-    let last = Rect {
-        y: area.bottom() - 1,
-        height: 1,
-        ..area
-    };
-    frame.render_widget(
-        Paragraph::new(format!(" {keys}")).style(Style::new().fg(MUTED)),
-        last,
-    );
-}
-
-fn draw_menu(frame: &mut Frame, app: &App, area: Rect, titled: bool) {
-    let view = menu_view(app, area, titled);
-    if titled {
-        let label = Span::styled(" orca-term ", label_style(true, app.focus == Focus::Menu));
-        bar(frame, Rect { height: 1, ..area }, Line::from(label));
-    }
-    let content = Rect {
-        y: view.first_row,
-        height: view.rows,
-        ..area
-    };
-    let lines: Vec<Line> = view.menu.lines.into_iter().skip(view.offset).collect();
-    frame.render_widget(Paragraph::new(lines), content);
-}
-
-fn draw_right(frame: &mut Frame, app: &App, area: Rect, titled: bool) {
-    let focused = app.focus == Focus::Right;
-    let muted = Style::new().fg(MUTED);
-    let width = usize::from(area.width);
-    let mut content = area;
-    if titled {
-        let name = match app.stops[app.selected] {
-            Stop::Worktree(p, w) => app.fleet[p].worktrees[w].name,
-            Stop::Header(p) => app.fleet[p].name,
+pub fn draw(frame: &mut Frame, app: &App, g: &mut Geometry, mode: Mode) {
+    let area = frame.area();
+    {
+        let mut p = Painter {
+            buf: frame.buffer_mut(),
         };
-        let label = Span::styled(format!(" {name} "), label_style(true, focused));
-        bar(frame, Rect { height: 1, ..area }, Line::from(label));
-        // The title row above, the row for its keys below.
-        content.y += 1;
-        content.height = content.height.saturating_sub(2);
-    }
-    let Some((p, w)) = app.worktree() else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(" no worktree selected", muted)),
-            content,
-        );
-        return;
-    };
-
-    let mut lines = vec![Line::styled(format!(" CHANGES {}", app.files.len()), muted)];
-    // The checks keep their rows at the bottom; the files scroll in what is left.
-    let checks_rows = if app.fleet[p].worktrees[w].pull_request {
-        CHECKS.len() + 2
-    } else {
-        3
-    };
-    let room = usize::from(content.height)
-        .saturating_sub(checks_rows + 1)
-        .max(1);
-    let offset = (app.file + 1).saturating_sub(room);
-    for (index, path) in app.files.iter().enumerate().skip(offset).take(room) {
-        // A long path keeps its end, where the file's name is.
-        let shown = if path.chars().count() > width - 4 {
-            let tail: String = path
-                .chars()
-                .skip(path.chars().count() - (width - 5))
-                .collect();
-            format!("…{tail}")
+        p.fill(0, 0, area.width, area.height, CANVAS);
+        if g.too_small {
+            p.text(
+                1,
+                0,
+                "the prototype needs at least 60 columns by 16 rows",
+                fg(TEXT),
+            );
         } else {
-            path.clone()
-        };
-        let selected = index == app.file;
-        let style = match (selected, focused) {
-            (true, true) => Style::new().fg(Color::Black).bg(ACCENT),
-            (true, false) => Style::new().bg(FAINT),
-            _ => Style::new(),
-        };
-        let mark = if selected { " ▸ " } else { "   " };
-        lines.push(Line::styled(
-            format!("{mark}{shown:<w$}", w = width - 3),
-            style,
-        ));
-    }
-    lines.push(Line::default());
-    if app.fleet[p].worktrees[w].pull_request {
-        lines.push(Line::styled(" CHECKS  PR #12", muted));
-        for (mark, name) in CHECKS {
-            let colour = match mark {
-                "✓" => GREEN,
-                "✗" => RED,
-                _ => YELLOW,
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {mark} "), Style::new().fg(colour)),
-                Span::raw(fit(name, width - 4)),
-            ]));
+            if let Some(card) = g.sidebar {
+                sidebar(&mut p, app, card, g);
+            }
+            for pane in g.panes.clone() {
+                draw_pane(&mut p, app, g, &pane);
+            }
+            if let Some(card) = g.right {
+                right(&mut p, app, card, g);
+            }
+            status(&mut p, app, g.status);
+            if app.picker.is_some() {
+                picker(&mut p, app, area);
+            }
+            if app.help {
+                help(&mut p, app, area);
+            }
         }
-    } else {
-        lines.push(Line::styled(" CHECKS", muted));
-        lines.push(Line::styled("   no pull request", muted));
+        paint::finish(p.buf, mode);
     }
-    frame.render_widget(Paragraph::new(lines), content);
+    // The child's cursor is the real cursor, on the terminal with the focus.
+    if let Some(pane) = g.panes.iter().find(|pane| pane.which == app.current())
+        && app.focus == Focus::Centre
+        && !app.help
+        && app.picker.is_none()
+        && let Some(term) = app.term(pane.which)
+        && !term.exited()
+    {
+        let parser = term.parser();
+        let screen = parser.screen();
+        let (row, col) = screen.cursor_position();
+        if !screen.hide_cursor() && screen.scrollback() == 0 && row < pane.body.height {
+            frame.set_cursor_position((
+                pane.body.x + col.min(pane.body.width - 1),
+                pane.body.y + row,
+            ));
+        }
+    }
 }
 
-/// Variant C's strip: every worktree with its glyph, the selected one lit, and the three
-/// terminals' names at the right end.
-fn draw_strip(frame: &mut Frame, app: &App, area: Rect) {
-    let mut spans = Vec::new();
-    for (p, project) in app.fleet.iter().enumerate() {
-        let header = app.stops[app.selected] == Stop::Header(p);
-        let style = if header {
-            label_style(true, true)
-        } else {
-            Style::new().fg(MUTED).bg(BAR)
-        };
-        spans.push(Span::styled(format!(" {} ", project.name), style));
-        for (w, worktree) in project.worktrees.iter().enumerate() {
-            let selected = app.stops[app.selected] == Stop::Worktree(p, w);
-            let unseen = if worktree.unseen { "•" } else { " " };
-            let glyph = worktree.state.glyph(app.tick);
-            if selected {
-                let text = format!("{unseen}{glyph} {} ", worktree.name);
-                spans.push(Span::styled(text, label_style(true, true)));
+// ---------- side menu ----------
+
+/// The design's `sidebar2`: "Projects", each project's avatar and name, its worktrees in three
+/// lines (two when the card is under 40 rows), the open one in a half-line card.
+fn sidebar(p: &mut Painter, app: &App, card: Rect, g: &mut Geometry) {
+    let focused = app.focus == Focus::Sidebar && app.picker.is_none();
+    let (x, y, w, hh) = (card.x, card.y, card.width, card.height);
+    p.card(x, y, w, hh, PANEL, if focused { 8 } else { 0 });
+    let title = if focused { ACCENT } else { TEXT_2 };
+    p.text(x + 2, y + 1, "Projects", bold(title));
+    let compact = hh < 40;
+    // Nothing reaches the card's bottom edge, nor the footer's row when it has the focus.
+    let limit = y + hh - if focused { 2 } else { 1 };
+    let mut r = y + 3;
+    for (pi, project) in app.fleet.iter().enumerate() {
+        if r >= limit {
+            break;
+        }
+        let initial = project.name.chars().next().unwrap_or(' ').to_string();
+        p.line(x + 1, r, &pill(&initial, RAISED, TEXT, PANEL));
+        p.text(
+            x + 5,
+            r,
+            &trunc(project.name, usize::from(w - 7)),
+            bold(TEXT),
+        );
+        r += 2;
+        if project.worktrees.is_empty() {
+            if r < limit {
+                p.text(x + 6, r, "no worktrees yet", italic(TEXT_2));
+            }
+            r += 2;
+            continue;
+        }
+        for (wi, t) in project.worktrees.iter().enumerate() {
+            let k = (pi, wi);
+            let nl: u16 = if compact { 2 } else { 3 };
+            if r + nl > limit {
+                r += nl + 1;
+                continue;
+            }
+            g.items.push((r, r + nl, k));
+            let cursor = focused && k == app.cursor;
+            let open = k == app.open;
+            let unseen = t.unseen && !open;
+            if cursor || open {
+                let pb = if cursor { FOCUS_SEL } else { SELECTION };
+                p.tint(x + 1, r, w - 2, nl, pb);
+                let bar = |m: &str| m.repeat(usize::from(w - 2));
+                p.text(x + 1, r - 1, &bar("▄"), fg(pb).bg(c(PANEL)));
+                p.text(x + 1, r + nl, &bar("▀"), fg(pb).bg(c(PANEL)));
+                if cursor {
+                    for k in 0..nl {
+                        p.text(x + 1, r + k, "▎", fg(ACCENT).bg(c(pb)));
+                    }
+                }
+            }
+            let state = theme::state_tok(t.state);
+            p.text(
+                x + 4,
+                r,
+                &theme::glyph(t.state, app.tick).to_string(),
+                bold(state),
+            );
+            let tag = if t.primary { " primary " } else { "" };
+            let room = usize::from(w)
+                .saturating_sub(
+                    9 + if tag.is_empty() {
+                        0
+                    } else {
+                        len(tag) as usize + 1
+                    },
+                )
+                .saturating_sub(if unseen { 2 } else { 0 });
+            let name = if cursor { ACCENT } else { TEXT };
+            let mut nx = p.text(x + 6, r, &trunc(t.name, room), bold(name));
+            if unseen {
+                nx = p.text(nx + 1, r, &theme::UNSEEN.to_string(), bold(state));
+            }
+            if !tag.is_empty() {
+                p.text(nx + 1, r, tag, fg(TEXT_2).bg(c(RAISED)));
+            }
+            if compact {
+                let room = usize::from(w).saturating_sub(11 + t.age.len());
+                p.text(x + 6, r + 1, &trunc(t.last_message, room), fg(TEXT_2));
+                p.rtext(x + w - 3, r + 1, t.age, fg(TEXT_2));
+                r += 3;
+                continue;
+            }
+            let pr = t.pr.as_ref().map(|pr| format!("#{}", pr.number));
+            let pr_room = pr.as_ref().map_or(0, |n| n.len() + 1);
+            let room = usize::from(w).saturating_sub(11 + pr_room);
+            p.text(x + 6, r + 1, &trunc(t.branch, room), fg(TEXT_2));
+            if let Some(pr) = &pr {
+                p.rtext(x + w - 3, r + 1, pr, bold(DONE));
+            }
+            let mut lx = x + 6;
+            if let Some(pr) = &t.pr {
+                let glyph = format!("{} ", theme::glyph(pr.check, app.tick));
+                lx = p.text(lx, r + 2, &glyph, bold(theme::state_tok(pr.check)));
+            }
+            if let Some(agent) = t.agent.filter(|_| !t.primary) {
+                lx = p.text(lx, r + 2, &format!("{agent} · "), italic(TEXT_2));
+            }
+            let room = (x + w).saturating_sub(4 + len(t.age)).saturating_sub(lx);
+            p.text(
+                lx,
+                r + 2,
+                &trunc(t.last_message, usize::from(room)),
+                fg(TEXT_2),
+            );
+            p.rtext(x + w - 3, r + 2, t.age, fg(TEXT_2));
+            r += 4;
+        }
+        r += 1;
+    }
+    if focused {
+        let mut segs = vec![
+            key("enter", false),
+            seg(" open  ", fg(TEXT_2)),
+            key("n", false),
+            seg(" new", fg(TEXT_2)),
+        ];
+        if w >= 32 {
+            segs.extend([
+                seg("  ", fg(TEXT)),
+                key("/", false),
+                seg(" filter", fg(TEXT_2)),
+            ]);
+        }
+        p.segs(x + 2, y + hh - 2, &segs, w - 4);
+    }
+}
+
+// ---------- centre ----------
+
+/// A tab row: the active tab a pill, the others quiet; `right` aligned on the right. Returns
+/// the active pill's column and width, for the accent stroke.
+fn tabs(
+    p: &mut Painter,
+    g: &mut Geometry,
+    card: Rect,
+    list: &[usize],
+    active: usize,
+    focused: bool,
+    right: &[Seg],
+) -> (u16, u16) {
+    let y = card.y + 1;
+    let mut cx = card.x + 2;
+    let mut stroke = (cx, 0);
+    for &which in list {
+        let label = format!("{} {}", which + 1, TERMINALS[which]);
+        let start = cx;
+        if which == active {
+            let (bg, text) = if focused {
+                (FOCUS_SEL, ACCENT)
             } else {
-                let colour = Style::new().fg(state_colour(worktree.state)).bg(BAR);
-                spans.push(Span::styled(format!("{unseen}{glyph}"), colour));
-                spans.push(Span::raw(format!(" {} ", worktree.name)));
-            }
+                (SELECTION, TEXT)
+            };
+            cx = p.line(cx, y, &pill(&label, bg, text, BG));
+            stroke = (start, cx - start);
+        } else {
+            cx = p.text(cx, y, &format!(" {label} "), fg(TEXT_2));
         }
-        spans.push(Span::styled("│", Style::new().fg(FAINT)));
+        g.tabs.push((Rect::new(start, y, cx - start, 1), which));
+        cx += 1;
     }
-    bar(frame, area, Line::from(spans));
-
-    let mut names = Vec::new();
-    for (which, name) in TERMINALS.iter().enumerate() {
-        let shown = app.worktree().is_some() && which == app.current();
-        names.push(Span::styled(
-            terminal_label(which, name),
-            label_style(shown, app.focus == Focus::Centre),
-        ));
+    if !right.is_empty() {
+        let end = card.x + card.width - 1;
+        let room = end.saturating_sub(cx + 1);
+        if segs_len(right) <= room {
+            p.rsegs(end, y, right);
+        }
     }
-    let names = Line::from(names);
-    let width = (names.width() as u16).min(area.width);
-    let at = Rect {
-        x: area.right() - width,
-        width,
-        ..area
-    };
-    frame.render_widget(Paragraph::new(names), at);
+    stroke
 }
 
-/// The centre when the selection is a project's header, which has no terminals.
-fn draw_note(frame: &mut Frame, app: &App, area: Rect) {
-    let Stop::Header(p) = app.stops[app.selected] else {
-        return;
-    };
-    let project = &app.fleet[p];
-    let text = if project.worktrees.is_empty() {
-        format!("project {}: no worktrees yet", project.name)
-    } else {
-        format!(
-            "project {}: select one of its worktrees to see its terminals",
-            project.name
-        )
-    };
-    let middle = Rect {
-        y: area.y + area.height / 2,
-        height: 1,
-        ..area
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(text, Style::new().fg(MUTED))).alignment(Alignment::Center),
-        middle,
-    );
+/// `4 files +55 −21`, from the open worktree's changed files.
+fn summary(files: &[FileChange]) -> Vec<Seg> {
+    let (add, del) = totals(files);
+    vec![
+        seg(format!("{} files ", files.len()), fg(TEXT_2)),
+        seg(format!("+{add}"), fg(DONE)),
+        seg(format!(" −{del}  "), fg(FAILED)),
+    ]
 }
 
-fn draw_pane(frame: &mut Frame, app: &App, g: &Geometry, pane: &Pane) {
+fn totals(files: &[FileChange]) -> (u32, u32) {
+    files
+        .iter()
+        .fold((0, 0), |(a, d), f| (a + f.add, d + f.del))
+}
+
+fn draw_pane(p: &mut Painter, app: &App, g: &mut Geometry, pane: &Pane) {
+    let card = pane.card;
+    let wt = app.open_wt();
     let focused = app.focus == Focus::Centre && app.current() == pane.which;
-    if let Some(title) = pane.title {
-        let mut spans = Vec::new();
-        for (which, name) in TERMINALS.iter().enumerate() {
-            if g.title_lists_all || which == pane.which {
-                spans.push(Span::styled(
-                    terminal_label(which, name),
-                    label_style(which == app.current(), app.focus == Focus::Centre),
-                ));
-            }
+    p.card(card.x, card.y, card.width, card.height, BG, 0);
+
+    let agent_name = || -> Vec<Seg> {
+        wt.agent
+            .map(|a| vec![seg(a, italic(TEXT_2))])
+            .unwrap_or_default()
+    };
+    let (list, right): (Vec<usize>, Vec<Seg>) = if app.zoom {
+        let mut right = Vec::new();
+        if app.split {
+            let side = TERMINALS[app.side()];
+            let lit = |name: &str| {
+                if TERMINALS[app.current()] == name {
+                    bold(ACCENT)
+                } else {
+                    fg(TEXT_2)
+                }
+            };
+            right.extend([
+                seg("split  ", fg(TEXT_2)),
+                seg("agent", lit("agent")),
+                seg(" | ", fg(BORDER)),
+                seg(side, lit(side)),
+                seg("    ", fg(TEXT)),
+            ]);
         }
-        bar(frame, title, Line::from(spans));
+        right.extend(pill("zoom", FOCUS_SEL, ACCENT, BG));
+        right.extend([
+            seg("  ", fg(TEXT)),
+            key("^a z", false),
+            seg(" restore", fg(TEXT_2)),
+        ]);
+        (vec![pane.which], right)
+    } else if app.split && pane.which == AGENT {
+        (vec![AGENT], agent_name())
+    } else if app.split {
+        let file = app
+            .opened
+            .get(&app.open)
+            .filter(|_| pane.which == NVIM)
+            .map(|path| path.rsplit('/').next().unwrap_or(path).to_owned());
+        let right = file.map(|f| vec![seg(f, fg(TEXT_2))]).unwrap_or_default();
+        (vec![NVIM, SHELL], right)
+    } else if !app.right_as_column() {
+        let mut right = summary(&app.open_files());
+        right.push(key("^a f", false));
+        (vec![AGENT, NVIM, SHELL], right)
+    } else {
+        let mut right = vec![seg(app.location(app.open), fg(TEXT_2))];
+        if let Some(agent) = wt.agent {
+            right.push(seg("  ·  ", fg(BORDER)));
+            right.push(seg(agent, italic(TEXT_2)));
+        }
+        (vec![AGENT, NVIM, SHELL], right)
+    };
+    let (sx, sw) = tabs(p, g, card, &list, pane.which, focused, &right);
+    if focused {
+        p.text(
+            sx,
+            card.y,
+            &"▁".repeat(usize::from(sw)),
+            fg(ACCENT).bg(c(CANVAS)),
+        );
     }
 
-    let body = pane.body;
-    let name = TERMINALS[pane.which];
-    let Some(term) = app.term(pane.which) else {
-        // Snapshot mode starts nothing: the panel only says what would be there.
-        let command = app.commands[pane.which][0].rsplit('/').next().unwrap_or("");
-        let middle = Rect {
-            y: body.y + body.height / 2,
-            height: 1,
-            ..body
-        };
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                format!("{name} terminal ({command})"),
-                Style::new().fg(MUTED),
-            ))
-            .alignment(Alignment::Center),
-            middle,
+    let b = pane.body;
+    if pane.which == AGENT && wt.failure {
+        failure(p, app, b);
+        return;
+    }
+    if pane.which == AGENT && wt.agent.is_none()
+        || pane.which == AGENT && !app.mock() && app.term(AGENT).is_none()
+    {
+        p.line(
+            b.x + 1,
+            b.y,
+            &[
+                seg("no agent running  ·  ", fg(TEXT_2)),
+                key("enter", false),
+                seg(" starts claude", fg(TEXT_2)),
+            ],
         );
         return;
+    }
+    if app.mock() {
+        placeholder(p, pane.which, b, focused);
+        return;
+    }
+    let Some(term) = app.term(pane.which) else {
+        return;
     };
-
     let parser = term.parser();
     let screen = parser.screen();
-    // The child's cursor is the real cursor of this terminal, placed below; the widget's own
-    // drawing of one stays off.
-    let widget = PseudoTerminal::new(screen).cursor(Cursor::default().visibility(false));
-    frame.render_widget(widget, body);
-
+    paint::screen(p.buf, b, screen);
     if term.exited() {
-        let last = Rect {
-            y: body.bottom() - 1,
-            height: 1,
-            ..body
-        };
-        frame.render_widget(
-            Paragraph::new(" [exited]  Enter starts it again ")
-                .style(Style::new().fg(Color::Black).bg(YELLOW)),
-            last,
+        let y = b.y + b.height - 1;
+        p.fill(b.x, y, b.width, 1, BG);
+        p.line(
+            b.x + 1,
+            y,
+            &[
+                seg("process exited  ·  ", fg(TEXT_2)),
+                key("enter", false),
+                seg(" starts it again", fg(TEXT_2)),
+            ],
         );
     } else if screen.scrollback() > 0 {
         let text = format!(" {} lines up ", screen.scrollback());
-        let width = (text.len() as u16).min(body.width);
-        let corner = Rect {
-            x: body.right() - width,
-            width,
-            height: 1,
-            ..body
-        };
-        frame.render_widget(
-            Paragraph::new(text).style(Style::new().fg(Color::Black).bg(YELLOW)),
-            corner,
-        );
-    } else if focused && !app.help && !screen.hide_cursor() {
-        let (row, col) = screen.cursor_position();
-        if row < body.height && col < body.width {
-            frame.set_cursor_position((body.x + col, body.y + row));
+        p.rtext(b.x + b.width, b.y, &text, fg(TEXT_2).bg(c(RAISED)));
+    }
+}
+
+/// What the snapshots show where a terminal would be.
+fn placeholder(p: &mut Painter, which: usize, b: Rect, focused: bool) {
+    match which {
+        AGENT => {
+            // claude-code keeps a column of margin of its own when it has room.
+            let indent = u16::from(b.width > 60);
+            let lines = mock::claude_lines(usize::from(b.width - indent - 1));
+            mock::draw_lines(p, b.x + indent, b.y, b.width - indent, b.height, &lines);
+        }
+        NVIM => mock::nvim(p, b.x, b.y, b.width, b.height, focused),
+        _ => {
+            p.line(
+                b.x,
+                b.y,
+                &[seg("~/code/app.worktrees/fix-login $ ", fg(TEXT_2))],
+            );
         }
     }
 }
 
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let prefix = app.prefix_label();
-    let rule = Span::styled(" │ ", Style::new().fg(FAINT).bg(BAR));
-    let mut spans = Vec::new();
-
-    match app.stops[app.selected] {
-        Stop::Worktree(p, w) => {
-            let worktree = &app.fleet[p].worktrees[w];
-            let colour = Style::new().fg(state_colour(worktree.state)).bg(BAR);
-            spans.push(Span::styled(
-                format!(" {} ", worktree.state.glyph(app.tick)),
-                colour,
-            ));
-            spans.push(Span::styled(
-                worktree.name,
-                Style::new().add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(format!(" {}", worktree.state.word()), colour));
-        }
-        Stop::Header(p) => {
-            spans.push(Span::raw(format!(" project {}", app.fleet[p].name)));
-        }
-    }
-    spans.push(rule.clone());
-    spans.push(Span::raw(format!("focus {}", app.focus.word())));
-    if app.zoom {
-        spans.push(Span::styled(" ZOOM", Style::new().fg(YELLOW)));
-    }
-    spans.push(rule.clone());
-    spans.push(Span::raw(app.variant.label()));
-
-    // Without a right column, the status bar carries its summary.
-    if app.variant != Variant::A
-        && let Some((p, w)) = app.worktree()
-    {
-        spans.push(rule.clone());
-        spans.push(Span::raw(format!("{} files ", app.files.len())));
-        if app.fleet[p].worktrees[w].pull_request {
-            let count = |mark: &str| CHECKS.iter().filter(|(m, _)| *m == mark).count();
-            spans.push(Span::styled(
-                format!("✓{} ", count("✓")),
-                Style::new().fg(GREEN),
-            ));
-            spans.push(Span::styled(
-                format!("✗{} ", count("✗")),
-                Style::new().fg(RED),
-            ));
-            spans.push(Span::styled(
-                format!("·{}", count("·")),
-                Style::new().fg(YELLOW),
-            ));
-        } else {
-            spans.push(Span::styled("no PR", Style::new().fg(MUTED)));
-        }
-    }
-    spans.push(rule);
-
-    let message = app
-        .message
-        .as_ref()
-        .filter(|(_, since)| since.elapsed() < MESSAGE_FOR);
-    if app.pending {
-        spans.push(Span::styled(
-            format!("{prefix} … (press ? for the keys)"),
-            Style::new().fg(YELLOW),
-        ));
-    } else if let Some((text, _)) = message {
-        spans.push(Span::styled(text.clone(), Style::new().fg(YELLOW)));
-    } else {
-        spans.push(Span::styled(
-            format!("{prefix} ? help  {prefix} v variant  {prefix} z zoom  {prefix} q quit"),
-            Style::new().fg(MUTED),
-        ));
-    }
-
-    // Not part of the design: the prototype's own switch between the variants.
-    let switch = format!(" prototype  ◀ {} ▶  {prefix} v ", app.variant.label());
-    let width = (Span::raw(switch.as_str()).width() as u16).min(area.width);
-    bar(frame, area, Line::default());
-    let left = Rect {
-        width: area.width.saturating_sub(width + 1),
-        ..area
-    };
-    bar(frame, left, Line::from(spans));
-    let at = Rect {
-        x: area.right() - width,
-        width,
-        ..area
-    };
-    frame.render_widget(
-        Paragraph::new(switch).style(
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        at,
+/// The stopped agent: its last output, and under it the orca-term card that says what
+/// happened and offers the actions, the primary one lit (4e).
+fn failure(p: &mut Painter, app: &App, b: Rect) {
+    let wt = app.open_wt();
+    let bottom = b.y + b.height - 3;
+    let top = bottom.saturating_sub(5);
+    let lines = mock::fail_lines(usize::from(b.width - 2));
+    mock::draw_lines(p, b.x + 1, b.y, b.width - 1, top - b.y, &lines);
+    p.card_on(b.x, top, b.width, 6, SELECTION, BG, 0);
+    let x = b.x;
+    p.line(
+        x + 3,
+        top + 1,
+        &[
+            seg("✗", bold(FAILED)),
+            seg("  agent stopped", bold(TEXT)),
+            seg(
+                format!("  ·  exit 1 after 41m  ·  {} ago", wt.age),
+                fg(TEXT_2),
+            ),
+        ],
+    );
+    let files = app.open_files();
+    let (add, del) = totals(&files);
+    let n = files.len();
+    let safe = format!(
+        "Your changes are safe in the worktree ({n} file{}, +{add} −{del}). The session can \
+         resume from the last turn.",
+        if n == 1 { "" } else { "s" }
+    );
+    p.text(
+        x + 6,
+        top + 2,
+        &trunc(&safe, usize::from(b.width - 7)),
+        fg(TEXT_2),
+    );
+    p.segs(
+        x + 6,
+        top + 4,
+        &[
+            key("r", true),
+            seg(" resume session   ", fg(TEXT_2)),
+            key("R", false),
+            seg(" restart clean   ", fg(TEXT_2)),
+            key("l", false),
+            seg(" show log   ", fg(TEXT_2)),
+            key("x", false),
+            seg(" dismiss", fg(TEXT_2)),
+        ],
+        b.width - 7,
     );
 }
 
-fn draw_help(frame: &mut Frame, app: &App) {
-    let p = app.prefix_label();
+// ---------- right card ----------
+
+/// The design's `right2`: changes with their diffstat bar, the pull request, the branch.
+fn right(p: &mut Painter, app: &App, card: Rect, g: &mut Geometry) {
+    let focused = app.focus == Focus::Right && app.picker.is_none();
+    let (x, y, w, hh) = (card.x, card.y, card.width, card.height);
+    p.card(x, y, w, hh, PANEL, if focused { 7 } else { 0 });
+    let wt = app.open_wt();
+    let files = app.open_files();
+    let (add, del) = totals(&files);
+    let title = if focused { ACCENT } else { TEXT };
+    p.line(
+        x + 2,
+        y + 1,
+        &[
+            seg("changes", bold(title)),
+            seg(format!("  {}", files.len()), fg(TEXT_2)),
+        ],
+    );
+    p.rsegs(
+        x + w - 2,
+        y + 1,
+        &[
+            seg(format!("+{add}"), fg(DONE)),
+            seg(format!(" −{del}"), fg(FAILED)),
+        ],
+    );
+
+    // What comes after the files keeps its rows; the files scroll in what is left.
+    let pr_rows = wt.pr.as_ref().map_or(3, |pr| 3 + pr.checks.len() as u16);
+    let after = 13 + pr_rows;
+    let room = usize::from(hh.saturating_sub(2 + 3 + after)).max(1);
+    let offset = (app.file + 1).saturating_sub(room);
+    let mut r = y + 3;
+    for (index, f) in files.iter().enumerate().skip(offset).take(room) {
+        let cursor = focused && index == app.file;
+        if cursor {
+            p.tint(x + 1, r, w - 2, 1, FOCUS_SEL);
+            p.text(x + 1, r, "▎", fg(ACCENT).bg(c(FOCUS_SEL)));
+        }
+        g.files.push((r, index));
+        let colour = match f.kind {
+            'A' => DONE,
+            'D' => FAILED,
+            _ => WORKING,
+        };
+        p.text(x + 2, r, &f.kind.to_string(), bold(colour));
+        let mut count = Vec::new();
+        if f.add > 0 {
+            count.push(seg(format!("+{}", f.add), fg(DONE)));
+        }
+        if f.del > 0 {
+            let lead = if f.add > 0 { " " } else { "" };
+            count.push(seg(format!("{lead}−{}", f.del), fg(FAILED)));
+        }
+        let cw = segs_len(&count);
+        let (dir, base) = match f.path.rfind('/') {
+            Some(i) => (&f.path[..=i], &f.path[i + 1..]),
+            None => ("", f.path.as_str()),
+        };
+        let name_style = match (cursor, f.kind) {
+            (true, _) => bold(ACCENT),
+            (_, 'D') => fg(TEXT_2),
+            _ => fg(TEXT),
+        };
+        let base_room = usize::from((x + w).saturating_sub(5 + cw + x + 4));
+        let ex = p.text(x + 4, r, &trunc(base, base_room), name_style);
+        if !dir.is_empty() {
+            let dir_room = (x + w).saturating_sub(4 + cw + ex + 1);
+            p.text(
+                ex + 1,
+                r,
+                &trunc_left(dir, usize::from(dir_room)),
+                fg(TEXT_2),
+            );
+        }
+        p.rsegs(x + w - 2, r, &count);
+        r += 1;
+    }
+    r += 1;
+    let bw = w - 4;
+    if add + del > 0 {
+        let ga = ((f64::from(bw) * f64::from(add) / f64::from(add + del)).round()) as u16;
+        p.text(x + 2, r, &"━".repeat(usize::from(ga)), fg(DONE));
+        p.text(x + 2 + ga, r, &"━".repeat(usize::from(bw - ga)), fg(FAILED));
+    }
+    r += 3;
+    p.label(x + 2, x + w - 2, r, "pull request", TEXT_2);
+    r += 2;
+    match &wt.pr {
+        Some(pr) => {
+            p.segs(
+                x + 2,
+                r,
+                &[
+                    seg(format!("#{}", pr.number), bold(TEXT)),
+                    seg(format!(" {}", pr.title), fg(TEXT)),
+                ],
+                w - 4,
+            );
+            p.text(x + 2, r + 1, pr.summary, fg(TEXT_2));
+            r += 3;
+            for check in &pr.checks {
+                let tok = theme::state_tok(check.state);
+                p.text(
+                    x + 2,
+                    r,
+                    &theme::glyph(check.state, 0).to_string(),
+                    bold(tok),
+                );
+                p.text(x + 4, r, check.name, fg(TEXT));
+                let detail = if check.state == State::Failed {
+                    FAILED
+                } else {
+                    TEXT_2
+                };
+                p.rtext(x + w - 2, r, check.detail, fg(detail));
+                r += 1;
+            }
+        }
+        None => {
+            p.line(
+                x + 2,
+                r,
+                &[seg("○", fg(TEXT_2)), seg("  none yet", fg(TEXT_2))],
+            );
+            r += 2;
+            p.line(
+                x + 2,
+                r,
+                &[key("^a P", false), seg("  open a draft", fg(TEXT_2))],
+            );
+            r += 1;
+        }
+    }
+    r += 2;
+    p.label(x + 2, x + w - 2, r, "branch", TEXT_2);
+    r += 2;
+    p.segs(
+        x + 2,
+        r,
+        &[
+            seg(wt.name, fg(TEXT)),
+            seg(" → ", fg(TEXT_2)),
+            seg("main", fg(TEXT)),
+        ],
+        w - 4,
+    );
+    p.line(
+        x + 2,
+        r + 1,
+        &[
+            seg(format!("↑{}", wt.ahead), bold(TEXT)),
+            seg(" ahead  ", fg(TEXT_2)),
+            seg("↓0", bold(TEXT)),
+            seg(" behind", fg(TEXT_2)),
+        ],
+    );
+    let n = files.len();
+    let uncommitted = format!("{n} file{} uncommitted", if n == 1 { "" } else { "s" });
+    p.text(x + 2, r + 2, &uncommitted, fg(TEXT_2));
+}
+
+// ---------- status bar ----------
+
+/// The design's `status2`: the pill, where the keys go, the counts, the hints.
+fn status(p: &mut Painter, app: &App, area: Rect) {
+    let (y, w) = (area.y, area.width);
+    let prefix = app.pending.is_some();
+    let sb = if prefix { FOCUS_BG } else { CANVAS };
+    p.fill(0, y, w, 1, sb);
+    let narrow = w < 150;
+    let pfx = format!("^{}", app.prefix);
+    let mut x = if prefix {
+        let label = format!("^{}", app.prefix.to_ascii_uppercase());
+        p.line(1, y, &pill(&label, ACCENT, BG, sb))
+    } else {
+        p.line(1, y, &pill("orca", SELECTION, TEXT, sb))
+    } + 2;
+
+    let wt = app.open_wt();
+    let pane = if app.picker.is_some() {
+        "picker"
+    } else {
+        match app.focus {
+            Focus::Sidebar => "worktrees",
+            Focus::Right => "changes",
+            Focus::Centre => TERMINALS[app.current()],
+        }
+    };
+    x = p.line(
+        x,
+        y,
+        &[
+            seg(
+                theme::glyph(wt.state, app.tick).to_string(),
+                bold(theme::state_tok(wt.state)),
+            ),
+            seg(format!(" {}", app.location(app.open)), bold(TEXT)),
+            seg(format!("  {pane}"), fg(TEXT_2)),
+        ],
+    );
+    if app.zoom {
+        x = p.line(x + 2, y, &pill("zoom", FOCUS_SEL, ACCENT, sb));
+    }
+    x += 4;
+
+    let hints: Vec<(String, &str)> = if prefix {
+        vec![
+            ("h l".into(), "focus"),
+            ("j k".into(), "worktree"),
+            ("z".into(), "zoom"),
+            ("|".into(), "split"),
+            ("w".into(), "picker"),
+            ("f".into(), "files"),
+            ("a".into(), "send ^A"),
+            ("esc".into(), "cancel"),
+        ]
+    } else if narrow {
+        vec![
+            (pfx.clone(), "prefix"),
+            (format!("{pfx} h l"), "focus"),
+            (format!("{pfx} j k"), "worktree"),
+            (format!("{pfx} ?"), "help"),
+        ]
+    } else {
+        vec![
+            (pfx.clone(), "prefix"),
+            (format!("{pfx} h l"), "focus"),
+            (format!("{pfx} j k"), "worktree"),
+            (format!("{pfx} z"), "zoom"),
+            (format!("{pfx} |"), "split"),
+            (format!("{pfx} ?"), "help"),
+        ]
+    };
+    let hint_segs = |hints: &[(String, &str)]| -> Vec<Seg> {
+        let mut out = Vec::new();
+        for (i, (k, l)) in hints.iter().enumerate() {
+            out.push(key(k, prefix));
+            let gap = if i + 1 < hints.len() { "  " } else { " " };
+            out.push(seg(format!(" {l}{gap}"), fg(TEXT_2)));
+        }
+        out
+    };
+    let counts = crate::fleet::counts(&app.fleet);
+    let count_segs = |labels: bool| -> Vec<Seg> {
+        let mut out = Vec::new();
+        let marks = [
+            ('?', WAITING, "needs you"),
+            ('✗', FAILED, "failed"),
+            ('◐', WORKING, "running"),
+            ('○', TEXT_2, "quiet"),
+        ];
+        for (i, (g, tok, label)) in marks.iter().enumerate() {
+            out.push(seg(g.to_string(), bold(*tok)));
+            out.push(seg(format!(" {}", counts[i]), bold(TEXT)));
+            if labels {
+                out.push(seg(format!(" {label}"), fg(TEXT_2)));
+            }
+            if i + 1 < marks.len() {
+                out.push(seg("   ", fg(TEXT)));
+            }
+        }
+        out
+    };
+
+    // The right-hand side: the hints, or a message for a while. Neither may run into the
+    // counts: the counts lose their labels first, then the first hints go.
+    let message = app
+        .message
+        .as_ref()
+        .filter(|_| !prefix)
+        .map(|(text, _)| text.clone());
+    let end = w - 1;
+    let mut right = match &message {
+        Some(text) => vec![seg(format!("{text} "), fg(TEXT))],
+        None => hint_segs(&hints),
+    };
+    // At least two cells between the counts and what is on the right.
+    let mut labels = !narrow;
+    if labels && x + segs_len(&count_segs(true)) + 2 > end.saturating_sub(segs_len(&right)) {
+        labels = false;
+    }
+    let counts_end = x + segs_len(&count_segs(labels)) + 2;
+    let mut first = 0;
+    while message.is_none()
+        && first + 1 < hints.len()
+        && counts_end > end.saturating_sub(segs_len(&right))
+    {
+        first += 1;
+        right = hint_segs(&hints[first..]);
+    }
+    if let Some(text) = &message {
+        let room = usize::from(end.saturating_sub(counts_end));
+        right = vec![seg(
+            format!("{} ", trunc(text, room.saturating_sub(1))),
+            fg(TEXT),
+        )];
+    }
+    p.line(x, y, &count_segs(labels));
+    p.rsegs(end, y, &right);
+}
+
+// ---------- overlays ----------
+
+/// Dims what is under an overlay: text turns VEIL; the cards keep their shapes.
+fn veil(p: &mut Painter, area: Rect) {
+    for y in 0..area.height.saturating_sub(1) {
+        for x in 0..area.width {
+            let cell = &mut p.buf[(x, y)];
+            let symbol = cell.symbol();
+            if !"▄▀▗▖▝▘▐▌▁▎".contains(symbol) || symbol.is_empty() {
+                cell.fg = c(VEIL);
+                cell.modifier = ratatui::style::Modifier::empty();
+            }
+        }
+    }
+}
+
+/// `^a w`: every worktree in a floating card, the cursor in FOCUS_SEL with its `▎`.
+fn picker(p: &mut Painter, app: &App, area: Rect) {
+    let Some(at) = app.picker else {
+        return;
+    };
+    veil(p, area);
+    let rows = app.fleet.len() * 2 + app.order.len() + 6;
+    let w = 64.min(area.width - 4);
+    let h = (rows as u16).min(area.height - 3);
+    let x = (area.width - w) / 2;
+    let y = (area.height - 1 - h) / 2;
+    p.card(x, y, w, h, PANEL, 15);
+    p.text(x + 2, y + 1, "switch worktree", bold(ACCENT));
+    p.rtext(x + w - 2, y + 1, "^a w", fg(TEXT_2));
+    let mut r = y + 3;
+    let limit = y + h - 3;
+    for (pi, project) in app.fleet.iter().enumerate() {
+        if r >= limit {
+            break;
+        }
+        let initial = project.name.chars().next().unwrap_or(' ').to_string();
+        p.line(x + 1, r, &pill(&initial, RAISED, TEXT, PANEL));
+        p.text(x + 5, r, project.name, bold(TEXT));
+        r += 1;
+        if project.worktrees.is_empty() {
+            p.text(x + 6, r, "no worktrees yet", italic(TEXT_2));
+            r += 1;
+        }
+        for (wi, t) in project.worktrees.iter().enumerate() {
+            if r >= limit {
+                break;
+            }
+            let k = (pi, wi);
+            let cursor = app.order[at] == k;
+            if cursor {
+                p.tint(x + 1, r, w - 2, 1, FOCUS_SEL);
+                p.text(x + 1, r, "▎", fg(ACCENT).bg(c(FOCUS_SEL)));
+            }
+            let state = theme::state_tok(t.state);
+            p.text(
+                x + 4,
+                r,
+                &theme::glyph(t.state, app.tick).to_string(),
+                bold(state),
+            );
+            let name = if cursor { ACCENT } else { TEXT };
+            p.text(x + 6, r, &trunc(t.name, 14), bold(name));
+            p.text(x + 21, r, &trunc(t.branch, 18), fg(TEXT_2));
+            let room = usize::from(w).saturating_sub(48);
+            p.text(x + 40, r, &trunc(t.last_message, room), fg(TEXT_2));
+            p.rtext(x + w - 3, r, t.age, fg(TEXT_2));
+            r += 1;
+        }
+        r += 1;
+    }
+    p.line(
+        x + 2,
+        y + h - 2,
+        &[
+            key("↑↓", false),
+            seg(" move  ", fg(TEXT_2)),
+            key("enter", false),
+            seg(" open  ", fg(TEXT_2)),
+            key("esc", false),
+            seg(" close", fg(TEXT_2)),
+        ],
+    );
+}
+
+/// `^a ?`: every key, in a card.
+fn help(p: &mut Painter, app: &App, area: Rect) {
+    let k = format!("^{}", app.prefix);
     let rows: Vec<(String, &str)> = vec![
         (
-            format!("{p} h / l"),
-            "focus the column to the left / right (also ← →)",
+            format!("{k} h l"),
+            "focus left / right: side menu, centre, right card",
         ),
         (
-            format!("{p} j / k"),
-            "select the next / previous worktree or project",
-        ),
-        (format!("{p} 1 2 3"), "the worktree's agent / nvim / shell"),
-        (format!("{p} n / p"), "the next / previous of the three"),
-        (format!("{p} z"), "zoom the panel with the focus, and back"),
-        (
-            format!("{p} |"),
-            "agent and nvim side by side, and back (A, C)",
-        ),
-        (format!("{p} s"), "show / hide the side menu"),
-        (format!("{p} r"), "show / hide the changes and checks"),
-        (
-            format!("{p} v"),
-            "the next layout variant (A Orca, B Panes, C Focus)",
+            String::new(),
+            "in the split agent and nvim; zoomed, stays zoomed",
         ),
         (
-            format!("{p} {p}"),
-            "send the control key itself to the terminal",
+            format!("{k} j k"),
+            "next / previous worktree, opened at once",
         ),
-        (format!("{p} ?"), "this help"),
-        (format!("{p} q"), "quit"),
+        (format!("{k} 1 2 3"), "the agent, nvim or shell tab"),
+        (
+            format!("{k} z"),
+            "zoom the terminal with the focus, and back",
+        ),
+        (format!("{k} |"), "agent | nvim side by side, and back"),
+        (format!("{k} w"), "the floating worktree picker"),
+        (format!("{k} f"), "show / hide the changed files"),
+        (
+            format!("{k} P"),
+            "open a draft pull request (not in the prototype)",
+        ),
+        (format!("{k} a"), "send Ctrl-a itself to the terminal"),
+        (format!("{k} ?"), "this help"),
+        (format!("{k} q"), "quit"),
+        ("esc".into(), "cancel the prefix"),
         (String::new(), ""),
         (
-            "side menu".to_owned(),
-            "j / k move, Enter or l to the terminal, q quit",
+            "side menu".into(),
+            "j k or ↑ ↓ move, enter opens, n new, / filter",
+        ),
+        ("changes".into(), "j k move, enter opens the file in nvim"),
+        (
+            "agent failed".into(),
+            "r resume, R restart clean, l log, x dismiss",
         ),
         (
-            "right column".to_owned(),
-            "j / k move, Enter opens in nvim, h back",
+            "terminals".into(),
+            "take every other key; the wheel scrolls",
         ),
-        (
-            "on top (C)".to_owned(),
-            "Esc closes the side menu or the right column",
-        ),
-        (
-            "a terminal".to_owned(),
-            "takes every key but the prefix; Enter restarts",
-        ),
-        (String::new(), "one that exited; the wheel scrolls it"),
-        ("mouse".to_owned(), "a click focuses the panel under it"),
     ];
-    let area = frame.area();
-    let width = 74.min(area.width);
-    let height = (rows.len() as u16 + 4).min(area.height);
-    let outer = Rect {
-        x: (area.width - width) / 2,
-        y: (area.height - height) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, outer);
-    let lines: Vec<Line> = std::iter::once(Line::default())
-        .chain(rows.into_iter().map(|(keys, what)| {
-            Line::from(vec![
-                Span::styled(format!("  {keys:<14}"), Style::new().fg(ACCENT)),
-                Span::raw(what),
-            ])
-        }))
-        .collect();
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ACCENT))
-        .title(" keys ")
-        .title_bottom(" any key closes ");
-    frame.render_widget(Paragraph::new(lines).block(block), outer);
+    let w = 76.min(area.width - 4);
+    let h = (rows.len() as u16 + 6).min(area.height - 3);
+    let x = (area.width - w) / 2;
+    let y = (area.height - 1 - h) / 2;
+    veil(p, area);
+    p.card(x, y, w, h, PANEL, 4);
+    p.text(x + 2, y + 1, "keys", bold(ACCENT));
+    for (i, (keys, what)) in rows.iter().enumerate() {
+        let r = y + 3 + i as u16;
+        if r >= y + h - 2 {
+            break;
+        }
+        if !keys.is_empty() {
+            p.line(x + 2, r, &[key(keys, false)]);
+        }
+        p.text(x + 18, r, &trunc(what, usize::from(w - 20)), fg(TEXT_2));
+    }
+    p.text(x + 2, y + h - 2, "any key closes", italic(TEXT_2));
 }

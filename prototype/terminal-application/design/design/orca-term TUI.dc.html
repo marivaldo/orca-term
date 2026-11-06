@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400&amp;display=swap" rel="stylesheet">
+<style>html{background:#0a0b0d}body{margin:0;min-height:100vh;background:#0a0b0d;color:#dde1e6;font-family:'JetBrains Mono',monospace}a{color:#b9a2ff}a:hover{color:#dde1e6}</style>
+</helmet>
+<section data-screen-label="Quiet v2" style="padding:72px 72px 24px;display:flex;flex-direction:column;gap:28px;font-family:'JetBrains Mono',monospace">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:1150px">
+    <div style="font-size:28px;font-weight:700;color:#dde1e6">4 · Quiet v2 — mais atual</div>
+    <div style="font-size:14px;line-height:22px;color:#9aa2ac;text-wrap:pretty">Mesma grade, mesmas restrições. O que muda: painéis viram cartões com cantos e margens de meia linha (▗▄▖ ▝▀▘); o foco é um traço accent fino (▁) só sobre o título/aba ativa do cartão; seleção vira pílula recuada (▐ ▌); teclas viram keycaps; seções com rótulo + régua fina; nomes de arquivo com diretório esmaecido e barra de diffstat; dicas contextuais só no painel focado. Referências: Charm (crush, lipgloss), Textual (posting, harlequin), yazi, superfile, btop.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div id="4a" data-screen-label="4a Quiet v2" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4a</span><span style="font-size:18px;font-weight:700">180×48 · foco no agent</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Sidebar "Projects": avatar de letra + nome; agente escrito por extenso, sem ícones sem rótulo. Item selecionado é um cartão com cantos de meia linha. Cada worktree em 3 linhas: estado + nome (+ primary), branch + PR, check + agente + última mensagem + idade. Tampa accent no cartão do centro + aba ativa em pílula lilás. A lista sem foco mantém o worktree aberto numa pílula neutra.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Main }}</div>
+    </div>
+    <div id="4b" data-screen-label="4b Quiet v2 split" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4b</span><span style="font-size:18px;font-weight:700">agent | nvim · prefixo ativo</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Cada metade é um cartão; só o nvim tem tampa. Com Ctrl-a pendente, o status vira focus-bg e as keycaps acendem em lilás.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Split }}</div>
+    </div>
+    <div id="4d" data-screen-label="4d Quiet v2 zoom" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4d</span><span style="font-size:18px;font-weight:700">zoom a partir do split (Ctrl-a z)</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px;text-wrap:pretty">O zoom vale para o painel com foco. A partir de <a href="#4b">4b</a>, com o nvim focado, ele ocupa a tela inteira. O cabeçalho mostra que existe um split por trás (agent | nvim, painel atual em accent). Ctrl-a z volta ao split com o mesmo tamanho e o mesmo foco; Ctrl-a h/l durante o zoom troca para o agent e continua em zoom.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Zoom }}</div>
+    </div>
+    <div id="4e" data-screen-label="4e falhou" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4e</span><span style="font-size:18px;font-weight:700">agente falhou · conexão caiu</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px;text-wrap:pretty">✗ na lista e no status (contagem "failed" separada de "needs you"). No centro, abaixo da saída real do agente, um cartão do próprio orca-term diz o que aconteceu, garante que nada se perdeu e oferece a ação principal primeiro (r retoma a sessão).</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Fail }}</div>
+    </div>
+    <div id="4f" data-screen-label="4f NO_COLOR" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4f</span><span style="font-size:18px;font-weight:700">NO_COLOR · mesmo estado de <a href="#4b">4b</a></span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px;text-wrap:pretty">Sem cor, só atributos: foco = vídeo reverso na aba/pílula e título sublinhado; seleção sem foco = réguas ─ acima e abaixo; prefixo ativo = status inteiro em reverso; texto secundário = atributo faint (SGR 2). Os glifos de estado carregam o significado sozinhos.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Mono }}</div>
+    </div>
+    <div id="4g" data-screen-label="4g NO_COLOR 120x36" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4g</span><span style="font-size:18px;font-weight:700">NO_COLOR · lista com foco</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:864px;text-wrap:pretty">O cursor da lista focada vira um bloco em reverso.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2MonoN }}</div>
+    </div>
+    <div id="4c" data-screen-label="4c Quiet v2 120x36" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">4c</span><span style="font-size:18px;font-weight:700">120×36 · foco na lista</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:864px;text-wrap:pretty">Lista focada: tampa accent, pílula lilás no cursor e keycaps de ação no rodapé do cartão. Arquivos recolhidos no cabeçalho (Ctrl-a f).</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ v2Narrow }}</div>
+    </div>
+  </div>
+</section>
+<section data-screen-label="Direções" style="padding:72px 72px 24px;display:flex;flex-direction:column;gap:28px;font-family:'JetBrains Mono',monospace">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:1100px">
+    <div style="font-size:28px;font-weight:700;color:#dde1e6">orca-term — 1 · três direções, 180×48</div>
+    <div style="font-size:14px;line-height:22px;color:#9aa2ac;text-wrap:pretty">Tudo é célula: cada tela é um buffer de 180×48 renderizado célula a célula (fg, bg, negrito, itálico). Regra comum às três: <span style="color:#b9a2ff">accent só aparece onde as teclas vão</span>. Seleção é um fundo neutro que fica mesmo sem foco.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div id="1a" data-screen-label="1a Quiet" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">1a</span><span style="font-size:18px;font-weight:700">Quiet</span><span style="font-size:13px;color:#0e1013;background:#7fcf98;padding:2px 8px;font-weight:700">recomendada</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Sem bordas. Laterais em <b style="color:#dde1e6">panel</b>, terminal em <b style="color:#dde1e6">bg</b>. A linha 0 é a linha de cabeçalhos: o painel com foco (aqui o agent) ganha fundo focus-bg e título em accent. O worktree aberto fica com fundo selection; o ▌ accent só aparece se a lista tiver o foco.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrA }}</div>
+    </div>
+    <div id="1b" data-screen-label="1b Framed" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">1b</span><span style="font-size:18px;font-weight:700">Framed</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Bordas arredondadas com título na borda. Foco = borda inteira em accent; demais bordas em border (não é texto). Abas do centro vivem na borda superior. Aqui o foco está na lista e o worktree aberto é docs-refresh, para mostrar o estado "terminou" e os checks do PR.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrB }}</div>
+    </div>
+    <div id="1c" data-screen-label="1c Focus" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">1c</span><span style="font-size:18px;font-weight:700">Focus</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Um terminal em tela cheia. A frota vira uma faixa na linha 0 (o worktree aberto "funde" com o terminal, como uma aba ativa); a linha 1 resume arquivos e PR. Ctrl-a w abre o seletor flutuante; o terminal atrás é velado.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrC }}</div>
+    </div>
+  </div>
+</section>
+<section data-screen-label="Variações Quiet" style="padding:48px 72px 24px;display:flex;flex-direction:column;gap:28px;font-family:'JetBrains Mono',monospace">
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:1100px">
+    <div style="font-size:28px;font-weight:700">2 · variações da direção Quiet</div>
+    <div style="font-size:14px;line-height:22px;color:#9aa2ac">Dividido, zoom e 120×36. Mesmo vocabulário: cabeçalho do painel focado em focus-bg + accent; prefixo ativo pinta a linha de status inteira.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+    <div id="2a" data-screen-label="2a Split" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">2a</span><span style="font-size:18px;font-weight:700">agent | nvim · prefixo ativo</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">Ctrl-a | divide. Cada metade tem seu próprio cabeçalho; o foco está no nvim (cursor de bloco visível só nele). Ctrl-a acabou de ser pressionado: status em focus-bg, badge ^A e as teclas seguintes em accent.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrSplit }}</div>
+    </div>
+    <div id="2b" data-screen-label="2b Zoom" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">2b</span><span style="font-size:18px;font-weight:700">zoom (Ctrl-a z) no nvim</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1296px">O painel ocupa 180 colunas. As laterais somem, mas a frota continua no status (contagens). ZOOM aparece no cabeçalho e no status.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrZoom }}</div>
+    </div>
+    <div id="2c" data-screen-label="2c 120x36" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">2c</span><span style="font-size:18px;font-weight:700">120×36 · foco na lista</span></div>
+      <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:864px;text-wrap:pretty">Lista com 30 colunas; o painel de arquivos recolhe para um resumo no cabeçalho (Ctrl-a f abre como sobreposição). O agent rola e mostra o fim da conversa. Status com contagens compactas.</div>
+      <div style="border:1px solid #262a30;width:max-content">{{ scrNarrow }}</div>
+    </div>
+  </div>
+</section>
+<section data-screen-label="Tokens" style="padding:48px 72px 96px;display:flex;flex-direction:column;gap:28px;font-family:'JetBrains Mono',monospace">
+  <div id="3a" style="display:flex;flex-direction:column;gap:8px;max-width:1100px">
+    <div style="display:flex;gap:12px;align-items:center"><span style="background:#b9a2ff;color:#0e1013;font-weight:700;padding:3px 9px;font-size:14px">3a</span><span style="font-size:28px;font-weight:700">3 · tokens</span></div>
+    <div style="font-size:14px;line-height:22px;color:#9aa2ac;text-wrap:pretty">Fallback = cor ANSI-256 mais próxima (calculada). Contraste = pior caso do texto sobre as 5 superfícies (bg, panel, raised, selection, focus-bg), em truecolor e em 256 cores. Uma cor de destaque (accent) além das cores de estado.</div>
+  </div>
+  <div style="display:grid;grid-template-columns:auto auto auto auto auto minmax(0,1fr) auto auto;gap:0;max-width:1400px;font-size:13px;line-height:20px">
+    <div style="padding:8px 14px 8px 0;color:#9aa2ac;border-bottom:1px solid #262a30">cor</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">token</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">hex</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">256</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">fallback</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">papel</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">contraste</div>
+    <div style="padding:8px 14px;color:#9aa2ac;border-bottom:1px solid #262a30">256</div>
+    <sc-for list="{{ tokens }}" as="t" hint-placeholder-count="14">
+      <div style="padding:8px 14px 8px 0;border-bottom:1px solid #1a1d21"><div style="width:44px;height:20px;background:{{ t.hex }};outline:1px solid #2b3037"></div></div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21;font-weight:700">{{ t.name }}</div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21">{{ t.hex }}</div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21;display:flex;gap:8px;align-items:center;height:20px"><div style="flex:none;width:20px;height:20px;background:{{ t.ansiHex }};outline:1px solid #2b3037"></div><span>{{ t.ansi }}</span></div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21;color:#9aa2ac">{{ t.ansiHex }}</div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21;color:#9aa2ac;text-wrap:pretty">{{ t.role }}</div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21">{{ t.cr }}</div>
+      <div style="padding:8px 14px;border-bottom:1px solid #1a1d21">{{ t.crFb }}</div>
+    </sc-for>
+  </div>
+  <div style="font-size:13px;line-height:20px;color:#9aa2ac;max-width:1100px;text-wrap:pretty">Em 256 cores, focus-bg e selection caem no mesmo 236. O foco continua legível porque nunca depende só do fundo: título em accent no cabeçalho e ▌ accent na linha do cursor.</div>
+  <div style="border:1px solid #262a30;width:max-content">{{ legend }}</div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  build() {
+    const h = React.createElement;
+    const C = { bg:'#0e1013', panel:'#171a1f', raised:'#1f2329', sel:'#2a2f37', focusBg:'#2a2340', border:'#343a43', shade:'#50565f', text:'#dde1e6', dim:'#9aa2ac', accent:'#b9a2ff', canvas:'#060708', fsel:'#2f2850', wait:'#e8b85a', work:'#67b7f0', done:'#7fcf98', fail:'#f07f7f' };
+    const len = s => [...s].length;
+    const trunc = (s, n) => len(s) <= n ? s : [...s].slice(0, Math.max(0, n - 1)).join('') + '…';
+    const truncL = (s, n) => len(s) <= n ? s : '…' + [...s].slice(len(s) - n + 1).join('');
+    const pad = (s, n) => s + ' '.repeat(Math.max(0, n - len(s)));
+    const wrap = (t, w) => { const out = []; let l = ''; for (const wd of t.split(' ')) { if (!l) l = wd; else if (len(l) + 1 + len(wd) <= w) l += ' ' + wd; else { out.push(l); l = wd; } } if (l) out.push(l); return out; };
+
+    class Buf {
+      constructor(w, hh) { this.w = w; this.h = hh; this.c = Array.from({ length: w * hh }, () => ({ ch:' ', fg:C.text, bg:C.bg, b:0, i:0, u:0 })); }
+      at(x, y) { return x >= 0 && y >= 0 && x < this.w && y < this.h ? this.c[y * this.w + x] : null; }
+      fill(x, y, w, hh, bg) { for (let j = 0; j < hh; j++) for (let i = 0; i < w; i++) { const c = this.at(x + i, y + j); if (c) { c.ch = ' '; c.bg = bg; c.fg = C.text; c.b = c.i = c.u = 0; } } }
+      tint(x, y, w, hh, bg) { for (let j = 0; j < hh; j++) for (let i = 0; i < w; i++) { const c = this.at(x + i, y + j); if (c) c.bg = bg; } }
+      veil(x, y, w, hh) { for (let j = 0; j < hh; j++) for (let i = 0; i < w; i++) { const c = this.at(x + i, y + j); if (c) { c.fg = C.shade; c.bg = C.bg; c.b = 0; } } }
+      put(x, y, s, st = {}, max = 1e9) { let i = 0; for (const ch of s) { if (i >= max) break; const c = this.at(x + i, y); if (c) { c.ch = ch; c.fg = st.fg || C.text; if (st.bg) c.bg = st.bg; c.b = st.b ? 1 : 0; c.i = st.i ? 1 : 0; c.u = st.u ? 1 : 0; } i++; } return x + i; }
+      segs(x, y, ss, max = 1e9) { let cx = x; const end = x + max; for (const [t, st] of ss) { if (cx >= end) break; cx = this.put(cx, y, t, st || {}, end - cx); } return cx; }
+      rput(xe, y, s, st) { return this.put(xe - len(s), y, s, st); }
+      rsegs(xe, y, ss) { const n = ss.reduce((a, [t]) => a + len(t), 0); this.segs(xe - n, y, ss); return xe - n; }
+    }
+    const box = (b, x, y, w, hh, fg) => { b.put(x, y, '╭' + '─'.repeat(w - 2) + '╮', { fg }); for (let j = 1; j < hh - 1; j++) { b.put(x, y + j, '│', { fg }); b.put(x + w - 1, y + j, '│', { fg }); } b.put(x, y + hh - 1, '╰' + '─'.repeat(w - 2) + '╯', { fg }); };
+    const drawLines = (b, x, y, w, hh, L, anchor) => { const s = anchor === 'bottom' ? Math.max(0, L.length - hh) : 0; for (let i = 0; i < hh && s + i < L.length; i++) b.segs(x, y + i, L[s + i], w); };
+
+    const WT = [
+      { id:'fix-login', proj:'app', st:'wait', sum:'Which login flow should stay?', agent:'claude', age:'2m', unseen:true },
+      { id:'api-cache', proj:'app', st:'work', sum:'Editing src/cache.rs', agent:'claude', age:'now' },
+      { id:'docs-refresh', proj:'app', st:'done', sum:'3 files changed', agent:'opencode', age:'1h', pr:'#131' },
+      { id:'rate-limit', proj:'api', st:'idle', sum:'no changes', agent:'claude', age:'3d' },
+    ];
+    const G = { wait:'?', work:'◐', done:'●', idle:'○', fail:'✗' };
+    const COL = { wait:C.wait, work:C.work, done:C.done, idle:C.dim, fail:C.fail };
+    const SECT = [['NEEDS YOU', ['wait','fail'], C.wait], ['RUNNING', ['work'], C.work], ['QUIET', ['done','idle'], C.dim]];
+    const PROJ = [['app','main','3 worktrees'], ['api','main','1 worktree'], ['empty','','no worktrees yet']];
+    const FILES = {
+      'fix-login': [['M','src/auth/login.rs',18,9], ['M','src/auth/session.rs',6,2], ['A','src/auth/flag.rs',31,0], ['D','templates/password.html',0,10]],
+      'retry-jobs': [['M','src/jobs/runner.rs',22,4], ['A','src/jobs/backoff.rs',38,0]],
+      'docs-refresh': [['M','README.md',41,9], ['M','CONTRIBUTING.md',12,3], ['A','CHANGELOG.md',11,0]],
+    };
+    const FCOL = { M:C.work, A:C.done, D:C.fail };
+    const CHECKS = [['done','build','1m 12s'], ['done','lint','38s'], ['fail','spellcheck','2 errors'], ['work','preview deploy','running'], ['wait','review','requested']];
+
+    // ---------- sidebar ----------
+    const header = (b, x, y, w, title, focused, right) => {
+      b.fill(x, y, w, 1, focused ? C.focusBg : C.raised);
+      b.put(x + 1, y, title, { fg: focused ? C.accent : C.dim, b:1 });
+      if (right) b.rsegs(x + w - 1, y, right);
+    };
+    const item = (b, x, r, w, t, o) => {
+      const s = t.id === o.sel;
+      if (s) { b.tint(x, r, w, 2, C.sel); b.put(x, r, '▌', { fg: o.focused ? C.accent : C.shade }); b.put(x, r + 1, '▌', { fg: o.focused ? C.accent : C.shade }); }
+      b.put(x + 2, r, G[t.st], { fg: COL[t.st], b:1 });
+      const right = t.agent + '  ' + t.age;
+      b.put(x + 4, r, trunc(t.id, w - 8 - len(right)), { b: s || (t.unseen && t.id !== o.current) });
+      b.rput(x + w - 3, r, right, { fg: C.dim });
+      if (t.unseen && t.id !== o.current) b.put(x + w - 2, r, '•', { fg: COL[t.st], b:1 });
+      b.put(x + 4, r + 1, trunc(t.proj + ' · ' + t.sum + (t.pr ? ' · PR ' + t.pr : ''), w - 6), { fg: C.dim });
+    };
+    const sidebar = (b, x, y, w, hh, o) => {
+      b.fill(x, y, w, hh, o.bg);
+      let r = y;
+      if (o.header) { header(b, x, y, w, 'WORKTREES', o.focused, [['4', { fg: o.focused ? C.accent : C.dim }]]); r += 2; } else r += 1;
+      for (const [name, sts, col] of SECT) {
+        const items = WT.filter(t => sts.includes(t.st));
+        b.segs(x + 2, r, [[name, { fg: col, b:1 }], ['  ' + items.length, { fg: C.dim }]]); r++;
+        for (const t of items) { item(b, x, r, w, t, o); r += 3; }
+      }
+      b.put(x + 2, r, 'PROJECTS', { fg: C.dim, b:1 }); r++;
+      for (const [n, br, info] of PROJ) {
+        b.put(x + 4, r, n);
+        if (br) { b.put(x + 11, r, br, { fg: C.dim }); b.rput(x + w - 2, r, info.split(' ')[0], { fg: C.dim }); }
+        else b.put(x + 11, r, info, { fg: C.dim, i:1 });
+        r++;
+      }
+    };
+
+    // ---------- right pane ----------
+    const totals = wt => { const F = FILES[wt]; return [F.reduce((a, f) => a + f[2], 0), F.reduce((a, f) => a + f[3], 0)]; };
+    const changes = (b, x, y, w, wt) => {
+      let r = y;
+      for (const [k, p, a, d] of FILES[wt]) {
+        b.put(x + 2, r, k, { fg: FCOL[k], b:1 });
+        const cnt = [];
+        if (a) cnt.push(['+' + a, { fg: C.done }]);
+        if (d) cnt.push([(a ? ' ' : '') + '−' + d, { fg: C.fail }]);
+        const cw = cnt.reduce((s, [t]) => s + len(t), 0);
+        b.put(x + 4, r, truncL(p, w - 7 - cw), k === 'D' ? { fg: C.dim } : {});
+        b.rsegs(x + w - 2, r, cnt);
+        r++;
+      }
+      return r;
+    };
+    const pr = (b, x, y, w, wt) => {
+      let r = y;
+      if (wt !== 'docs-refresh') {
+        b.put(x + 2, r++, 'no pull request yet', { fg: C.dim });
+        b.segs(x + 2, r++, [['^a P', { b:1 }], ['  open a draft', { fg: C.dim }]]);
+        return r;
+      }
+      b.segs(x + 2, r++, [['#131', { b:1 }], [' docs: refresh for 0.9', {}]], w - 4);
+      b.put(x + 2, r++, 'draft · 1 failing · 1 running', { fg: C.dim });
+      r++;
+      for (const [st, n, d] of CHECKS) { b.put(x + 2, r, G[st], { fg: COL[st], b:1 }); b.put(x + 4, r, n); b.rput(x + w - 2, r, d, { fg: st === 'fail' ? C.fail : C.dim }); r++; }
+      return r;
+    };
+    const branch = (b, x, y, w, wt) => {
+      let r = y;
+      b.segs(x + 2, r++, [[wt, {}], [' → ', { fg: C.dim }], ['main', {}]]);
+      b.put(x + 2, r++, wt === 'docs-refresh' ? '↑3 ahead  ↓0 behind' : '↑2 ahead  ↓0 behind', { fg: C.dim });
+      if (wt === 'fix-login') b.put(x + 2, r++, '4 files uncommitted', { fg: C.dim });
+      return r;
+    };
+    const rightPane = (b, x, y, w, hh, o) => {
+      b.fill(x, y, w, hh, o.bg);
+      const [a, d] = totals(o.wt);
+      header(b, x, y, w, 'CHANGES', o.focused, [[FILES[o.wt].length + ' files  ', { fg: C.dim }], ['+' + a, { fg: C.done }], [' −' + d, { fg: C.fail }]]);
+      let r = changes(b, x, y + 2, w, o.wt) + 1;
+      b.put(x + 2, r++, 'PULL REQUEST', { fg: C.dim, b:1 });
+      r = pr(b, x, r, w, o.wt) + 1;
+      b.put(x + 2, r++, 'BRANCH', { fg: C.dim, b:1 });
+      branch(b, x, r, w, o.wt);
+    };
+
+    // ---------- tabs / status ----------
+    const TABS = [[1,'agent'], [2,'nvim'], [3,'shell']];
+    const tabbar = (b, x, y, w, o) => {
+      b.fill(x, y, w, 1, o.focused ? C.focusBg : C.raised);
+      let cx = x;
+      for (const [n, t] of (o.tabs || TABS)) {
+        const act = t === o.active;
+        if (act) { b.put(cx, y, ' ' + n + ' ', { fg: C.dim, bg: C.bg }); b.put(cx + 3, y, t + ' ', { fg: o.focused ? C.accent : C.text, b:1, bg: C.bg }); }
+        else { b.put(cx, y, ' ' + n + ' ', { fg: C.dim }); b.put(cx + 3, y, t + ' ', { fg: C.dim }); }
+        cx += len(t) + 4;
+      }
+      if (o.right) b.rsegs(x + w - 1, y, o.right);
+    };
+    const status = (b, y, w, o) => {
+      b.fill(0, y, w, 1, o.prefix ? C.focusBg : C.raised);
+      let x;
+      if (o.prefix) x = b.put(0, y, ' ^A ', { fg: C.bg, bg: C.accent, b:1 });
+      else if (o.picker) x = b.put(0, y, ' PICK ', { fg: C.bg, bg: C.accent, b:1 });
+      else x = b.put(0, y, ' orca ', { fg: C.text, bg: C.sel, b:1 });
+      x = b.segs(x + 1, y, [[o.loc, { b:1 }], [' · ' + o.pane, { fg: C.dim }]]);
+      if (o.zoom) x = b.put(x + 2, y, ' ZOOM ', { fg: C.accent, bg: C.sel, b:1 });
+      x += 3;
+      for (const [g, col, n, l] of [['?', C.wait, '1', 'needs you'], ['◐', C.work, '1', 'running'], ['○', C.dim, '2', 'quiet']]) {
+        x = b.segs(x, y, [[g, { fg: col, b:1 }], [o.narrow ? n : ' ' + n + ' ' + l, { fg: o.narrow ? C.text : C.dim }]]) + 3;
+      }
+      const H = o.prefix ? [['h/l','focus'], ['j/k','worktree'], ['z','zoom'], ['|','split'], ['w','picker'], ['f','files'], ['esc','cancel']]
+        : o.picker ? [['↑↓','move'], ['enter','open'], ['^s','split'], ['n','new'], ['esc','close']]
+        : o.narrow ? [['^a h/l','focus'], ['^a j/k','worktree'], ['^a z','zoom'], ['^a ?','help']]
+        : [['^a h/l','focus'], ['^a j/k','worktree'], ['^a z','zoom'], ['^a |','split'], ['^a w','picker'], ['^a ?','help']];
+      const ss = [];
+      H.forEach(([k, l], i) => { ss.push([k, { fg: (o.prefix || o.picker) ? C.accent : C.text, b:1 }]); ss.push([' ' + l + (i < H.length - 1 ? '   ' : ' '), { fg: C.dim }]); });
+      b.rsegs(w, y, ss);
+    };
+
+    // ---------- agent content ----------
+    const fit = (ss, n) => { const out = []; let k = 0; for (const [t, st] of ss) { if (k >= n) break; const tt = len(t) > n - k ? trunc(t, n - k) : t; out.push([tt, st]); k += len(tt); } if (k < n) out.push([' '.repeat(n - k), {}]); return out; };
+    const claudeLines = W => {
+      const L = [], B = () => L.push([]);
+      const msg = (bul, bc, text, st = {}) => wrap(text, W - 2).forEach((ln, i) => L.push([[i ? '  ' : bul + ' ', { fg: bc, b:1 }], [ln, st]]));
+      L.push([['claude', { b:1 }], ['  ·  app/fix-login  ·  ~/code/app.worktrees/fix-login', { fg: C.dim }]]); B();
+      msg('>', C.dim, 'The login page has two flows now, the old password form and the new magic link. Clean it up so only one is left.', { fg: C.dim });
+      B();
+      msg('●', C.text, "I'll check how both flows are wired before touching anything.");
+      B();
+      const tool = (n, a, r) => { L.push([['● ', { fg: C.done }], [n, { b:1 }], [' ' + a, {}]]); L.push([['  └ ', { fg: C.dim }], [r, { fg: C.dim }]]); };
+      tool('Read', 'src/auth/login.rs', '212 lines');
+      tool('Read', 'src/auth/magic_link.rs', '98 lines');
+      tool('Search', '"PasswordForm"', '7 matches in 4 files');
+      tool('Update', 'src/auth/session.rs', '+6 −2  verify_session() shared by both flows');
+      B();
+      msg('●', C.text, 'Both flows share the session handler but split at verification. Dropping either one touches routes, templates and tests, so I need a decision before going further.');
+      B();
+      const bw = Math.min(W, 78), iw = bw - 4, Q = C.wait;
+      const title = ' Which login flow should stay? ';
+      L.push([['╭─', { fg: Q }], [title, { fg: Q, b:1 }], ['─'.repeat(Math.max(0, bw - 3 - len(title))) + '╮', { fg: Q }]]);
+      const row = ss => L.push([['│ ', { fg: Q }], ...fit(ss, iw), [' │', { fg: Q }]]);
+      row([]);
+      const opts = [['Magic link only', 'Remove the password form, its template and 4 tests.'], ['Password only', 'Remove magic_link.rs and the email job.'], ['Keep both behind a flag', 'Add LOGIN_FLOW to config, default to magic link.'], ['Type something else…', '']];
+      opts.forEach(([t, d], i) => { const s = i === 0; row([[s ? '› ' : '  ', { fg: C.work, b:1 }], [(i + 1) + '. ' + t, s ? { fg: C.work, b:1 } : {}]]); if (d) wrap(d, iw - 5).forEach(l => row([['     ' + l, { fg: C.dim }]])); });
+      row([]);
+      row([['↑↓ move · enter select · esc dismiss', { fg: C.dim }]]);
+      L.push([['╰' + '─'.repeat(bw - 2) + '╯', { fg: Q }]]);
+      B();
+      L.push([['  waiting for your answer · 2m', { fg: C.dim, i:1 }]]);
+      return L;
+    };
+    const opencodeLines = W => {
+      const L = [], B = () => L.push([]);
+      L.push([['opencode', { b:1 }], ['  ·  app/docs-refresh', { fg: C.dim }]]); B();
+      wrap('Refresh the docs for the 0.9 release: README, CONTRIBUTING and a changelog.', W - 3).forEach(l => L.push([['┃ ', { fg: C.work }], [l, {}]]));
+      B();
+      wrap('Reading the current docs and the commits since 0.8.', W - 2).forEach(l => L.push([['  ' + l, { fg: C.dim }]]));
+      B();
+      for (const [n, a, r] of [['read','README.md',''], ['read','CONTRIBUTING.md',''], ['bash','git log v0.8.0..HEAD --oneline','41 commits'], ['edit','README.md','+41 −9'], ['edit','CONTRIBUTING.md','+12 −3'], ['write','CHANGELOG.md','+11'], ['bash','gh pr create --draft','#131']])
+        L.push([['  ✓ ', { fg: C.done }], [pad(n, 7), { fg: C.dim }], [pad(a, 36), {}], [r, { fg: C.dim }]]);
+      B();
+      wrap('Done. 3 files changed, +64 −12. Opened draft PR #131 "docs: refresh for 0.9".', W - 2).forEach(l => L.push([['  ' + l, {}]]));
+      wrap('The spellcheck job flags two words in CHANGELOG.md; both are crate names, so I left them as is.', W - 2).forEach(l => L.push([['  ' + l, {}]]));
+      B();
+      L.push([['  finished in 4m 12s', { fg: C.dim, i:1 }]]);
+      return L;
+    };
+
+    // ---------- nvim ----------
+    const CODE = [
+      'use axum::{extract::State, Form};', 'use axum::response::Redirect;', 'use serde::Deserialize;', '',
+      'use crate::auth::{magic_link, session::Session};', 'use crate::{AppState, AuthError, User};', '',
+      '#[derive(Deserialize)]', 'pub struct LoginForm {', '    email: String,', '    password: Option<String>,', '}', '',
+      '/// Single entry point for both login flows.', 'pub async fn login(', '    State(app): State<AppState>,', '    Form(form): Form<LoginForm>,', ') -> Result<Redirect, AuthError> {',
+      '    let user = app.users.by_email(&form.email).await?;', '', '    match form.password {', '        Some(pw) => verify_password(&user, &pw)?,', '        None => {',
+      '            magic_link::send(&app, &user).await?;', '            return Ok(Redirect::to("/check-email"));', '        }', '    }', '',
+      '    let session = Session::create(&app.db, user.id).await?;', '    Ok(Redirect::to("/").with_cookie(session.cookie()))', '}', '',
+      'fn verify_password(user: &User, pw: &str) -> Result<(), AuthError> {', '    if !argon2::verify(&user.hash, pw)? {', '        return Err(AuthError::BadCredentials);', '    }', '    Ok(())', '}',
+    ];
+    const SIGNS = { 14:'~', 21:'~', 23:'+', 24:'+', 25:'+', 26:'+', 29:'~' };
+    const KW = new Set(['use','pub','struct','async','fn','let','match','return','if','await','crate','mut','impl','self']);
+    const hl = s => {
+      const out = []; const re = /(\/\/.*$)|("(?:[^"\\]|\\.)*")|(#\[[^\]]*\])|([A-Za-z_][A-Za-z0-9_]*)|(\d+)|([\s\S])/g; let m;
+      while ((m = re.exec(s))) {
+        if (m[1]) out.push([m[1], { fg: C.dim, i:1 }]);
+        else if (m[2]) out.push([m[2], { fg: C.done }]);
+        else if (m[3]) out.push([m[3], { fg: C.dim }]);
+        else if (m[4]) { const wd = m[4]; if (KW.has(wd)) out.push([wd, { fg: C.work }]); else if (/^[A-Z]/.test(wd)) out.push([wd, { fg: C.wait }]); else if (s[re.lastIndex] === '(' || s[re.lastIndex] === '!') out.push([wd, { b:1 }]); else out.push([wd, {}]); }
+        else if (m[5]) out.push([m[5], { fg: C.wait }]);
+        else out.push([m[0], {}]);
+      }
+      return out;
+    };
+    const nvim = (b, x, y, w, hh, o) => {
+      b.fill(x, y, w, hh, C.bg);
+      const body = hh - 2, cur = 21;
+      for (let i = 0; i < body; i++) {
+        if (i < CODE.length) {
+          const isCur = i === cur;
+          if (isCur) b.tint(x, y + i, w, 1, C.panel);
+          const sg = SIGNS[i + 1]; if (sg) b.put(x, y + i, sg, { fg: sg === '+' ? C.done : C.work, b:1 });
+          b.put(x + 1, y + i, String(i + 1).padStart(3), { fg: isCur ? C.text : C.dim, b: isCur });
+          b.segs(x + 5, y + i, hl(CODE[i]), w - 5);
+        } else b.put(x, y + i, '~', { fg: C.border });
+      }
+      if (o.focused) { const c = b.at(x + 5 + 8, y + cur); if (c) { c.bg = C.text; c.fg = C.bg; } }
+      const sy = y + hh - 2;
+      b.fill(x, sy, w, 1, C.raised);
+      const sx = b.put(x, sy, ' NORMAL ', { fg: C.bg, bg: C.work, b:1 });
+      b.segs(sx, sy, [['  src/auth/login.rs', {}], [' [+]', { fg: C.wait }]]);
+      b.rsegs(x + w, sy, w >= 80 ? [['+5 ', { fg: C.done }], ['~3', { fg: C.work }], ['    rust    utf-8    22:9    56% ', { fg: C.dim }]] : [['22:9  56% ', { fg: C.dim }]]);
+      if (w >= 80) b.put(x, sy + 1, '"src/auth/login.rs" 38L, 1291B written', { fg: C.dim });
+    };
+
+    // ---------- screens ----------
+    const screenA = () => {
+      const b = new Buf(180, 48);
+      sidebar(b, 0, 0, 36, 47, { bg: C.panel, header: true, focused: false, sel: 'fix-login', current: 'fix-login' });
+      tabbar(b, 36, 0, 108, { focused: true, active: 'agent', right: [['app/fix-login', { fg: C.dim }], ['  ·  claude', { fg: C.dim }]] });
+      b.fill(36, 1, 108, 46, C.bg);
+      drawLines(b, 38, 2, 104, 44, claudeLines(104));
+      rightPane(b, 144, 0, 36, 47, { bg: C.panel, focused: false, wt: 'fix-login' });
+      status(b, 47, 180, { loc: 'app/fix-login', pane: 'agent' });
+      return b;
+    };
+    const frame = (b, x, y, w, hh, o) => {
+      const f = o.focused ? C.accent : C.border; box(b, x, y, w, hh, f);
+      if (o.title) b.put(x + 2, y, ' ' + o.title + ' ', { fg: o.focused ? C.accent : C.dim, b:1 });
+      if (o.right) b.rsegs(x + w - 2, y, o.right);
+    };
+    const screenB = () => {
+      const b = new Buf(180, 48);
+      sidebar(b, 1, 1, 34, 45, { bg: C.bg, header: false, focused: true, sel: 'docs-refresh', current: 'docs-refresh' });
+      frame(b, 0, 0, 36, 47, { focused: true, title: 'worktrees', right: [[' 4 ', { fg: C.accent }]] });
+      // center
+      box(b, 36, 0, 108, 47, C.border);
+      let cx = 38;
+      for (const [n, t] of TABS) { const act = t === 'agent'; const lab = ' ' + n + ' ' + t + ' '; b.put(cx, 0, lab, act ? { fg: C.text, bg: C.sel, b:1 } : { fg: C.dim }); cx += len(lab) + 1; }
+      b.rsegs(142, 0, [[' app/docs-refresh · opencode ', { fg: C.dim }]]);
+      drawLines(b, 39, 2, 102, 38, opencodeLines(100));
+      box(b, 38, 41, 104, 3, C.border);
+      b.segs(40, 42, [['> ', { fg: C.dim, b:1 }], ['ask a follow-up or press enter to review the PR', { fg: C.dim }]]);
+      b.segs(40, 44, [['enter', { b:1 }], [' send   ', { fg: C.dim }], ['ctrl+p', { b:1 }], [' commands', { fg: C.dim }]]);
+      // right
+      const [a, d] = totals('docs-refresh');
+      frame(b, 144, 0, 36, 10, { title: 'changes', right: [[' 3 ', { fg: C.dim }], ['+' + a, { fg: C.done }], [' −' + d + ' ', { fg: C.fail }]] });
+      changes(b, 144, 2, 36, 'docs-refresh');
+      frame(b, 144, 10, 36, 37, { title: 'pull request', right: [[' 1 failing ', { fg: C.fail }]] });
+      let r = pr(b, 144, 12, 36, 'docs-refresh') + 1;
+      b.put(146, r++, 'BRANCH', { fg: C.dim, b:1 });
+      branch(b, 144, r, 36, 'docs-refresh');
+      status(b, 47, 180, { loc: 'app/docs-refresh', pane: 'worktrees' });
+      return b;
+    };
+    const ORDER = SECT.flatMap(([, sts]) => WT.filter(t => sts.includes(t.st)));
+    const picker = (b, x, y, w, hh) => {
+      b.fill(x, y, w, hh, C.panel); box(b, x, y, w, hh, C.accent);
+      b.put(x + 2, y, ' switch worktree ', { fg: C.accent, b:1 });
+      b.rput(x + w - 2, y, ' ^a w ', { fg: C.dim });
+      const cc = b.segs(x + 3, y + 1, [['› ', { fg: C.accent, b:1 }]]);
+      b.put(cc, y + 1, ' ', { bg: C.text });
+      b.put(cc + 2, y + 1, 'filter worktrees and projects', { fg: C.dim });
+      b.put(x, y + 2, '├', { fg: C.accent }); b.put(x + 1, y + 2, '─'.repeat(w - 2), { fg: C.border }); b.put(x + w - 1, y + 2, '┤', { fg: C.accent });
+      let r = y + 4;
+      for (const [name, sts, col] of SECT) {
+        const items = WT.filter(t => sts.includes(t.st));
+        b.segs(x + 3, r++, [[name, { fg: col, b:1 }], ['  ' + items.length, { fg: C.dim }]]);
+        for (const t of items) {
+          const s = t.id === 'api-cache';
+          if (s) { b.tint(x + 1, r, w - 2, 1, C.sel); b.put(x + 1, r, '▌', { fg: C.accent }); }
+          b.put(x + 3, r, G[t.st], { fg: COL[t.st], b:1 });
+          b.put(x + 5, r, t.id, { b: s });
+          b.put(x + 19, r, t.proj, { fg: C.dim });
+          b.put(x + 25, r, t.sum + (t.pr ? ' · PR ' + t.pr : ''), { fg: C.dim }, w - 44);
+          b.rput(x + w - 4, r, t.agent + '  ' + pad(t.age, 3), { fg: C.dim });
+          if (t.unseen) b.put(x + w - 3, r, '•', { fg: COL[t.st], b:1 });
+          if (t.id === 'fix-login') b.put(x + w - 20, r, 'open', { fg: C.dim, i:1 });
+          r++;
+        }
+        r++;
+      }
+      b.put(x + 3, r++, 'PROJECTS', { fg: C.dim, b:1 });
+      for (const [n, br, info] of PROJ) { b.put(x + 5, r, n); if (br) b.put(x + 19, r, br, { fg: C.dim }); b.put(x + 25, r, info + (br ? '' : '  ·  n to create one'), { fg: C.dim, i: !br }); r++; }
+      b.segs(x + 3, y + hh - 2, [['↑↓', { b:1 }], [' move   ', { fg: C.dim }], ['enter', { b:1 }], [' open   ', { fg: C.dim }], ['^s', { b:1 }], [' open beside   ', { fg: C.dim }], ['n', { b:1 }], [' new worktree   ', { fg: C.dim }], ['esc', { b:1 }], [' close', { fg: C.dim }]]);
+    };
+    const screenC = () => {
+      const b = new Buf(180, 48);
+      b.fill(0, 0, 180, 1, C.raised);
+      let cx = b.put(0, 0, ' orca-term ', { b:1 }) + 1;
+      for (const t of ORDER) {
+        const cur = t.id === 'fix-login', bg = cur ? C.bg : C.raised;
+        cx = b.put(cx, 0, ' ' + G[t.st] + ' ', { fg: COL[t.st], b:1, bg });
+        cx = b.put(cx, 0, t.id, { fg: cur ? C.text : C.dim, b: cur, bg });
+        cx = b.put(cx, 0, ' ' + t.age + ' ', { fg: C.dim, bg });
+        if (t.pr) cx = b.put(cx, 0, 'PR ', { fg: C.dim, bg });
+        if (t.unseen && !cur) cx = b.put(cx, 0, '• ', { fg: COL[t.st], b:1, bg });
+        cx += 1;
+      }
+      b.rsegs(180, 0, [[' 1 ', { fg: C.dim, bg: C.bg }], ['agent ', { b:1, bg: C.bg }], [' 2 nvim ', { fg: C.dim }], [' 3 shell ', { fg: C.dim }]]);
+      b.fill(0, 1, 180, 1, C.panel);
+      b.segs(1, 1, [['app/fix-login', { b:1 }], ['  claude · waiting 2m', { fg: C.dim }], ['     4 files ', { fg: C.dim }], ['+55', { fg: C.done }], [' −21', { fg: C.fail }], ['     no PR     ↑2 on main', { fg: C.dim }]]);
+      b.rsegs(179, 1, [['^a f', { b:1 }], [' files   ', { fg: C.dim }], ['^a w', { b:1 }], [' worktrees', { fg: C.dim }]]);
+      b.fill(0, 2, 180, 45, C.bg);
+      drawLines(b, 2, 3, 176, 43, claudeLines(120));
+      b.veil(0, 2, 180, 45);
+      picker(b, 52, 12, 76, 24);
+      status(b, 47, 180, { loc: 'app/fix-login', pane: 'picker', picker: true });
+      return b;
+    };
+    const screenSplit = () => {
+      const b = new Buf(180, 48);
+      sidebar(b, 0, 0, 36, 47, { bg: C.panel, header: true, focused: false, sel: 'fix-login', current: 'fix-login' });
+      b.fill(89, 0, 1, 47, C.panel);
+      tabbar(b, 36, 0, 53, { focused: false, tabs: [[1,'agent']], active: 'agent', right: [['claude', { fg: C.dim }]] });
+      b.fill(36, 1, 53, 46, C.bg);
+      drawLines(b, 37, 1, 51, 46, claudeLines(51), 'bottom');
+      tabbar(b, 90, 0, 54, { focused: true, tabs: [[2,'nvim'], [3,'shell']], active: 'nvim', right: [['login.rs', { fg: C.dim }]] });
+      nvim(b, 90, 1, 54, 46, { focused: true });
+      rightPane(b, 144, 0, 36, 47, { bg: C.panel, focused: false, wt: 'fix-login' });
+      status(b, 47, 180, { loc: 'app/fix-login', pane: 'nvim', prefix: true });
+      return b;
+    };
+    const screenZoom = () => {
+      const b = new Buf(180, 48);
+      tabbar(b, 0, 0, 180, { focused: true, active: 'nvim', right: [['ZOOM', { fg: C.accent, b:1 }], ['  ^a z restore    ', { fg: C.dim }], ['app/fix-login', { fg: C.dim }]] });
+      nvim(b, 0, 1, 180, 46, { focused: true });
+      status(b, 47, 180, { loc: 'app/fix-login', pane: 'nvim', zoom: true });
+      return b;
+    };
+    const screenNarrow = () => {
+      const b = new Buf(120, 36);
+      sidebar(b, 0, 0, 30, 35, { bg: C.panel, header: true, focused: true, sel: 'fix-login', current: 'fix-login' });
+      tabbar(b, 30, 0, 90, { focused: false, active: 'agent', right: [['4 files ', { fg: C.dim }], ['+55', { fg: C.done }], [' −21', { fg: C.fail }], ['   ^a f', { fg: C.text, b:1 }]] });
+      b.fill(30, 1, 90, 34, C.bg);
+      drawLines(b, 32, 1, 86, 34, claudeLines(86), 'bottom');
+      status(b, 35, 120, { loc: 'app/fix-login', pane: 'worktrees', narrow: true });
+      return b;
+    };
+    const legend = () => {
+      const b = new Buf(104, 10);
+      b.put(2, 1, 'ESTADOS', { fg: C.dim, b:1 });
+      [['?', C.wait, 'esperando você'], ['◐ ◓ ◑ ◒', C.work, 'trabalhando · gira a cada 120 ms'], ['●', C.done, 'terminou'], ['○', C.dim, 'parado'], ['✗', C.fail, 'falhou'], ['•', C.wait, 'não visto · cor do estado']]
+        .forEach(([g, c, l], i) => { b.put(2, 2 + i, g, { fg: c, b:1 }); b.put(12, 2 + i, l); });
+      b.put(48, 1, 'FOCO E SELEÇÃO', { fg: C.dim, b:1 });
+      b.fill(48, 2, 22, 1, C.focusBg); b.put(49, 2, 'AGENT', { fg: C.accent, b:1 }); b.put(72, 2, 'painel com foco', {});
+      b.fill(48, 3, 22, 1, C.raised); b.put(49, 3, 'CHANGES', { fg: C.dim, b:1 }); b.put(72, 3, 'painel sem foco', {});
+      b.fill(48, 5, 22, 1, C.sel); b.put(48, 5, '▌', { fg: C.accent }); b.put(50, 5, '?', { fg: C.wait, b:1 }); b.put(52, 5, 'fix-login', { b:1 }); b.put(72, 5, 'cursor, lista com foco', {});
+      b.fill(48, 6, 22, 1, C.sel); b.put(48, 6, '▌', { fg: C.shade }); b.put(50, 6, '?', { fg: C.wait, b:1 }); b.put(52, 6, 'fix-login', { b:1 }); b.put(72, 6, 'aberto, lista sem foco', {});
+      b.put(48, 8, ' ^A ', { fg: C.bg, bg: C.accent, b:1 }); b.put(53, 8, 'prefixo ativo: status em focus-bg', {});
+      return b;
+    };
+
+    // ================= Quiet v2 =================
+    const W2 = id => WT.find(t => t.id === id);
+    const PROJ2 = [
+      { name:'app', branch:'main', items: [
+        { id:'main', primary:true, st:'idle', branch:'main', sum:'no agent running', agent:'', age:'5h' },
+        { ...W2('fix-login'), branch:'fix/login-flow' },
+        { ...W2('api-cache'), branch:'feat/api-cache' },
+        { ...W2('docs-refresh'), branch:'docs/0.9-refresh', ck:'fail' },
+      ] },
+      { name:'api', branch:'main', items: [
+        { id:'main', primary:true, st:'idle', branch:'main', sum:'no agent running', agent:'', age:'2d' },
+        { id:'retry-jobs', st:'fail', branch:'fix/retry-jobs', sum:'agent exited · connection reset', agent:'claude', age:'12m', unseen:true },
+        { ...W2('rate-limit'), branch:'feat/rate-limit' },
+      ] },
+      { name:'empty', branch:'main', items: [] },
+    ];
+    const card = (b, x, y, w, hh, bg, focus) => {
+      b.fill(x, y + 1, w, hh - 2, bg);
+      b.put(x, y, '▗' + '▄'.repeat(w - 2) + '▖', { fg: bg, bg: C.canvas });
+      if (focus) b.put(x + 2, y, '▁'.repeat(focus === true ? 9 : focus), { fg: C.accent, bg: C.canvas });
+      b.put(x, y + hh - 1, '▝' + '▀'.repeat(w - 2) + '▘', { fg: bg, bg: C.canvas });
+    };
+    const pill = (t, bg, fg, on) => [['▐', { fg: bg, bg: on }], [t, { fg, bg, b:1 }], ['▌', { fg: bg, bg: on }]];
+    const key = (k, hot) => [[' ' + k + ' ', { fg: hot ? C.accent : C.text, bg: hot ? C.fsel : C.raised, b:1 }]];
+    const rule = (b, x, xe, y) => { if (xe > x) b.put(x, y, '─'.repeat(xe - x), { fg: C.border }); };
+    const label = (b, x, xe, y, t, col, n) => { const e = b.segs(x, y, [[t, { fg: col, b:1 }], ...(n != null ? [[' ' + n, { fg: C.dim }]] : [])]); rule(b, e + 1, xe, y); };
+    const sidebar2 = (b, x, y, w, hh, o) => {
+      card(b, x, y, w, hh, C.panel, o.focused ? 8 : 0);
+      b.put(x + 2, y + 1, 'Projects', { fg: o.focused ? C.accent : C.dim, b:1 });
+      const compact = hh < 40;
+      let r = y + 3;
+      for (const p of PROJ2) {
+        b.segs(x + 1, r, pill(p.name[0], C.raised, C.text, C.panel));
+        b.put(x + 5, r, trunc(p.name, w - 7), { b:1 });
+        r += 2;
+        if (!p.items.length) { b.put(x + 6, r, 'no worktrees yet', { fg: C.dim, i:1 }); r += 2; continue; }
+        for (const t of p.items) {
+          const s = t.id === o.sel, un = t.unseen && t.id !== o.current, nl = compact ? 2 : 3;
+          const pb = o.focused ? C.fsel : C.sel;
+          if (s) {
+            b.tint(x + 1, r, w - 2, nl, pb);
+            b.put(x + 1, r - 1, '▄'.repeat(w - 2), { fg: pb, bg: C.panel });
+            b.put(x + 1, r + nl, '▀'.repeat(w - 2), { fg: pb, bg: C.panel });
+            if (o.focused) for (let k = 0; k < nl; k++) b.put(x + 1, r + k, '▎', { fg: C.accent, bg: pb });
+          }
+          b.put(x + 4, r, G[t.st], { fg: COL[t.st], b:1 });
+          const tag = t.primary ? ' primary ' : '';
+          let nx = b.put(x + 6, r, trunc(t.id, w - 9 - (tag ? len(tag) + 1 : 0) - (un ? 2 : 0)), { fg: s && o.focused ? C.accent : C.text, b:1 });
+          if (un) nx = b.put(nx + 1, r, '•', { fg: COL[t.st], b:1 });
+          if (tag) b.put(nx + 1, r, tag, { fg: C.dim, bg: C.raised });
+          if (compact) {
+            b.put(x + 6, r + 1, trunc(t.sum, w - 11 - len(t.age)), { fg: C.dim });
+            b.rput(x + w - 3, r + 1, t.age, { fg: C.dim });
+            r += 3; continue;
+          }
+          b.put(x + 6, r + 1, trunc(t.branch, w - 11 - (t.pr ? len(t.pr) + 1 : 0)), { fg: C.dim });
+          if (t.pr) b.rput(x + w - 3, r + 1, t.pr, { fg: C.done, b:1 });
+          let lx = x + 6;
+          if (t.ck) lx = b.put(lx, r + 2, G[t.ck] + ' ', { fg: COL[t.ck], b:1 });
+          if (t.agent) lx = b.put(lx, r + 2, t.agent + ' · ', { fg: C.dim, i:1 });
+          b.put(lx, r + 2, trunc(t.sum, x + w - 4 - len(t.age) - lx), { fg: C.dim });
+          b.rput(x + w - 3, r + 2, t.age, { fg: C.dim });
+          r += 4;
+        }
+        r += 1;
+      }
+      if (o.focused) b.segs(x + 2, y + hh - 2, [...key('enter'), [' open  ', { fg: C.dim }], ...key('n'), [' new', { fg: C.dim }], ...(w >= 32 ? [['  ', {}], ...key('/'), [' filter', { fg: C.dim }]] : [])], w - 4);
+    };
+    const tabs2 = (b, x, y, w, o) => {
+      let cx = x + 1;
+      for (const [n, t] of (o.tabs || TABS)) {
+        if (t === o.active) cx = b.segs(cx, y, pill(n + ' ' + t, o.focused ? C.fsel : C.sel, o.focused ? C.accent : C.text, o.bg));
+        else cx = b.segs(cx, y, [[' ' + n + ' ' + t + ' ', { fg: C.dim }]]);
+        cx += 1;
+      }
+      if (o.right) b.rsegs(x + w - 2, y, o.right);
+    };
+    const right2 = (b, x, y, w, hh, o) => {
+      card(b, x, y, w, hh, C.panel, o.focused ? 7 : 0);
+      const [a, d] = totals(o.wt), F = FILES[o.wt];
+      b.segs(x + 2, y + 1, [['changes', { fg: o.focused ? C.accent : C.text, b:1 }], ['  ' + F.length, { fg: C.dim }]]);
+      b.rsegs(x + w - 2, y + 1, [['+' + a, { fg: C.done }], [' −' + d, { fg: C.fail }]]);
+      let r = y + 3;
+      for (const [k, p, ad, dl] of F) {
+        const i = p.lastIndexOf('/'), base = p.slice(i + 1), dir = i >= 0 ? p.slice(0, i + 1) : '';
+        b.put(x + 2, r, k, { fg: FCOL[k], b:1 });
+        const cnt = []; if (ad) cnt.push(['+' + ad, { fg: C.done }]); if (dl) cnt.push([(ad ? ' ' : '') + '−' + dl, { fg: C.fail }]);
+        const cw = cnt.reduce((s, [t]) => s + len(t), 0);
+        const ex = b.put(x + 4, r, base, k === 'D' ? { fg: C.dim } : {});
+        if (dir) b.put(ex + 1, r, truncL(dir, Math.max(0, x + w - 4 - cw - ex - 1)), { fg: C.dim });
+        b.rsegs(x + w - 2, r, cnt);
+        r++;
+      }
+      r++;
+      const bw = w - 4, ga = Math.round(bw * a / (a + d));
+      b.put(x + 2, r, '━'.repeat(ga), { fg: C.done }); b.put(x + 2 + ga, r, '━'.repeat(bw - ga), { fg: C.fail });
+      r += 3;
+      label(b, x + 2, x + w - 2, r++, 'pull request', C.dim); r++;
+      if (o.wt === 'docs-refresh') {
+        b.segs(x + 2, r++, [['#131', { b:1 }], [' docs: refresh for 0.9', {}]], w - 4);
+        b.put(x + 2, r++, 'draft · 1 failing · 1 running', { fg: C.dim }); r++;
+        for (const [st, n, dd] of CHECKS) { b.put(x + 2, r, G[st], { fg: COL[st], b:1 }); b.put(x + 4, r, n); b.rput(x + w - 2, r, dd, { fg: st === 'fail' ? C.fail : C.dim }); r++; }
+      } else {
+        b.segs(x + 2, r++, [['○', { fg: C.dim }], ['  none yet', { fg: C.dim }]]); r++;
+        b.segs(x + 2, r++, [...key('^a P'), ['  open a draft', { fg: C.dim }]]);
+      }
+      r += 2;
+      label(b, x + 2, x + w - 2, r++, 'branch', C.dim); r++;
+      b.segs(x + 2, r++, [[o.wt, {}], [' → ', { fg: C.dim }], ['main', {}]]);
+      b.segs(x + 2, r++, [['↑2', { b:1 }], [' ahead  ', { fg: C.dim }], ['↓0', { b:1 }], [' behind', { fg: C.dim }]]);
+      b.put(x + 2, r++, F.length + (F.length > 1 ? ' files' : ' file') + ' uncommitted', { fg: C.dim });
+    };
+    const status2 = (b, y, w, o) => {
+      const sb = o.prefix ? C.focusBg : C.canvas;
+      b.fill(0, y, w, 1, sb);
+      let x = 1;
+      x = b.segs(x, y, o.prefix ? pill('^A', C.accent, C.bg, sb) : pill('orca', C.sel, C.text, sb)) + 2;
+      x = b.segs(x, y, [[o.g || '?', { fg: o.gc || C.wait, b:1 }], [' ' + o.loc, { b:1 }], ['  ' + o.pane, { fg: C.dim }]]);
+      if (o.zoom) x = b.segs(x + 2, y, pill('zoom', C.fsel, C.accent, sb));
+      x += 4;
+      for (const [g, col, n, l] of [['?', C.wait, '1', 'needs you'], ['✗', C.fail, '1', 'failed'], ['◐', C.work, '1', 'running'], ['○', C.dim, '2', 'quiet']])
+        x = b.segs(x, y, [[g, { fg: col, b:1 }], [' ' + n, { b:1 }], [o.narrow ? '' : ' ' + l, { fg: C.dim }]]) + 3;
+      const H = o.prefix ? [['h l','focus'], ['j k','worktree'], ['z','zoom'], ['|','split'], ['w','picker'], ['f','files'], ['a','send ^A'], ['esc','cancel']]
+        : o.narrow ? [['^a','prefix'], ['^a h l','focus'], ['^a j k','worktree'], ['^a ?','help']]
+        : [['^a','prefix'], ['^a h l','focus'], ['^a j k','worktree'], ['^a z','zoom'], ['^a |','split'], ['^a ?','help']];
+      const ss = [];
+      H.forEach(([k, l], i) => { ss.push(...key(k, o.prefix)); ss.push([' ' + l + (i < H.length - 1 ? '  ' : ' '), { fg: C.dim }]); });
+      b.rsegs(w - 1, y, ss);
+    };
+    const v2Main = () => {
+      const b = new Buf(180, 48); b.fill(0, 0, 180, 48, C.canvas);
+      sidebar2(b, 1, 0, 34, 47, { focused: false, sel: 'fix-login', current: 'fix-login' });
+      card(b, 36, 0, 108, 47, C.bg, true);
+      tabs2(b, 37, 1, 108, { focused: true, active: 'agent', bg: C.bg, right: [['app/fix-login', { fg: C.dim }], ['  ·  ', { fg: C.border }], ['claude', { fg: C.dim, i:1 }]] });
+      drawLines(b, 39, 3, 103, 42, claudeLines(102));
+      right2(b, 145, 0, 34, 47, { focused: false, wt: 'fix-login' });
+      status2(b, 47, 180, { loc: 'app/fix-login', pane: 'agent' });
+      return b;
+    };
+    const v2Split = () => {
+      const b = new Buf(180, 48); b.fill(0, 0, 180, 48, C.canvas);
+      sidebar2(b, 1, 0, 34, 47, { focused: false, sel: 'fix-login', current: 'fix-login' });
+      card(b, 36, 0, 53, 47, C.bg, false);
+      tabs2(b, 37, 1, 53, { focused: false, tabs: [[1,'agent']], active: 'agent', bg: C.bg, right: [['claude', { fg: C.dim, i:1 }]] });
+      drawLines(b, 38, 3, 50, 42, claudeLines(50), 'bottom');
+      card(b, 90, 0, 54, 47, C.bg, 8);
+      tabs2(b, 91, 1, 54, { focused: true, tabs: [[2,'nvim'], [3,'shell']], active: 'nvim', bg: C.bg, right: [['login.rs', { fg: C.dim }]] });
+      nvim(b, 90, 3, 54, 43, { focused: true });
+      right2(b, 145, 0, 34, 47, { focused: false, wt: 'fix-login' });
+      status2(b, 47, 180, { loc: 'app/fix-login', pane: 'nvim', prefix: true });
+      return b;
+    };
+    const v2Zoom = () => {
+      const b = new Buf(180, 48); b.fill(0, 0, 180, 48, C.canvas);
+      card(b, 1, 0, 178, 47, C.bg, 8);
+      tabs2(b, 2, 1, 178, { focused: true, tabs: [[2,'nvim']], active: 'nvim', bg: C.bg, right: [
+        ['split  ', { fg: C.dim }], ['agent', { fg: C.dim }], [' | ', { fg: C.border }], ['nvim', { fg: C.accent, b:1 }], ['    ', {}],
+        ...pill('zoom', C.fsel, C.accent, C.bg), ['  ', {}], ...key('^a z'), [' restore', { fg: C.dim }]] });
+      nvim(b, 2, 3, 176, 43, { focused: true });
+      status2(b, 47, 180, { loc: 'app/fix-login', pane: 'nvim', zoom: true });
+      return b;
+    };
+    const failLines = W => {
+      const L = [], B = () => L.push([]);
+      L.push([['claude', { b:1 }], ['  ·  api/retry-jobs  ·  ~/code/api.worktrees/retry-jobs', { fg: C.dim }]]); B();
+      wrap('Make the job runner retry failed jobs with exponential backoff, max 5 attempts.', W - 2).forEach((l, i) => L.push([[i ? '  ' : '> ', { fg: C.dim, b:1 }], [l, { fg: C.dim }]]));
+      B();
+      for (const [n, a, r] of [['Read','src/jobs/runner.rs','184 lines'], ['Write','src/jobs/backoff.rs','+38'], ['Update','src/jobs/runner.rs','+22 −4'], ['Bash','cargo test jobs::','running…']]) { L.push([['● ', { fg: C.done }], [n, { b:1 }], [' ' + a, {}]]); L.push([['  └ ', { fg: C.dim }], [r, { fg: C.dim }]]); }
+      B();
+      L.push([['error: ', { fg: C.fail, b:1 }], ['stream closed: connection reset by peer', {}]]);
+      L.push([['claude exited with code 1', { fg: C.dim }]]);
+      return L;
+    };
+    const v2Fail = () => {
+      const b = new Buf(180, 48); b.fill(0, 0, 180, 48, C.canvas);
+      sidebar2(b, 1, 0, 34, 47, { focused: false, sel: 'retry-jobs', current: 'retry-jobs' });
+      card(b, 36, 0, 108, 47, C.bg, 9);
+      tabs2(b, 37, 1, 108, { focused: true, active: 'agent', bg: C.bg, right: [['api/retry-jobs', { fg: C.dim }], ['  ·  ', { fg: C.border }], ['claude', { fg: C.dim, i:1 }]] });
+      drawLines(b, 39, 3, 103, 30, failLines(102));
+      const by = 39;
+      b.put(38, by - 1, '▗' + '▄'.repeat(102) + '▖', { fg: C.sel, bg: C.bg });
+      b.fill(38, by, 104, 4, C.sel);
+      b.put(38, by + 4, '▝' + '▀'.repeat(102) + '▘', { fg: C.sel, bg: C.bg });
+      b.segs(41, by, [['✗', { fg: C.fail, b:1 }], ['  agent stopped', { b:1 }], ['  ·  exit 1 after 41m  ·  12m ago', { fg: C.dim }]]);
+      b.put(44, by + 1, 'Your changes are safe in the worktree (2 files, +60 −4). The session can resume from the last turn.', { fg: C.dim });
+      b.segs(44, by + 3, [...key('r', true), [' resume session   ', { fg: C.dim }], ...key('R'), [' restart clean   ', { fg: C.dim }], ...key('l'), [' show log   ', { fg: C.dim }], ...key('x'), [' dismiss', { fg: C.dim }]]);
+      right2(b, 145, 0, 34, 47, { focused: false, wt: 'retry-jobs' });
+      status2(b, 47, 180, { loc: 'api/retry-jobs', pane: 'agent', g: '✗', gc: C.fail });
+      return b;
+    };
+    const mono = b => {
+      for (const c of b.c) {
+        const quad = '▄▀▗▖▝▘▐▌'.includes(c.ch);
+        if (c.bg === C.fsel || c.bg === C.accent || c.bg === C.work || c.bg === C.focusBg) { c.fg = C.bg; c.bg = C.text; c.b = 1; continue; }
+        if (c.bg === C.text) continue;
+        if (quad) { const sel = c.fg === C.sel && '▄▀'.includes(c.ch); c.ch = sel ? '─' : ' '; c.fg = C.dim; c.bg = C.bg; continue; }
+        if (c.fg === C.accent) { c.b = 1; c.u = c.ch !== '▁' && c.ch !== '▎' ? 1 : 0; }
+        c.fg = c.fg === C.dim || c.fg === C.border || c.fg === C.shade ? C.dim : C.text;
+        c.bg = C.bg;
+      }
+      return b;
+    };
+    const v2Narrow = () => {
+      const b = new Buf(120, 36); b.fill(0, 0, 120, 36, C.canvas);
+      sidebar2(b, 1, 0, 28, 35, { focused: true, sel: 'fix-login', current: 'fix-login' });
+      card(b, 30, 0, 89, 35, C.bg, false);
+      tabs2(b, 31, 1, 89, { focused: false, active: 'agent', bg: C.bg, right: [['4 files ', { fg: C.dim }], ['+55', { fg: C.done }], [' −21  ', { fg: C.fail }], ...key('^a f')] });
+      drawLines(b, 33, 3, 84, 31, claudeLines(84), 'bottom');
+      status2(b, 35, 120, { loc: 'app/fix-login', pane: 'worktrees', narrow: true });
+      return b;
+    };
+
+    const risky = ch => { const cp = ch.codePointAt(0); return cp > 0x7e && !(cp >= 0x2500 && cp <= 0x259f); };
+    const sty = c => ({ color: c.fg, background: c.bg, fontWeight: c.b ? 700 : 400, fontStyle: c.i ? 'italic' : 'normal', textDecoration: c.u ? 'underline' : 'none' });
+    const toEl = buf => {
+      const rows = [];
+      for (let y = 0; y < buf.h; y++) {
+        const spans = []; let run = null;
+        const flush = () => { if (run) { spans.push(h('span', { key: spans.length, style: run.st }, run.t)); run = null; } };
+        for (let x = 0; x < buf.w; x++) {
+          const c = buf.c[y * buf.w + x]; const k = c.fg + c.bg + c.b + c.i + c.u;
+          if (risky(c.ch)) { flush(); spans.push(h('span', { key: spans.length, style: { ...sty(c), display: 'inline-block', width: '1ch', height: '16px', textAlign: 'center', verticalAlign: 'top', overflow: 'hidden' } }, c.ch)); continue; }
+          if (run && run.k === k) run.t += c.ch; else { flush(); run = { k, t: c.ch, st: sty(c) }; }
+        }
+        flush();
+        rows.push(h('div', { key: y, style: { height: '16px', whiteSpace: 'pre', overflow: 'hidden' } }, spans));
+      }
+      return h('div', { style: { width: buf.w + 'ch', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', lineHeight: '16px', background: C.bg, fontVariantLigatures: 'none' } }, rows);
+    };
+
+    // ---------- tokens ----------
+    const h2 = v => v.toString(16).padStart(2, '0');
+    const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+    const ansiHex = i => { if (i >= 232) { const v = 8 + 10 * (i - 232); return '#' + [v, v, v].map(h2).join(''); } const n = i - 16, Lv = [0, 95, 135, 175, 215, 255]; return '#' + [Lv[Math.floor(n / 36)], Lv[Math.floor(n / 6) % 6], Lv[n % 6]].map(h2).join(''); };
+    const nearest = hex => { const [r, g, bl] = rgb(hex); let best = 16, bd = 1e9; for (let i = 16; i < 256; i++) { const [r2, g2, b2] = rgb(ansiHex(i)); const d = (r - r2) ** 2 + (g - g2) ** 2 + (bl - b2) ** 2; if (d < bd) { bd = d; best = i; } } return best; };
+    const lum = hex => { const v = rgb(hex).map(c => c / 255).map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+    const cr = (a, b2) => { const A = lum(a), B2 = lum(b2); return (Math.max(A, B2) + 0.05) / (Math.min(A, B2) + 0.05); };
+    const TOK = [
+      ['canvas', C.canvas, 'surface', 'v2: fundo da tela, entre os cartões; status'],
+      ['bg', C.bg, 'surface', 'fundo do terminal e dos painéis centrais'],
+      ['panel', C.panel, 'surface', 'painéis laterais (Quiet), seletor'],
+      ['raised', C.raised, 'surface', 'cabeçalhos sem foco, abas, status'],
+      ['selection', C.sel, 'surface', 'worktree aberto / linha do cursor'],
+      ['focus-bg', C.focusBg, 'surface', 'cabeçalho do painel com foco; status com prefixo'],
+      ['focus-sel', C.fsel, 'surface', 'v2: pílula do cursor / aba ativa no painel com foco'],
+      ['border', C.border, 'deco', 'bordas sem foco (Framed), ~ após EOF — não é texto'],
+      ['veil', C.shade, 'deco', 'texto velado atrás do seletor; ▌ sem foco — não é texto'],
+      ['text', C.text, 'text', 'texto primário'],
+      ['text-2', C.dim, 'text', 'secundário: metadados, números de linha, dicas; estado parado ○'],
+      ['accent', C.accent, 'text', 'foco: título do painel, ▌ do cursor, borda (Framed), ^A'],
+      ['waiting', C.wait, 'text', '? esperando você · NEEDS YOU · tipos no código'],
+      ['working', C.work, 'text', '◐ trabalhando · M · palavras-chave · modo NORMAL'],
+      ['done', C.done, 'text', '● terminou · ✓ · A · +N · strings'],
+      ['failed', C.fail, 'text', '✗ falhou · D · −N'],
+    ];
+    const surf = [C.canvas, C.bg, C.panel, C.raised, C.sel, C.focusBg, C.fsel];
+    const tokens = TOK.map(([name, hex, kind, role]) => {
+      const ansi = nearest(hex), aH = ansiHex(ansi);
+      let crS = '—', crF = '—';
+      if (kind === 'text') {
+        const m = Math.min(...surf.map(s => cr(hex, s)));
+        const mf = Math.min(...surf.map(s => cr(aH, ansiHex(nearest(s)))));
+        crS = m.toFixed(1) + ':1 ' + (m >= 4.5 ? '✓' : '✗'); crF = mf.toFixed(1) + ':1 ' + (mf >= 4.5 ? '✓' : '✗');
+      } else if (kind === 'deco') { crS = 'não-texto'; }
+      return { name, hex, ansi: String(ansi), ansiHex: aH, role, cr: crS, crFb: crF };
+    });
+
+    return {
+      scrA: toEl(screenA()), scrB: toEl(screenB()), scrC: toEl(screenC()),
+      scrSplit: toEl(screenSplit()), scrZoom: toEl(screenZoom()), scrNarrow: toEl(screenNarrow()),
+      legend: toEl(legend()), tokens,
+      v2Main: toEl(v2Main()), v2Split: toEl(v2Split()), v2Narrow: toEl(v2Narrow()), v2Zoom: toEl(v2Zoom()), v2Fail: toEl(v2Fail()), v2Mono: toEl(mono(v2Split())), v2MonoN: toEl(mono(v2Narrow())),
+    };
+  }
+  renderVals() {
+    if (!this._v) this._v = this.build();
+    return this._v;
+  }
+}
+</script>
+</body>
+</html>

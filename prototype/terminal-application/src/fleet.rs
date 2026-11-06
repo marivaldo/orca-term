@@ -1,161 +1,211 @@
-//! The fake fleet the side menu shows. Hard-coded: nothing here reads git or the core.
+//! The fake fleet the side menu shows: the design's (README, screenshot 4a). Hard-coded: nothing
+//! here reads git or the core.
 
-/// The frames of the working glyph, as the Neovim sidebar turns them.
-pub const SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
+use crate::theme::State;
 
-/// The checks of the one pull request the fake fleet has: mark and name.
-pub const CHECKS: [(&str, &str); 4] = [
-    ("✓", "rust (ubuntu)"),
-    ("✓", "rust (macos)"),
-    ("✗", "lua (nvim stable)"),
-    ("·", "deny"),
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    Waiting,
-    Working,
-    Finished,
-    Idle,
+/// One check of a pull request: its state, name and what it says on the right.
+pub struct Check {
+    pub state: State,
+    pub name: &'static str,
+    pub detail: &'static str,
 }
 
-impl State {
-    pub fn word(self) -> &'static str {
-        match self {
-            State::Waiting => "waiting",
-            State::Working => "working",
-            State::Finished => "finished",
-            State::Idle => "idle",
-        }
-    }
-
-    /// The state's glyph; working spins with `tick`.
-    pub fn glyph(self, tick: usize) -> &'static str {
-        match self {
-            State::Waiting => "?",
-            State::Working => SPINNER[tick % SPINNER.len()],
-            State::Finished => "●",
-            State::Idle => "○",
-        }
-    }
+pub struct PullRequest {
+    pub number: u32,
+    pub title: &'static str,
+    pub summary: &'static str,
+    /// The glyph the side menu shows before the agent: the worst of the checks.
+    pub check: State,
+    pub checks: Vec<Check>,
 }
 
 pub struct Worktree {
     pub name: &'static str,
+    pub branch: &'static str,
+    pub primary: bool,
+    /// The agent's name; `None` when no agent runs there (the primaries).
+    pub agent: Option<&'static str>,
     pub state: State,
-    /// The second line of its row.
-    pub says: &'static str,
-    /// The agent's short label (`cc` is claude-code, `oc` is opencode).
-    pub agent: &'static str,
+    pub last_message: &'static str,
     pub age: &'static str,
     pub unseen: bool,
-    pub pull_request: bool,
+    pub pr: Option<PullRequest>,
+    pub ahead: u32,
+    /// The agent stopped: the centre shows the failure card instead of starting it.
+    pub failure: bool,
 }
 
 pub struct Project {
     pub name: &'static str,
-    pub branch: &'static str,
     pub worktrees: Vec<Worktree>,
 }
 
-/// A place `j` and `k` stop at in the side menu: a project's header or one of its worktrees.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
-    Header(usize),
-    Worktree(usize, usize),
+/// A worktree as (project, worktree) indexes.
+pub type Key = (usize, usize);
+
+fn worktree(name: &'static str, branch: &'static str, state: State) -> Worktree {
+    Worktree {
+        name,
+        branch,
+        primary: false,
+        agent: Some("claude"),
+        state,
+        last_message: "",
+        age: "",
+        unseen: false,
+        pr: None,
+        ahead: 2,
+        failure: false,
+    }
+}
+
+fn primary(age: &'static str) -> Worktree {
+    Worktree {
+        primary: true,
+        agent: None,
+        last_message: "no agent running",
+        age,
+        ahead: 0,
+        ..worktree("main", "main", State::Idle)
+    }
 }
 
 pub fn fake() -> Vec<Project> {
     vec![
         Project {
             name: "app",
-            branch: "main",
             worktrees: vec![
+                primary("5h"),
                 Worktree {
-                    name: "fix-login",
-                    state: State::Waiting,
-                    says: "Which of the two login flows should stay?",
-                    agent: "cc",
+                    last_message: "Which login flow should stay?",
                     age: "2m",
                     unseen: true,
-                    pull_request: false,
+                    ..worktree("fix-login", "fix/login-flow", State::Waiting)
                 },
                 Worktree {
-                    name: "api-cache",
-                    state: State::Working,
-                    says: "Editing src/cache.rs",
-                    agent: "cc",
+                    last_message: "Editing src/cache.rs",
                     age: "now",
-                    unseen: false,
-                    pull_request: false,
+                    ..worktree("api-cache", "feat/api-cache", State::Working)
                 },
                 Worktree {
-                    name: "docs-refresh",
-                    state: State::Finished,
-                    says: "3 files changed",
-                    agent: "oc",
+                    agent: Some("opencode"),
+                    last_message: "3 files changed",
                     age: "1h",
-                    unseen: false,
-                    pull_request: true,
+                    ahead: 3,
+                    pr: Some(PullRequest {
+                        number: 131,
+                        title: "docs: refresh for 0.9",
+                        summary: "draft · 1 failing · 1 running",
+                        check: State::Failed,
+                        checks: vec![
+                            check(State::Done, "build", "1m 12s"),
+                            check(State::Done, "lint", "38s"),
+                            check(State::Failed, "spellcheck", "2 errors"),
+                            check(State::Working, "preview deploy", "running"),
+                            check(State::Waiting, "review", "requested"),
+                        ],
+                    }),
+                    ..worktree("docs-refresh", "docs/0.9-refresh", State::Done)
                 },
             ],
         },
         Project {
             name: "api",
-            branch: "main",
-            worktrees: vec![Worktree {
-                name: "rate-limit",
-                state: State::Idle,
-                says: "no changes",
-                agent: "cc",
-                age: "3d",
-                unseen: false,
-                pull_request: false,
-            }],
+            worktrees: vec![
+                primary("2d"),
+                Worktree {
+                    last_message: "agent exited with code 1",
+                    age: "12m",
+                    unseen: true,
+                    failure: true,
+                    ..worktree("retry-jobs", "fix/retry-jobs", State::Failed)
+                },
+                Worktree {
+                    last_message: "no changes",
+                    age: "3d",
+                    ..worktree("rate-limit", "feat/rate-limit", State::Idle)
+                },
+            ],
         },
         Project {
             name: "empty",
-            branch: "main",
             worktrees: vec![],
         },
     ]
 }
 
-/// A project's worktrees under the three attention sections, in the order they are drawn. A
-/// section with nothing in it is left out.
-pub fn sections(project: &Project) -> Vec<(&'static str, Vec<usize>)> {
-    let mut needs_you = Vec::new();
-    let mut running = Vec::new();
-    let mut quiet = Vec::new();
-    for (index, worktree) in project.worktrees.iter().enumerate() {
-        if worktree.state == State::Waiting || worktree.unseen {
-            needs_you.push(index);
-        } else if worktree.state == State::Working {
-            running.push(index);
-        } else {
-            quiet.push(index);
-        }
+fn check(state: State, name: &'static str, detail: &'static str) -> Check {
+    Check {
+        state,
+        name,
+        detail,
     }
-    [
-        ("NEEDS YOU", needs_you),
-        ("RUNNING", running),
-        ("QUIET", quiet),
-    ]
-    .into_iter()
-    .filter(|(_, members)| !members.is_empty())
-    .collect()
 }
 
-/// Every stop of the side menu, top to bottom.
-pub fn stops(fleet: &[Project]) -> Vec<Stop> {
-    let mut stops = Vec::new();
-    for (p, project) in fleet.iter().enumerate() {
-        stops.push(Stop::Header(p));
-        for (_, members) in sections(project) {
-            for w in members {
-                stops.push(Stop::Worktree(p, w));
-            }
+/// Every worktree in the side menu's order, top to bottom.
+pub fn order(fleet: &[Project]) -> Vec<Key> {
+    fleet
+        .iter()
+        .enumerate()
+        .flat_map(|(p, project)| (0..project.worktrees.len()).map(move |w| (p, w)))
+        .collect()
+}
+
+/// The status bar's counts, of the worktrees with an agent: needs you (waiting), failed,
+/// running (working), quiet (done and idle).
+pub fn counts(fleet: &[Project]) -> [usize; 4] {
+    let mut counts = [0; 4];
+    for worktree in fleet.iter().flat_map(|p| &p.worktrees) {
+        if worktree.agent.is_none() {
+            continue;
         }
+        let at = match worktree.state {
+            State::Waiting => 0,
+            State::Failed => 1,
+            State::Working => 2,
+            State::Done | State::Idle => 3,
+        };
+        counts[at] += 1;
     }
-    stops
+    counts
+}
+
+/// A changed file of the right card.
+#[derive(Clone)]
+pub struct FileChange {
+    /// `M`, `A` or `D`.
+    pub kind: char,
+    pub path: String,
+    pub add: u32,
+    pub del: u32,
+}
+
+/// The design's files, for the snapshots.
+pub fn mock_files(name: &str) -> Vec<FileChange> {
+    let list: &[(char, &str, u32, u32)] = match name {
+        "fix-login" => &[
+            ('M', "src/auth/login.rs", 18, 9),
+            ('M', "src/auth/session.rs", 6, 2),
+            ('A', "src/auth/flag.rs", 31, 0),
+            ('D', "templates/password.html", 0, 10),
+        ],
+        "retry-jobs" => &[
+            ('M', "src/jobs/runner.rs", 22, 4),
+            ('A', "src/jobs/backoff.rs", 38, 0),
+        ],
+        "docs-refresh" => &[
+            ('M', "README.md", 41, 9),
+            ('M', "CONTRIBUTING.md", 12, 3),
+            ('A', "CHANGELOG.md", 11, 0),
+        ],
+        _ => &[],
+    };
+    list.iter()
+        .map(|(kind, path, add, del)| FileChange {
+            kind: *kind,
+            path: (*path).to_owned(),
+            add: *add,
+            del: *del,
+        })
+        .collect()
 }

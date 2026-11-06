@@ -1,22 +1,31 @@
-// THROWAWAY PROTOTYPE (issue #170): what should orca-term look like as a terminal application? Three layouts over the same real terminals, switched with the prefix then `v`: A "Orca", B "Panes", C "Focus".
+// THROWAWAY PROTOTYPE (issue #170): orca-term as a terminal application, drawn to the "Quiet v2"
+// design (`design/README.md`, `design/screenshots/`).
 //
-// The fleet in the side menu is fake; the terminals in the panels are real (a PTY each). Nothing
+// The fleet in the side menu is fake; the terminals in the panes are real (a PTY each). Nothing
 // here is meant to be kept: no tests, no error handling beyond what keeps it going.
 //
-//   just prototype                      the prototype, live
-//   just prototype --snapshot A        one frame as plain text, no child processes
+//   just prototype                          the prototype, live
+//   just prototype --snapshot main          one frame as plain text, no child processes
+//   just prototype --snapshot main --ansi   the same frame with its colours (ANSI escapes)
+//
+// Screens: main (4a), split, prefix (4b), small (4c, 120x36), zoom (4d), failed (4e), nocolor
+// (4f; 4g with --width 120 --height 36). --width and --height override the size.
 //
 // Environment: ORCA_PROTO_AGENT_CMD and ORCA_PROTO_EDITOR_CMD replace `claude` and `nvim`;
 // ORCA_PROTO_PREFIX (one letter) replaces Ctrl-a; ORCA_PROTO_MOUSE=0 leaves the mouse to the
-// terminal the prototype is in.
+// terminal the prototype is in. NO_COLOR and COLORTERM choose the colours.
 
 mod app;
 mod draw;
 mod fleet;
 mod keys;
-mod menu;
+mod mock;
+mod paint;
 mod pty;
+#[rustfmt::skip]
+mod theme;
 
+use std::fmt::Write as _;
 use std::io::{Write, stdout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,41 +34,38 @@ use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
 
-use app::{App, Focus, Msg, Variant};
+use app::{AGENT, App, Focus, Msg, NVIM};
+use paint::Mode;
 use pty::Wake;
 
-const USAGE: &str = "usage: orca-term-prototype [--snapshot <A|B|C> [--width N] [--height N] \
-[--focus menu|centre|right] [--zoom] [--split] [--overlay menu|right]]";
+const USAGE: &str = "usage: orca-term-prototype [--snapshot \
+main|split|prefix|small|zoom|failed|nocolor [--width N] [--height N] [--ansi]]";
 
-/// How often the working glyph turns, and so how long the loop waits with nothing to do.
-const TICK: Duration = Duration::from_millis(150);
+/// How often the working glyph turns.
+const TICK: Duration = Duration::from_millis(120);
+/// How long the loop waits when nothing on screen moves by itself.
+const IDLE: Duration = Duration::from_millis(500);
 /// The least time between two frames, so a terminal printing fast does not redraw for each read.
 const FRAME: Duration = Duration::from_millis(8);
 
-struct Snapshot {
-    variant: Variant,
-    width: u16,
-    height: u16,
-    focus: Option<Focus>,
-    zoom: bool,
-    split: bool,
-    overlay: Option<Focus>,
-}
+const SCREENS: [&str; 7] = [
+    "main", "split", "prefix", "small", "zoom", "failed", "nocolor",
+];
 
-fn column(word: &str) -> Result<Focus, String> {
-    match word {
-        "menu" => Ok(Focus::Menu),
-        "centre" | "center" => Ok(Focus::Centre),
-        "right" => Ok(Focus::Right),
-        other => Err(format!("unknown column `{other}`")),
-    }
+struct Snapshot {
+    screen: String,
+    width: Option<u16>,
+    height: Option<u16>,
+    ansi: bool,
 }
 
 /// The arguments: none for the live prototype, or `--snapshot` and what it draws.
@@ -69,20 +75,15 @@ fn parse(args: &[String]) -> Result<Option<Snapshot>, String> {
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or(format!("{arg} needs a value"));
         if arg == "--snapshot" {
-            let variant = match value()?.to_ascii_uppercase().as_str() {
-                "A" => Variant::A,
-                "B" => Variant::B,
-                "C" => Variant::C,
-                other => return Err(format!("unknown variant `{other}`")),
-            };
+            let screen = value()?.to_ascii_lowercase();
+            if !SCREENS.contains(&screen.as_str()) {
+                return Err(format!("unknown screen `{screen}`"));
+            }
             snapshot = Some(Snapshot {
-                variant,
-                width: 150,
-                height: 42,
-                focus: None,
-                zoom: false,
-                split: false,
-                overlay: None,
+                screen,
+                width: None,
+                height: None,
+                ansi: false,
             });
             continue;
         }
@@ -90,62 +91,122 @@ fn parse(args: &[String]) -> Result<Option<Snapshot>, String> {
             return Err(format!("unknown argument `{arg}`"));
         };
         match arg.as_str() {
-            "--width" => snapshot.width = value()?.parse().map_err(|_| "bad --width")?,
-            "--height" => snapshot.height = value()?.parse().map_err(|_| "bad --height")?,
-            "--focus" => snapshot.focus = Some(column(value()?)?),
-            "--overlay" => snapshot.overlay = Some(column(value()?)?),
-            "--zoom" => snapshot.zoom = true,
-            "--split" => snapshot.split = true,
+            "--width" => snapshot.width = Some(value()?.parse().map_err(|_| "bad --width")?),
+            "--height" => snapshot.height = Some(value()?.parse().map_err(|_| "bad --height")?),
+            "--ansi" => snapshot.ansi = true,
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
     Ok(snapshot)
 }
 
-/// One frame on ratatui's test backend, printed as plain text. No process is started.
-fn snapshot(options: &Snapshot) {
-    let mut app = App::new(None);
-    app.set_variant(options.variant);
-    app.split = options.split;
-    if let Some(column) = options.overlay {
-        if options.variant == Variant::A {
-            app.focus_on(column);
-        } else {
-            app.overlay = Some(column);
-            app.focus = column;
+/// The state of each named screen, as its screenshot shows it.
+fn stage(app: &mut App, screen: &str, width: u16) {
+    let split_on_nvim = |app: &mut App| {
+        app.split = true;
+        app.show_terminal(AGENT);
+        app.show_terminal(NVIM);
+        app.opened.insert(app.open, "src/auth/login.rs".to_owned());
+    };
+    match screen {
+        "split" => split_on_nvim(app),
+        "prefix" => {
+            split_on_nvim(app);
+            app.pending = Some(Instant::now());
         }
+        "small" => app.focus_on(Focus::Sidebar),
+        "zoom" => {
+            split_on_nvim(app);
+            app.zoom = true;
+        }
+        "failed" => {
+            app.open_worktree((1, 1));
+            // fix-login was never opened in 4e: its unseen dot shows.
+            app.fleet[0].worktrees[1].unseen = true;
+        }
+        "nocolor" if width < 150 => app.focus_on(Focus::Sidebar),
+        "nocolor" => {
+            split_on_nvim(app);
+            app.pending = Some(Instant::now());
+        }
+        _ => {}
     }
-    if let Some(column) = options.focus {
-        app.focus_on(column);
-    }
-    app.zoom = options.zoom;
+}
 
-    let area = Rect::new(0, 0, options.width, options.height);
-    let geometry = draw::layout(&app, area);
-    let backend = TestBackend::new(options.width, options.height);
+/// One frame on ratatui's test backend, printed as plain text (or with its colours). No process
+/// is started; the terminal panes show placeholders.
+fn snapshot(options: &Snapshot) {
+    let small = options.screen == "small";
+    let width = options.width.unwrap_or(if small { 120 } else { 180 });
+    let height = options.height.unwrap_or(if small { 36 } else { 48 });
+    let mode = if options.screen == "nocolor" {
+        Mode::Mono
+    } else {
+        Mode::detect()
+    };
+    let mut app = App::new(None);
+    app.width = width;
+    stage(&mut app, &options.screen, width);
+
+    let mut geometry = draw::layout(&app, Rect::new(0, 0, width, height));
+    let backend = TestBackend::new(width, height);
     // The test backend cannot fail.
     let Ok(mut terminal) = Terminal::new(backend);
-    let _ = terminal.draw(|frame| draw::draw(frame, &app, &geometry));
+    let _ = terminal.draw(|frame| draw::draw(frame, &app, &mut geometry, mode));
     let buffer = terminal.backend().buffer();
-    let mut out = String::new();
-    for y in 0..options.height {
-        let mut line = String::new();
-        for x in 0..options.width {
-            line.push_str(buffer[(x, y)].symbol());
+    let mut out = if options.ansi {
+        ansi(buffer)
+    } else {
+        let mut out = String::new();
+        for y in 0..height {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
         }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    out.push_str(&format!(
-        "# variant {}, focus {}, {}x{}{}{}\n",
-        app.variant.label(),
-        app.focus.word(),
-        options.width,
-        options.height,
-        if app.zoom { ", zoom" } else { "" },
-        if app.split { ", split" } else { "" },
-    ));
+        out
+    };
+    let _ = writeln!(
+        out,
+        "# screen {}, {width}x{height}, {mode:?}",
+        options.screen
+    );
     let _ = stdout().write_all(out.as_bytes());
+}
+
+/// The frame with SGR escapes, cell by cell, to check where the colours land.
+fn ansi(buffer: &Buffer) -> String {
+    let colour = |c: Color, base: u8| -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", base + 8),
+            Color::Indexed(i) => format!("{};5;{i}", base + 8),
+            _ => format!("{}", base + 9),
+        }
+    };
+    let mut out = String::new();
+    let area = buffer.area;
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let cell = &buffer[(x, y)];
+            let mut sgr = vec!["0".to_owned(), colour(cell.fg, 30), colour(cell.bg, 40)];
+            for (m, code) in [
+                (Modifier::BOLD, "1"),
+                (Modifier::DIM, "2"),
+                (Modifier::ITALIC, "3"),
+                (Modifier::UNDERLINED, "4"),
+                (Modifier::REVERSED, "7"),
+            ] {
+                if cell.modifier.contains(m) {
+                    sgr.push(code.to_owned());
+                }
+            }
+            let _ = write!(out, "\x1b[{}m{}", sgr.join(";"), cell.symbol());
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out
 }
 
 /// The child's cursor shape (DECSCUSR), for the terminal the prototype is in.
@@ -163,6 +224,7 @@ fn cursor_style(shape: u16) -> SetCursorStyle {
 
 fn live() -> std::io::Result<()> {
     let mouse = std::env::var("ORCA_PROTO_MOUSE").map_or(true, |value| value != "0");
+    let mode = Mode::detect();
     let (tx, rx) = mpsc::channel();
     let wake = Wake {
         tx: tx.clone(),
@@ -196,7 +258,9 @@ fn live() -> std::io::Result<()> {
         }
     });
 
+    let size = terminal.size()?;
     let mut app = App::new(Some(wake.clone()));
+    app.width = size.width;
     let started = Instant::now();
     let mut last_frame = Instant::now() - FRAME;
     let mut shape = 0;
@@ -207,14 +271,16 @@ fn live() -> std::io::Result<()> {
         last_frame = Instant::now();
         wake.pending.store(false, Ordering::SeqCst);
         app.tick = (started.elapsed().as_millis() / TICK.as_millis()) as usize;
+        app.expire();
 
         let size = match terminal.size() {
             Ok(size) => size,
             Err(error) => break Err(error),
         };
-        let geometry = draw::layout(&app, Rect::new(0, 0, size.width, size.height));
+        app.width = size.width;
+        let mut geometry = draw::layout(&app, Rect::new(0, 0, size.width, size.height));
         app.fit_terminals(&geometry);
-        if let Err(error) = terminal.draw(|frame| draw::draw(frame, &app, &geometry)) {
+        if let Err(error) = terminal.draw(|frame| draw::draw(frame, &app, &mut geometry, mode)) {
             break Err(error);
         }
         app.geometry = Some(geometry);
@@ -231,7 +297,8 @@ fn live() -> std::io::Result<()> {
             let _ = execute!(stdout(), cursor_style(shape));
         }
 
-        match rx.recv_timeout(TICK) {
+        let wait = if app.animated() { TICK } else { IDLE };
+        match rx.recv_timeout(wait) {
             Ok(first) => {
                 // Everything that is waiting, before the next frame.
                 for msg in std::iter::once(first).chain(rx.try_iter()) {

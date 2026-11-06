@@ -105,8 +105,10 @@ deny:
 meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard gh-guard schema-fixtures (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree; files the config excludes stay excluded when named.
+# The files go through as arguments, so a name with a space stays one file.
+[positional-arguments]
 typos *files:
-    typos --force-exclude {{ files }}
+    typos --force-exclude "$@"
 
 workflows:
     actionlint
@@ -204,7 +206,8 @@ check-live *scenarios:
 record-live scenario:
     cargo xtask record-live {{ scenario }}
 
-# The throwaway prototype of #170, orca-term as a terminal application: `just prototype` runs it
-# live, `just prototype --snapshot A` prints one frame of variant A (or B, C) and exits.
+# The throwaway prototype of #170, orca-term as a terminal application drawn to the "Quiet v2"
+# design: `just prototype` runs it live, `just prototype --snapshot main` prints one frame and
+# exits (also split, prefix, small, zoom, failed, nocolor; add --ansi for its colours).
 prototype *args:
     cargo run --release --manifest-path prototype/terminal-application/Cargo.toml -- {{ args }}

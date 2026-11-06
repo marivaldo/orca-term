@@ -1,10 +1,12 @@
 # typos: https://github.com/crate-ci/typos
 
 [files]
-# The map's original input, kept verbatim in Portuguese, and what the agents sent, recorded
-# verbatim with their random ids (#44).
+# The map's original input, kept verbatim in Portuguese, what the agents sent, recorded
+# verbatim with their random ids (#44), and the terminal application prototype's design handoff,
+# kept as received, in Portuguese (#170).
 extend-exclude = [
   "docs/wayfinder-input.md",
+  "prototype/terminal-application/design/",
   "tests/fixtures/claude-hooks/",
   "tests/fixtures/opencode-events/",
 ]
