@@ -203,3 +203,8 @@ check-live *scenarios:
 # reliably; the scenario's file says what to do.
 record-live scenario:
     cargo xtask record-live {{ scenario }}
+
+# The throwaway prototype of #170, orca-term as a terminal application: `just prototype` runs it
+# live, `just prototype --snapshot A` prints one frame of variant A (or B, C) and exits.
+prototype *args:
+    cargo run --release --manifest-path prototype/terminal-application/Cargo.toml -- {{ args }}

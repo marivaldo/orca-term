@@ -1,0 +1,21 @@
+# A throwaway prototype (issue #170). Its own package, outside the repository's Cargo workspace.
+[package]
+name = "orca-term-prototype-terminal-application"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "orca-term-prototype"
+path = "src/main.rs"
+
+# Empty on purpose: keeps this crate out of the repository's workspace.
+[workspace]
+
+[dependencies]
+# crossterm comes re-exported from ratatui, and vt100 re-exported from tui-term, so the versions
+# always line up.
+ratatui = "0.30.2"
+tui-term = "0.3.4"
+portable-pty = "0.9.0"
+unicode-width = "0.2"
