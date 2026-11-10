@@ -25,6 +25,10 @@ turns, show what one turn changed and say which turn wrote each line of a file. 
 checks what orca-term needs on the machine. `orca-term app` opens the terminal application:
 every project's worktrees in a side menu, and the open worktree's agent beside it
 ([Application](#application)).
+The primary checkout, the repository you work in, is a worktree of its fleet too, as in Orca (ADR
+0013): `worktree ls` lists it first, tagged `repo (primary)` (`"primary": true` in `--json`, `false`
+for the others), and an agent can run there, with its turns, notes and unseen mark like any
+worktree's. It is never removed: `worktree rm` refuses it (`primary_checkout`, exit code 24).
 `orca-term worktree rm <worktree>` keeps the worktree's branch unless it is merged, and refuses
 modified or untracked files unless `--force`; an agent running there is stopped first (`stopped
 the agent of worktree <name>`), once those checks pass, so a refused removal leaves it running.
@@ -524,10 +528,15 @@ worktree's branch (every worktree when you name none) and its checks, and keeps 
 sidebar. It prints one line per worktree:
 
 ```text
+repo: no PR
 demo: PR #12 open, checks pending
 docs: no PR
 spike: PR unavailable: GitHub CLI is unavailable
 ```
+
+A worktree on the repository's default branch, the primary checkout most of the time, has no pull
+request, and gh is not asked about it; on any other branch the primary checkout has one like any
+worktree.
 
 A pull request is `open`, `draft`, `merged` or `closed`, and its checks are `failing` when any
 check failed, errored, was cancelled or timed out, else `pending` while any is queued or running,
@@ -555,6 +564,8 @@ the base) and `uncommitted` (how many files have changes not committed).
 creates the worktree's pull request from the core, outside the agent's sandbox (on macOS claude's
 sandbox can run neither gh nor a push over HTTPS). It first refuses, pushing nothing:
 
+- a worktree on the repository's default branch, the primary checkout most of the time, which
+  has no pull request (`default_branch`, exit code 25; `pr compose` refuses it too);
 - a branch with no commits ahead of the base (`no_commits`, exit code 10);
 - a branch that already has an open pull request, which it names (`pr_exists`, exit code 11);
 - gh missing or not logged in (`prerequisite`, exit code 9), in the words `pr refresh` uses;
@@ -580,7 +591,8 @@ Files with uncommitted changes do not stop it: the second line says how many wer
 on GitHub, squashing its commits unless you pass `--merge` (a merge commit) or `--rebase`. It first
 asks gh about the pull request and refuses, merging nothing:
 
-- no open pull request: none, or one already merged or closed (`no_open_pr`, exit code 13);
+- no open pull request: none, or one already merged or closed, and always on the default branch
+  (`no_open_pr`, exit code 13);
 - a draft, which you mark ready for review first (`pr_draft`, exit code 14);
 - a pull request GitHub reports as conflicting with its base, whose branch you update first
   (`pr_conflicting`, exit code 15);
