@@ -7,6 +7,7 @@ pub(crate) mod git;
 pub(crate) mod holder;
 pub(crate) mod nvim;
 pub(crate) mod program;
+pub(crate) mod screen;
 pub(crate) mod script;
 pub(crate) mod stdin;
 pub(crate) mod terminal;

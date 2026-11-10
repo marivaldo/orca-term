@@ -11,3 +11,6 @@
 
 # the core binary the build hook installs
 /bin/
+
+# snapshots of the application drawn by a failing test, waiting to be accepted
+/src/app/snapshots/*.new.txt

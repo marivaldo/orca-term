@@ -89,6 +89,13 @@ pub(crate) fn config_env() -> Env {
     }
 }
 
+/// What the terminal says of its colours: whether `NO_COLOR` is set and not empty, and
+/// `COLORTERM` (`truecolor`, `24bit`), when it is text (#174).
+pub(crate) fn colour_env() -> (bool, Option<String>) {
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+    (no_color, std::env::var("COLORTERM").ok())
+}
+
 /// The socket of the person's ssh agent, as `SSH_AUTH_SOCK` names it, or `None` when it is unset
 /// or empty: the one `sandbox.agent_socket` lets the agent reach (#105). Never printed.
 pub(crate) fn ssh_auth_sock() -> Option<PathBuf> {

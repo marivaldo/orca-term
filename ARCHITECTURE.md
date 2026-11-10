@@ -16,11 +16,13 @@ terminal can attach to it and detach again (ADR 0009), under claude's native san
 sandbox the core generates for opencode (ADR 0007, #35).
 
 The core is a library (`src/lib.rs`) with a thin binary (`src/main.rs`). Inside the library, every
-module sits in one of five layers, and code may use only its own layer and the layers below it:
+module sits in one of five layers, plus the terminal application between the operations and the
+edge (ADR 0012), and code may use only its own layer and the layers below it:
 
 ```text
 main      src/main.rs, src/lib.rs     parse the arguments, run, turn an error into an exit code
 edge      src/cli.rs, src/output*     the command-line surface and everything printed
+app       src/app*                    `orca-term app`, the terminal application: a client of the core
 ops       src/ops*                    one module per command
 adapters  src/adapters*               the only code that touches git, files, processes and the environment
 domain    src/domain*                 pure rules: data in, data or a decision out
@@ -172,6 +174,70 @@ the adapters, and returns a domain value that `output` prints.
   then `fleet` (the `worktree ls` document's body, through `fleet_view`, or null) and `error` (the
   error object any command prints, or null). The error object of `ambiguous_project` also carries
   `candidates`.
+- `cli` parses `app` (#174) and hands it to `app::run`; it checks git first.
+
+### app
+
+The terminal application (#174, ADR 0012), drawn in the "Quiet v2" look of the design on the
+branch `prototype/terminal-application` (`prototype/terminal-application/design/`). It sits above
+the operations: it reads the fleets and starts agents through them, and talks to each agent's
+holder through the holder adapter, as `agent attach` does. Only `app.rs` and the adapters it calls
+touch the outside world; everything under `app/` is pure and tested without a terminal.
+
+- `app.rs`: the run loop. One channel carries everything that happens: the terminal's keys,
+  pastes and resizes (`adapters/screen.rs`), every project's fleet read again each second on a
+  thread of its own (`ops::fleets::run_quick`), what the open agent's holder sends
+  (`adapters/holder/client.rs`, tagged with the connection's number so a closed one is ignored),
+  the end of an agent start (run on a thread, `ops::agent_start::run_in` with no approval
+  possible), and SIGTERM, SIGHUP or SIGINT. Each batch of messages becomes effects from the state,
+  which the loop carries out (`Link` keeps the one connection to the open worktree's holder), and
+  the loop draws the next frame. Live updates poll rather than listen: the core pushes changes
+  only to registered Neovims, in Neovim's own protocol, and the read costs a listing of the
+  worktrees by git per project and a few small files a second.
+- `app/state.rs`: `App`, everything shown and remembered (the fleets, the open worktree, the
+  side menu's cursor, the focus, the prefix's arming time, the agent's panel, a message, the
+  layout, the spinner's frame), and what each key does to it, as `Effect`s: `Type` bytes into the
+  agent, `Attach` to a holder, `Start` an agent at a size, `Quit`. `Ctrl-a` arms the prefix for
+  one key within 1.5 s: `h`/`l` move the focus (`h` only while the side menu shows), `j`/`k` open
+  the next or previous worktree in the side menu's order (after the last comes the first), `a` types `Ctrl-a`, `q`
+  quits, anything else (`esc`) disarms it. The focused side menu moves its cursor with `j`/`k`
+  and the arrows and opens with `enter`, giving the centre the focus. The centre types every key
+  into a running agent, encoded again (`keys.rs`); where none runs `enter` starts it. A fleet read
+  opens the worktree containing the directory the application started in, else the first, when
+  none is open or the open one is gone, and attaches to the open one's agent once its holder is
+  alive.
+- `app/panel.rs`: the agent's panel: a `vt100` screen fed with the replay and then the agent's
+  output, its `Status` (`NoAgent`, `Starting`, `Attached`, `Ended(how)`), what the keys need of it
+  (the cursor keys mode, bracketed paste) and its painting with the 16 ANSI colours on the
+  theme. `vt100` rather than `alacritty_terminal`: the research measured both drawing claude's and
+  opencode's screens the same, and `vt100` is 6 crates instead of 56, read cell by cell, with no
+  event loop to drive.
+- `app/keys.rs`: a crossterm key back into the bytes xterm sends for it (control codes, `ESC`
+  before an alt key, the arrows in normal or application mode, modifiers as `1;<m>`), and a paste
+  inside the bracketed-paste marks when the agent asked for them.
+- `app/layout.rs`: where each part goes: the side menu 34 columns wide from 150 columns, 28 from
+  100, none under 100; the centre beside it; the agent's terminal inside the centre's card; the
+  status bar on the last row; a word that the screen is too small under 40 by 10.
+- `app/menu.rs`: what the side menu says of the fleets: the worktrees' order, finding one by its
+  path, stepping through the order and wrapping at its ends, a project's name, the status bar's counts (needs you, failed,
+  running, quiet: everything else), the pull request's number and checks, `claude` for
+  claude-code, a worktree's message (its activity, else its state in words) and its age (`now`,
+  `9m`, `3h`, `2d`).
+- `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
+  project's initial and name, its worktrees in three lines, or two under 40 rows, the open one in
+  a half-line card, the cursor's in the accent with the focus; `no worktrees yet`; a project that
+  cannot be read shows its error, wrapped to three lines and muted; the list scrolls to the open or
+  cursor's worktree, and to its end from the last one), the centre (`centre.rs`: the `1 agent`
+  tab, the open worktree and its agent, the agent's screen or how to start one) and the status
+  bar (`status.rs`). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
+  with `app/snapshots/*.txt`: the text, then each cell's text colour and background as one letter
+  per token; a changed screen is written beside its snapshot as `<name>.new.txt`.
+- `app/paint.rs`: the painter (text at a column, cards with half-line edges, pills, keycaps,
+  cutting and wrapping by cells) and the colour `Mode` (`NO_COLOR`: attributes only;
+  `COLORTERM` `truecolor` or `24bit`: truecolor; else the ANSI-256 fallbacks), applied to the whole
+  frame at the end.
+- `app/theme.rs`: the design's tokens, each a truecolor value and an ANSI-256 fallback, and the
+  glyph and colour of each state and of a pull request's checks.
 
 ### ops
 
@@ -249,7 +315,8 @@ the adapters, and returns a domain value that `output` prints.
   stopped`. `--force` deletes with `git branch -D` whatever the tip.
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
-- `ops/agent_start.rs`: `agent start`: find the target (ready, not the primary checkout), lock it
+- `ops/agent_start.rs`: `agent start` (and `run_in`, the same from a given directory, which the
+  application starts a worktree's agent with, #174): find the target (ready, not the primary checkout), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
   `no_sandbox`), find claude on PATH and check its version (or fail as `prerequisite`), resolve
   the extra writable paths (those of a committed `orca-term.yaml` approved, else asked for or
@@ -427,7 +494,8 @@ the adapters, and returns a domain value that `output` prints.
   `Projects::remove`. It touches nothing but the list. `ops/fleets.rs`: `fleets`: every project
   on a scoped thread of its own, a gone one reported as such, the others read by
   `worktree_ls::read_listed`, which `worktree ls` runs on the current directory; a project whose
-  read fails carries the error.
+  read fails carries the error. `run_quick` (#174) reads the same way with `read_fleet` only, no
+  changed files counted and no remote base looked for: what the application reads every second.
 
 ### adapters
 
@@ -464,7 +532,8 @@ the adapters, and returns a domain value that `output` prints.
   `ORCA_TERM_RECORD`, `None` when unset or empty, #44); and the ssh agent's socket
   (`ssh_auth_sock`: `SSH_AUTH_SOCK`, `None` when unset or empty, never printed, #105).
   `inside_nvim` says whether `NVIM` is set and not empty, and `nvim_override` reads
-  `ORCA_TERM_NVIM` (#148).
+  `ORCA_TERM_NVIM` (#148). `colour_env` (#174) says whether `NO_COLOR` is set and not empty, and
+  reads `COLORTERM`, for the application's colours.
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
   sessions or gpgconf for gpg-agent's socket (`listed_by`, #41, #105), with an empty stdin; both
   only read. `run_within` (#87) runs a
@@ -489,12 +558,27 @@ the adapters, and returns a domain value that `output` prints.
   kill after 3 more); a write to a client that blocks for 3 s drops that client as stuck, a
   client with more than 8 MiB waiting in its queue is dropped as too far behind, and
   the writers are joined for at most 5 s after the agent exits. A client's first size is "jiggled" (one column narrower, then back, again
-  a second later) so the agent redraws for the new terminal. On the agent's exit every client
+  a second later) so the agent redraws for the new terminal. Since #174 the agent takes the size
+  of the client used last (`protocol::ClientSizes`): a client's input first resizes the agent to
+  that client's size when another was used since, and a client leaving hands the size back to
+  the one used before it. On the agent's exit every client
   gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
   Each connection is first checked by `holder/peer.rs`; one it refuses is closed at once. With
   `--events <agent>` it also opens the events pipe before starting the agent, which inherits its
   write end under `ORCA_TERM_EVENTS_FD`, keeps only the read end, starts the events thread once
   the agent runs, and on the agent's exit waits up to 5 s for it before leaving.
+- `adapters/holder/client.rs` (#174): a client of a holder whose ends are not this process's
+  terminal, the application's agent panel: `Client::connect` hands every frame the holder sends
+  (`Heard::Output`, `Ended`, then `Closed`) to a callback on a thread of its own; `send_input` and
+  `send_size` write frames, waiting 1 s at most; dropping it detaches. It connects by the socket's
+  absolute path, leaving the current directory alone, and only for a path too long for a socket
+  address enters the admin directory for the connect and comes back at once.
+- `adapters/screen.rs` (#174): the application's terminal, through ratatui and crossterm: raw
+  mode, the alternate screen and bracketed paste on entering, all put back (and the cursor shown)
+  when the `Screen` is dropped and, through a panic hook installed once, before a panic's message
+  is printed; the frame drawn by ratatui, which writes only the cells that changed; the keys,
+  pastes and resizes read on a thread of their own; SIGTERM, SIGHUP and SIGINT handed to the
+  application on another, so it quits and restores the terminal the same way.
 - `adapters/holder/client_queue.rs`: the frames waiting to be written to one client. The reader
   never waits for a client, so each client has a queue, limited by the bytes waiting in it (as
   many as the scrollback keeps, 8 MiB) and not by the number of frames: a client that reads
@@ -681,7 +765,18 @@ the adapters, and returns a domain value that `output` prints.
   big-endian length, the payload: input `i`, resize `r`, stop `s`, output `o`, exit `x`), their
   incremental decoder, and the scrollback a holder keeps; and `admit`, the rule for which
   clients a holder serves (both network namespaces read, and the same; and since #35 both user
-  namespaces too).
+  namespaces too). Since #174 the scrollback reads every byte it drops through
+  `terminal_modes::ModeReader` and starts its replay with the modes those bytes left on, and
+  `ClientSizes` is the one size of an agent with several clients: the size of the client used
+  last (one that sent its size or typed), as tmux's `window-size latest`, falling back to the one
+  used before when it leaves; a client that never sent a size counts for nothing.
+- `domain/terminal_modes.rs` (#174): the terminal modes an agent switched on, read from its
+  output with `vte`, the parser `vt100` is built on: the alternate screen (47, 1047, 1049), the
+  DEC private modes a client needs (cursor keys 1, cursor shown 25, the mouse reports and
+  encodings 1000, 1002, 1003, 1005, 1006, 1015, 1016, focus 1004, bracketed paste 2004), the
+  keypad (`ESC =`), the kitty keyboard protocol's stack (pushed, popped and set, 16 deep at most)
+  and xterm's modifyOtherKeys; a full reset (`ESC c`) forgets them. `Modes::restoring` gives the
+  bytes that put a fresh terminal in them, the alternate screen first.
 - `domain/setup.rs`: the setup: how it ended, what `worktree.json` records, the variables its
   script gets, the last line of its log, the end of its log as a person reads it (`log_tail`,
   the terminal's control sequences taken out by `strip_terminal_codes`), and the reports of the
@@ -884,7 +979,8 @@ validate"):
   runs the hook for each event an agent reports through its pipe), only `adapters/program.rs` runs a
   program for its version (or opencode for its list of sessions, gpgconf for gpg-agent's socket)
   and replaces orca-term with Neovim (#148), only `adapters/fs.rs` reads or writes files, and only
-  `adapters/env.rs` reads the environment.
+  `adapters/env.rs` reads the environment. The application (#174) takes the terminal only through
+  `adapters/screen.rs` and talks to a holder only through `adapters/holder/client.rs`.
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
   Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
   makes and `cli` hands down, so ops and adapters never name stdout or stderr. Two adapters move
@@ -1178,10 +1274,24 @@ A file of a newer schema is refused, for reading too, since the list's shape cou
   agent is started again (macOS honours the glob).
 - **`git push` over SSH fails inside claude's sandbox on macOS**, even with the network open;
   HTTPS works. The person pushes from outside, or uses HTTPS.
-- **A replay may miss early terminal modes**: the scrollback is raw bytes, so a truncated replay
-  can start mid escape sequence, and a mode switched on before the kept bytes (bracketed paste,
-  mouse, cursor visibility) is not replayed; the jiggle redraws the screen, not the modes. On
-  detach the client resets the usual modes.
+- **A replay can start mid escape sequence**: the scrollback is raw bytes, so a truncated replay
+  can begin with the tail of a sequence, drawn as text until the agent redraws. The modes the
+  dropped bytes switched on are put in front of it since #174, but only those
+  `domain/terminal_modes.rs` tracks: a title, a cursor style or colours set long ago are not. On
+  detach `agent attach` resets the usual modes.
+- **Nobody answers the agent's questions to its terminal** (its device attributes, the kitty
+  keyboard query, the cursor position): the holder starts it before any client, and neither
+  `agent attach`'s terminal (which may meet them in the replay) nor the application's panel
+  answers. opencode then keeps the older key encoding.
+- **The application encodes keys the old way**: it reads keys as events to find its prefix and
+  sends each again as xterm would without the kitty keyboard protocol, so Shift+Enter reaches the
+  agent as Enter. It takes no mouse: the wheel and clicks stay with the person's terminal.
+- **The agent's size follows the client typed in last**: an `agent attach` in Neovim and the
+  application see the agent laid out for whichever was used last, and the other draws a screen
+  of another size until the person types in it. A panel's screen (`vt100`) cuts or pads its rows
+  on a width change rather than reflowing them; the agent redraws on the resize anyway.
+- **The side menu lags the core by up to a second**: it reads every project's fleet again each
+  second rather than being told of a change.
 - **Paths with glob characters** (`*`, `?`, `[`) in the repository's path are read as globs by
   claude's `denyWrite` on macOS.
 - **The real sandbox boundary is not exercised by the tests**: a fake claude enforces nothing.
@@ -1384,6 +1494,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   that send known hooks and lines through the real orca-term, and a fake cargo (`CARGO`).
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
   each domain and edge module. Adapters keep the few tests that need a real directory.
+- **The application** (#174): its keys are tested through `app/state.rs`'s `App` alone, and its
+  screens are drawn on ratatui's `TestBackend` and compared with the snapshots in
+  `src/app/snapshots/` (`app/draw/tests.rs`), on projects and worktrees made up by
+  `app/fixture.rs`. `tests/app.rs` runs `orca-term app` for real in a PTY, with the fake claude
+  of `tests/support/agent.rs` as the agent, reading the screen back through `vt100`: the side
+  menu, `^a k`, typing into the agent, `^a q` leaving the agent running and the alternate screen,
+  SIGTERM and SIGHUP restoring the terminal, `enter` starting an agent, and an agent started from
+  the command line showing up on its own. The holder's side is in `tests/agent.rs`, through a
+  client that speaks the protocol itself (`RawClient`): the size of the client typed in last, and
+  a replay starting with the modes switched on before the bytes it keeps.
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
   headless Neovim against the binary `cargo build` makes, in throwaway git repositories built by
   `spec/support.lua`. The sidebar's text and highlights are compared with
