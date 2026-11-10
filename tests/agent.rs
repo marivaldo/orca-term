@@ -486,6 +486,7 @@ fn the_launch_carries_the_settings_file_accept_edits_and_no_forbidden_flag() {
             settings_file.display().to_string(),
             "--permission-mode".to_owned(),
             "acceptEdits".to_owned(),
+            "--ide".to_owned(),
         ]
     );
     let cwd = fs::read_to_string(fx.log.with_extension("cwd")).unwrap();
@@ -693,7 +694,7 @@ fn setup_is_busy_while_the_agent_runs_and_the_recorded_agent_survives_setup() {
 }
 
 #[test]
-fn the_agents_environment_loses_only_the_claude_code_session_variables() {
+fn the_agents_environment_loses_only_the_session_and_editor_port_variables() {
     let fx = AgentRepo::new();
     fx.new_worktree("fix");
 
@@ -703,6 +704,8 @@ fn the_agents_environment_loses_only_the_claude_code_session_variables() {
         .env("CLAUDE_CODE_ENTRYPOINT", "cli")
         .env("CLAUDE_CODE_SESSION_ID", "abc")
         .env("CLAUDE_CODE_CHILD_SESSION", "1")
+        .env("CLAUDE_CODE_SSE_PORT", "12345")
+        .env("ENABLE_IDE_INTEGRATION", "true")
         .env("ORCA_TERM_TEST_KEPT", "1")
         .env("ANTHROPIC_SOMETHING", "kept")
         .output()
@@ -720,6 +723,8 @@ fn the_agents_environment_loses_only_the_claude_code_session_variables() {
         "CLAUDE_CODE_ENTRYPOINT",
         "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SSE_PORT",
+        "ENABLE_IDE_INTEGRATION",
     ] {
         assert!(
             !names.iter().any(|n| n == stripped),
