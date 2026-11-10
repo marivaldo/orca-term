@@ -12,7 +12,7 @@ lint.
 - `clone`: Rust's `Clone` trait and `.clone()`, never a copy of the repository.
 - `comment`: git's comment lines in a commit message, and code comments.
 - `request`: GitHub's pull request and the `pull_request` event.
-- `tab`: Neovim's tabpage, which each worktree gets one of.
+- `tab`: Neovim's tabpage, which each worktree gets one of, and the application's tabs over a worktree's panels (`1 agent`, `2 nvim`, `3 shell`).
 - `unit`: unit tests.
 - `thread`: Rust's `std::thread`, never a session.
 - `plugin`: Neovim's `plugin/` directory, and the Lua plugin that is the Neovim client; never the core.

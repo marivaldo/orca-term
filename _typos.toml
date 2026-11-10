@@ -12,3 +12,5 @@ extend-exclude = [
 [default.extend-words]
 # Neovim's `:enew` command (edit a new, empty buffer).
 enew = "enew"
+# ratatui, the terminal drawing library the application is built on (ADR 0012).
+ratatui = "ratatui"

@@ -1,16 +1,16 @@
 # orca-term
 
 A fleet of CLI coding agents working in parallel on one repository, each in a git worktree of its
-own, reviewed from inside Neovim. This glossary fixes the vocabulary that every issue, module and
+own, shown side by side in a terminal application, with the person's Neovim as the editor. This glossary fixes the vocabulary that every issue, module and
 document in this repo is written in.
 
 ## Language
 
 **Worktree**:
-The unit a person creates, names, lists and switches between: a git worktree of the repository
-other than the primary checkout, together with at most one agent and its session. A worktree is
+The unit a person creates, names, lists and switches between: a git worktree of the repository,
+the primary checkout included, together with at most one agent and its session. A worktree is
 identified by its path, and its name is that directory's basename. A worktree with no agent
-attached is still a worktree. The primary checkout is never one.
+attached is still a worktree.
 _Avoid_: lane, unit, task, workspace, slot, station, tab, orca worktree, clone
 
 **Setup**:
@@ -32,8 +32,9 @@ Taking a project off the list never touches its directory, its worktrees or its 
 _Avoid_: tracked repository, registered repository, repo entry
 
 **Primary checkout**:
-The repository's main working tree, the one the person works in. It is listed by git alongside the
-worktrees but is not one of them, so no agent runs in it.
+The repository's main working tree, the one the person works in. It is a worktree like the others
+and may run an agent (ADR 0013), but it comes first in its fleet, carries the `primary` tag, and is
+never removed.
 _Avoid_: main worktree, root worktree, base worktree
 
 **Agent**:
@@ -91,12 +92,33 @@ _Avoid_: comment, annotation, review comment
 
 **Core**:
 The orchestrator itself: a library plus a CLI, invoked per action, running no daemon of its own.
-It keeps each running agent alive through that agent's holder. Neovim is a client of the core,
-never its host.
+It keeps each running agent alive through that agent's holder. The application and Neovim are
+clients of the core, never its host.
 _Avoid_: daemon, server, engine, plugin
 
 **Holder**:
 The detached process that keeps one worktree's agent running and holds its screen, so the agent
-survives Neovim quitting and Neovim can attach to it again. A worktree has at most one holder, and
-it lives exactly as long as the agent.
+survives every client quitting and any client can attach to it again. A worktree has at most one
+holder, and it lives exactly as long as the agent.
 _Avoid_: daemon, server, multiplexer
+
+**Application**:
+The terminal program `orca-term app`: the side menu, the panels of the selected worktree, the
+right column and the status bar, drawn by orca-term itself (ADR 0012). It is a client of the core.
+_Avoid_: dashboard, frontend, gui
+
+**Side menu**:
+The application's left column: every project on the project list, each with its worktrees, their
+states and their unseen marks. Selecting a worktree there opens its panels.
+_Avoid_: navigator, drawer
+
+**Panel**:
+One terminal in the centre of the application, belonging to the selected worktree: its agent, its
+Neovim or a shell. Panels can be split side by side and one can be zoomed to fill the screen. The
+holder keeps the agent's panel alive when the application quits.
+_Avoid_: pane, viewport
+
+**Prefix**:
+The key, `Ctrl-a`, that arms the application's own keys for one keystroke. Without it every key
+goes to the focused panel.
+_Avoid_: chord, mode key

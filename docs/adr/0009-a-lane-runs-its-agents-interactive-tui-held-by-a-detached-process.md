@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, its clients widened to the terminal application by 0012
 ---
 
 # A lane runs its agent's interactive TUI, held by a detached process of ours
