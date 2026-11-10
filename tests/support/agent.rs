@@ -468,6 +468,107 @@ fn collect(
     buffer
 }
 
+/// A client of a holder that speaks the protocol itself, as the application does (#174), rather
+/// than through `agent attach`: it sends its own sizes. What the holder sends is collected as it
+/// comes: the output frames' bytes, one after the other.
+#[derive(Debug)]
+pub(crate) struct RawClient {
+    stream: std::os::unix::net::UnixStream,
+    output: Arc<Mutex<Vec<u8>>>,
+    /// The first output frame, the replay, once it came.
+    replay: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl RawClient {
+    /// Connects to the holder whose admin directory is `admin`, through a link with a short path
+    /// at `link` (a unix socket's path holds about 100 bytes, and admin directories are longer).
+    pub(crate) fn connect(admin: &Path, link: &Path) -> Self {
+        if link.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(admin.join("agent.sock"), link).unwrap();
+        }
+        let stream = std::os::unix::net::UnixStream::connect(link).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let replay = Arc::new(Mutex::new(None));
+        let reader = stream.try_clone().unwrap();
+        let (sink, first) = (Arc::clone(&output), Arc::clone(&replay));
+        thread::spawn(move || read_frames(reader, &sink, &first));
+        Self {
+            stream,
+            output,
+            replay,
+        }
+    }
+
+    /// Sends this client's terminal size.
+    pub(crate) fn resize(&mut self, rows: u16, cols: u16) {
+        let mut payload = rows.to_be_bytes().to_vec();
+        payload.extend_from_slice(&cols.to_be_bytes());
+        self.send_frame(b'r', &payload);
+    }
+
+    /// Types `text` into the agent.
+    pub(crate) fn send(&mut self, text: &str) {
+        self.send_frame(b'i', text.as_bytes());
+    }
+
+    fn send_frame(&mut self, tag: u8, payload: &[u8]) {
+        let mut frame = vec![tag];
+        frame.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).unwrap();
+    }
+
+    /// How many bytes of output came so far: where [`Self::wait_for_since`] starts looking.
+    pub(crate) fn mark(&self) -> usize {
+        self.output.lock().unwrap().len()
+    }
+
+    /// Waits until `marker` was printed after the first `from` bytes of output.
+    pub(crate) fn wait_for_since(&self, from: usize, marker: &str) {
+        wait_until(&format!("`{marker}` after byte {from}"), || {
+            let out = self.output.lock().unwrap();
+            out[from.min(out.len())..]
+                .windows(marker.len())
+                .any(|window| window == marker.as_bytes())
+        });
+    }
+
+    /// The replay, the holder's first output frame, waiting for it.
+    pub(crate) fn replay(&self) -> Vec<u8> {
+        wait_until("the replay", || self.replay.lock().unwrap().is_some());
+        self.replay.lock().unwrap().clone().unwrap()
+    }
+}
+
+/// Dropping the client closes its connection, which detaches it: the reader's copy of the socket
+/// would keep it open otherwise.
+impl Drop for RawClient {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Reads the holder's frames from `reader` until it closes: every output frame's bytes go to
+/// `sink`, and the first one is kept in `first` too.
+fn read_frames(
+    mut reader: impl std::io::Read,
+    sink: &Mutex<Vec<u8>>,
+    first: &Mutex<Option<Vec<u8>>>,
+) {
+    let mut header = [0u8; 5];
+    while reader.read_exact(&mut header).is_ok() {
+        let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+        let mut payload = vec![0u8; usize::try_from(len).unwrap()];
+        if reader.read_exact(&mut payload).is_err() {
+            return;
+        }
+        if header[0] == b'o' {
+            first.lock().unwrap().get_or_insert_with(|| payload.clone());
+            sink.lock().unwrap().extend_from_slice(&payload);
+        }
+    }
+}
+
 /// Whether a holder is alive for the worktree whose admin directory is `admin`: the read-only
 /// probe of `agent.lock`, as the core does it.
 pub(crate) fn holder_alive(admin: &Path) -> bool {

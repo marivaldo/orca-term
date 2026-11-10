@@ -22,6 +22,8 @@ serde_norway = "0.9.42"
 sha2 = "0.11.1"
 signal-hook = "0.4.5"
 thiserror = "2.0.21"
+# A terminal parser, the one vt100 is built on: the holder reads the agent's modes with it (#174).
+vte = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

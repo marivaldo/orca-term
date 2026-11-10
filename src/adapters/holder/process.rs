@@ -42,7 +42,7 @@ use crate::adapters::holder::client_queue::{ClientFrames, ClientQueue, client_qu
 use crate::adapters::holder::{HolderArgs, error_line, events, peer, ready_line};
 use crate::domain::agent::{HolderRecord, Size};
 use crate::domain::hook::EVENTS_FD_VAR;
-use crate::domain::protocol::{self, Decoder, Frame, SCROLLBACK_CAP, Scrollback};
+use crate::domain::protocol::{self, ClientSizes, Decoder, Frame, SCROLLBACK_CAP, Scrollback};
 use crate::domain::state::{AGENT_SOCKET_FILE, AdminDir};
 
 /// How long the holder keeps trying `agent.lock` before calling another holder alive: a read-only
@@ -105,6 +105,8 @@ struct Holder {
     child: Mutex<Child>,
     /// The size the PTY was last set to.
     size: Mutex<Size>,
+    /// Each client's size, and which client was used last: the PTY takes that one's (#174).
+    sizes: Mutex<ClientSizes>,
     /// The thread running the hook for each event the agent reports through its pipe, for an
     /// agent that does (opencode).
     events: Mutex<Option<JoinHandle<()>>>,
@@ -154,6 +156,7 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
         input: Mutex::new(()),
         child: Mutex::new(child),
         size: Mutex::new(args.size),
+        sizes: Mutex::new(ClientSizes::default()),
         events: Mutex::new(None),
     });
     start_reader(&holder);
@@ -389,8 +392,12 @@ fn serve_client(holder: &Arc<Holder>, connection: UnixStream) {
     };
     let writer = thread::spawn(move || write_client(writer_stream, replay, exit, &frames));
     lock_shared(holder).writers.push(writer);
-    read_client(holder, connection);
+    read_client(holder, connection, id);
     lock_shared(holder).clients.remove(&id);
+    let size = lock_or_recover(&holder.sizes).left(id);
+    if let Some(size) = size {
+        set_size(holder, size);
+    }
 }
 
 /// One client's writer: the replay, then the agent's end if it already ended, else every frame
@@ -426,8 +433,9 @@ fn write_client(
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-/// Reads one client's frames until it closes or sends something that is not the protocol.
-fn read_client(holder: &Arc<Holder>, mut connection: UnixStream) {
+/// Reads one client's frames until it closes or sends something that is not the protocol. Input
+/// makes the client the one used last, so the agent takes its size first.
+fn read_client(holder: &Arc<Holder>, mut connection: UnixStream, id: u64) {
     let mut decoder = Decoder::default();
     let mut buf = vec![0u8; 16 * 1024];
     let mut first_resize = true;
@@ -439,11 +447,9 @@ fn read_client(holder: &Arc<Holder>, mut connection: UnixStream) {
         decoder.push(&buf[..n]);
         loop {
             match decoder.next_frame() {
-                Ok(Some(Frame::Input(bytes))) => {
-                    let _guard = lock_or_recover(&holder.input);
-                    let _ = (&holder.pty).write_all(&bytes);
-                }
+                Ok(Some(Frame::Input(bytes))) => type_input(holder, id, &bytes),
                 Ok(Some(Frame::Resize(size))) => {
+                    lock_or_recover(&holder.sizes).resized(id, size);
                     resize(holder, size, std::mem::take(&mut first_resize));
                 }
                 Ok(Some(Frame::Stop)) => stop_agent(holder),
@@ -455,16 +461,27 @@ fn read_client(holder: &Arc<Holder>, mut connection: UnixStream) {
     }
 }
 
+/// Types `bytes` from client `id` into the agent's terminal, after giving the agent that client's
+/// size when another client was used last (#174).
+fn type_input(holder: &Holder, id: u64, bytes: &[u8]) {
+    let size = lock_or_recover(&holder.sizes).typed(id);
+    if let Some(size) = size {
+        set_size(holder, size);
+    }
+    let _guard = lock_or_recover(&holder.input);
+    let _ = (&holder.pty).write_all(bytes);
+}
+
 /// Sets the agent's terminal size. A client's first size also jiggles, now and again a second
 /// later, so the agent redraws its screen for the new terminal even when the size is unchanged
 /// (a resize to the same size changes nothing for it, and a size sent within the agent's first
 /// moments can be lost).
 fn resize(holder: &Arc<Holder>, size: Size, first_from_client: bool) {
-    *lock_or_recover(&holder.size) = size;
     if !first_from_client {
-        let _ = holder.pty.resize(pty_size(size));
+        set_size(holder, size);
         return;
     }
+    *lock_or_recover(&holder.size) = size;
     jiggle(holder, size);
     let holder = Arc::clone(holder);
     thread::spawn(move || {
@@ -472,6 +489,12 @@ fn resize(holder: &Arc<Holder>, size: Size, first_from_client: bool) {
         let current = *lock_or_recover(&holder.size);
         jiggle(&holder, current);
     });
+}
+
+/// Sets the agent's terminal size, as one client's size becomes the agent's.
+fn set_size(holder: &Holder, size: Size) {
+    *lock_or_recover(&holder.size) = size;
+    let _ = holder.pty.resize(pty_size(size));
 }
 
 fn jiggle(holder: &Holder, size: Size) {

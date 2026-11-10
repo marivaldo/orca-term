@@ -10,6 +10,7 @@
 use std::collections::VecDeque;
 
 use crate::domain::agent::Size;
+use crate::domain::terminal_modes::ModeReader;
 
 /// The most bytes a frame may carry: more than the replay can ever be.
 pub(crate) const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
@@ -247,12 +248,63 @@ fn same(own: Option<NsId>, peer: Option<NsId>) -> bool {
     }
 }
 
+/// The one terminal size of an agent several clients are attached to (#174), such as the
+/// application and an `agent attach` in Neovim: the size of the client used last, as tmux's
+/// `window-size latest` does. A client is used when it sends its size and when it types, so the
+/// agent redraws for whichever terminal the person is typing in, and a client left open and idle
+/// elsewhere never shrinks it. A client that never sent a size (a note being typed in) counts for
+/// nothing.
+#[derive(Debug, Default)]
+pub(crate) struct ClientSizes {
+    /// Every client that sent a size, with its latest, from the one used longest ago to the one
+    /// used last.
+    used: Vec<(u64, Size)>,
+}
+
+impl ClientSizes {
+    /// Client `id` sent `size`: the agent takes it.
+    pub(crate) fn resized(&mut self, id: u64, size: Size) {
+        self.used.retain(|(client, _)| *client != id);
+        self.used.push((id, size));
+    }
+
+    /// Client `id` typed: the agent takes its size, when it has one. Returns the new size when it
+    /// changed.
+    pub(crate) fn typed(&mut self, id: u64) -> Option<Size> {
+        let before = self.current();
+        let at = self.used.iter().position(|(client, _)| *client == id)?;
+        let entry = self.used.remove(at);
+        self.used.push(entry);
+        self.changed_from(before)
+    }
+
+    /// Client `id` left: the agent takes the size of the client used last before it. Returns the
+    /// new size when it changed; with no client left, the size stays as it was.
+    pub(crate) fn left(&mut self, id: u64) -> Option<Size> {
+        let before = self.current();
+        self.used.retain(|(client, _)| *client != id);
+        self.changed_from(before)
+    }
+
+    /// The size the agent should have: the latest of the client used last.
+    pub(crate) fn current(&self) -> Option<Size> {
+        self.used.last().map(|(_, size)| *size)
+    }
+
+    fn changed_from(&self, before: Option<Size>) -> Option<Size> {
+        self.current().filter(|now| Some(*now) != before)
+    }
+}
+
 /// The last bytes the agent printed, at most [`SCROLLBACK_CAP`] of them, replayed to every
-/// client that attaches.
+/// client that attaches, after the terminal modes the bytes dropped before them left switched on
+/// (#174).
 #[derive(Debug)]
 pub(crate) struct Scrollback {
     bytes: VecDeque<u8>,
     cap: usize,
+    /// Reads every byte dropped, to know the modes the kept bytes start from.
+    dropped: ModeReader,
 }
 
 impl Scrollback {
@@ -260,6 +312,7 @@ impl Scrollback {
         Self {
             bytes: VecDeque::new(),
             cap,
+            dropped: ModeReader::default(),
         }
     }
 
@@ -267,11 +320,22 @@ impl Scrollback {
     pub(crate) fn push(&mut self, chunk: &[u8]) {
         self.bytes.extend(chunk);
         let over = self.bytes.len().saturating_sub(self.cap);
-        self.bytes.drain(..over);
+        if over > 0 {
+            let dropped: Vec<u8> = self.bytes.drain(..over).collect();
+            self.dropped.read(&dropped);
+        }
     }
 
-    /// Everything kept, oldest first.
+    /// The replay: the sequences that switch the modes the dropped bytes left on, then every byte
+    /// kept, oldest first. Replayed in order, it leaves a terminal in the agent's current modes.
     pub(crate) fn snapshot(&self) -> Vec<u8> {
+        let mut all = self.dropped.modes().restoring();
+        all.extend(self.kept());
+        all
+    }
+
+    /// Every byte kept, oldest first.
+    fn kept(&self) -> Vec<u8> {
         let (a, b) = self.bytes.as_slices();
         let mut all = Vec::with_capacity(a.len() + b.len());
         all.extend_from_slice(a);
@@ -282,7 +346,7 @@ impl Scrollback {
     /// The last line kept that is not blank, with its escape sequences and control bytes dropped,
     /// for a report.
     pub(crate) fn last_line(&self) -> Option<String> {
-        let text = String::from_utf8_lossy(&self.snapshot()).into_owned();
+        let text = String::from_utf8_lossy(&self.kept()).into_owned();
         text.lines()
             .map(|line| strip_escapes(line).trim().to_owned())
             .rfind(|line| !line.is_empty())
@@ -449,6 +513,70 @@ mod tests {
         assert_eq!(scrollback.snapshot(), b"cdefghij");
         scrollback.push(b"0123456789");
         assert_eq!(scrollback.snapshot(), b"23456789");
+    }
+
+    const WIDE: Size = Size {
+        rows: 40,
+        cols: 120,
+    };
+    const NARROW: Size = Size { rows: 20, cols: 60 };
+
+    #[test]
+    fn the_agent_takes_the_size_of_the_client_used_last() {
+        let mut sizes = ClientSizes::default();
+        sizes.resized(1, WIDE);
+        sizes.resized(2, NARROW);
+        assert_eq!(sizes.current(), Some(NARROW));
+        assert_eq!(sizes.typed(2), None, "already the latest");
+        assert_eq!(sizes.typed(1), Some(WIDE), "typing in the wide one");
+        assert_eq!(sizes.typed(1), None);
+        assert_eq!(
+            sizes.typed(3),
+            None,
+            "a client with no size changes nothing"
+        );
+        assert_eq!(sizes.current(), Some(WIDE));
+    }
+
+    #[test]
+    fn a_client_leaving_hands_the_size_to_the_one_used_before_it() {
+        let mut sizes = ClientSizes::default();
+        sizes.resized(1, WIDE);
+        sizes.resized(2, NARROW);
+        assert_eq!(sizes.left(2), Some(WIDE));
+        assert_eq!(sizes.left(3), None, "it never sent a size");
+        sizes.resized(3, NARROW);
+        assert_eq!(sizes.left(1), None, "not the latest: nothing changes");
+        assert_eq!(
+            sizes.left(3),
+            None,
+            "the last one leaves the size as it was"
+        );
+        assert_eq!(sizes.current(), None);
+    }
+
+    #[test]
+    fn a_client_resized_to_the_size_of_the_one_before_changes_nothing_when_it_leaves() {
+        let mut sizes = ClientSizes::default();
+        sizes.resized(1, WIDE);
+        sizes.resized(2, WIDE);
+        assert_eq!(sizes.left(2), None);
+    }
+
+    #[test]
+    fn the_replay_starts_with_the_modes_the_dropped_bytes_left_on() {
+        let mut scrollback = Scrollback::new(8);
+        scrollback.push(b"\x1b[?2004h");
+        assert_eq!(scrollback.snapshot(), b"\x1b[?2004h", "nothing dropped yet");
+        scrollback.push(b"abcdefgh");
+        assert_eq!(scrollback.snapshot(), b"\x1b[?2004habcdefgh");
+        scrollback.push(b"\x1b[?2004l");
+        assert_eq!(
+            scrollback.snapshot(),
+            b"\x1b[?2004h\x1b[?2004l",
+            "the kept bytes switch it off again, after"
+        );
+        assert_eq!(scrollback.last_line(), None, "the modes are not a line");
     }
 
     #[test]
