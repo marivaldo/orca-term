@@ -2,16 +2,20 @@
 //! and says which contract this binary speaks. It only looks: it installs nothing, needs no
 //! repository and never fails; the edge turns a missing or too old program into the exit code.
 //! When git signs with an ssh key only an agent holds, it also names the setting that lets a
-//! worktree's agent sign (#105).
+//! worktree's agent sign (#105). Inside a repository, it asks the Neovims registered there whether
+//! they run coder/claudecode.nvim, which links them to claude (#179).
 
-use crate::adapters::{env, fs, git};
+use std::path::PathBuf;
+
+use crate::adapters::{self, env, fs, git};
+use crate::domain::nvim::claudecode;
 use crate::domain::prerequisite::{self, Check, Report};
 use crate::domain::sandbox::signing::{self, SshSigningKey};
 use crate::domain::sandbox::{self, Platform};
-use crate::ops::check_program;
+use crate::ops::{check_program, nvim_registry, registered_neovims};
 
-/// Every check, in the order the report shows them: git, the sandbox, each agent, signing when it
-/// needs the person's agent, the contract.
+/// Every check, in the order the report shows them: git, the sandbox, each agent, claudecode.nvim
+/// inside a repository, signing when it needs the person's agent, the contract.
 pub(crate) fn run() -> Report {
     let path_dirs = env::path_dirs();
     let mut checks = vec![
@@ -23,9 +27,29 @@ pub(crate) fn run() -> Report {
     for agent in prerequisite::AGENTS {
         checks.push(check_program(&path_dirs, agent).1);
     }
+    checks.extend(claudecode_check());
     checks.extend(signing_check());
     checks.push(prerequisite::contract_check());
     Report { checks }
+}
+
+/// The doctor's word on coder/claudecode.nvim, from the Neovims registered in the repository
+/// containing the current directory: each is asked whether it has the plugin loaded, all at once
+/// and briefly (`adapters/nvim.rs`). `None` outside a repository, and when git cannot be asked.
+/// Unlike the notice after a write, it never removes a Neovim that is gone from the registry: the
+/// doctor only looks.
+fn claudecode_check() -> Option<Check> {
+    let registry = nvim_registry().ok()?;
+    let sockets: Vec<PathBuf> = registered_neovims(&registry)
+        .into_iter()
+        .map(|(_, socket)| socket)
+        .collect();
+    let answers = adapters::nvim::ask_all(&sockets, &claudecode::request(), claudecode::ANSWER_LEN);
+    let found: Vec<_> = answers
+        .iter()
+        .map(|answer| claudecode::read_answer(answer.as_deref()))
+        .collect();
+    Some(claudecode::check(&found))
 }
 
 /// The doctor's word on signing, when git's config in the current directory signs with an ssh key

@@ -1205,7 +1205,7 @@ end
 
 ---One check of `doctor --json`.
 ---@class orca_term.Check
----@field name string `git`, `sandbox`, `claude`, `opencode` or `contract`
+---@field name string `git`, `sandbox`, `claude`, `opencode`, `claudecode`, `signing` or `contract`
 ---@field status string `ok`, `warn`, `missing`, `too_old` or `info`
 ---@field found? string what was found, such as a version
 ---@field need? string what orca-term needs, such as the oldest version

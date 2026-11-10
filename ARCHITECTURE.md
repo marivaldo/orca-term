@@ -379,6 +379,9 @@ everything else under `app/` is pure and tested without a terminal.
   that order. It only looks, needs no repository and never fails. Before the contract, when git's
   config signs with an ssh key whose private half is not a readable file (or a key written in the
   config), an `info` line names `sandbox.agent_socket` (#105); the key is never read nor printed.
+  Inside a repository, after the agents, a `claudecode` line from the Neovims registered there
+  (`ops::registered_neovims`, `adapters::nvim::ask_all`, `domain/nvim/claudecode.rs`, #179); it
+  never removes a gone Neovim from the registry, as the notice after a write does.
 - `ops/worktree_new.rs`: `worktree new`: check the name, resolve the config, add git's worktree,
   lock it, copy the copy list, run the setup. With `--agent` (#93), the agent is recorded under the
   lock before the setup runs, so a failed or unapproved setup still leaves it the worktree's agent
@@ -741,10 +744,11 @@ everything else under `app/` is pure and tested without a terminal.
   client's pid from the socket (`SO_PEERCRED`), then its network and user namespaces
   (`/proc/<pid>/ns/net`, `/proc/<pid>/ns/user`) and the holder's own (`/proc/self/ns/...`), and
   asks `protocol::admit`; elsewhere every client is served.
-- `adapters/nvim.rs`: a running Neovim's server socket: `send` connects, writes one message and
+- `adapters/nvim.rs`: a running Neovim's server socket: `send_all` connects, writes one message and
   hangs up, on a thread of its own, within 200 ms, and only says whether it was `Delivered`, the
   Neovim is `Gone` (no socket, or nobody listening) or it was `Skipped` (anything else); it never
-  fails.
+  fails. `ask_all` (#179) does the same and returns the first bytes of each answer, `None` for a
+  Neovim that gave none in time; the domain reads them.
 - `adapters/terminal.rs`: the terminal of `agent attach`: raw mode (restored on the way out,
   followed by a reset of the screen modes an agent leaves behind), the size sent on connect and on
   every `SIGWINCH`, what is typed forwarded as input (Ctrl-\ detaches unless `--no-detach-key`),
@@ -796,6 +800,11 @@ everything else under `app/` is pure and tested without a terminal.
   strings, positive integers of any size, #177): the one that fires `User OrcaTermWorktreeChanged`
   with the worktree's path, `checktime`, and `open_diff`, which calls the Neovim client's
   `diff_from_core` with the worktree, the primary checkout and the file (#177).
+- `domain/nvim/claudecode.rs` (#179): the doctor's question to a registered Neovim, whether
+  coder/claudecode.nvim is loaded (`nvim_exec_lua` of `return package.loaded['claudecode'] ~= nil`,
+  which only reads), the 5-byte answer read as `Loaded`, `NotLoaded` or `NoAnswer`, and the
+  doctor's `claudecode` line: `ok`, `warn`, or `info` when nothing could be checked; never a
+  refusal.
 - `domain/changes.rs` (#177): a worktree's changed files (`ChangedFile`: its path, its `Change`,
   M, A, D or R, and its lines added and deleted, none for a binary file), read from git's
   `--name-status -z` and `--numstat -z` and the untracked files, sorted by path; `count_lines` as
@@ -1879,8 +1888,10 @@ what they print.
 - `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
   `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
   (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
-  `core.lua`), Neovim 0.11 or later, and diffview.nvim through `review.available()` (missing: a
-  warning, the review needs it). It only reports.
+  `core.lua`), Neovim 0.11 or later, diffview.nvim through `review.available()` (missing: a
+  warning, the review needs it), and claudecode.nvim in this Neovim through `package.loaded`
+  (missing: a warning; read here because this Neovim cannot answer the doctor while it waits for
+  it, #179). It only reports.
   `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
   while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
   `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`.
