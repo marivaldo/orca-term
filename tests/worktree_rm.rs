@@ -239,18 +239,27 @@ fn a_broken_worktree_is_refused_and_points_to_prune() {
 }
 
 #[test]
-fn the_primary_checkout_is_refused() {
+fn the_primary_checkout_is_never_removed_even_with_force() {
     let repo = Repo::new();
-    rm(&repo, &[repo.root.to_str().unwrap()])
-        .failure()
-        .stderr(predicate::str::contains("primary checkout"));
-    rm(&repo, &["."])
-        .failure()
-        .stderr(predicate::str::contains("primary checkout"));
-    rm(&repo, &["repo"])
-        .failure()
-        .stderr(predicate::str::contains("primary checkout"));
+    let says = "is the primary checkout, which is never removed (nothing was removed)";
+    for target in [repo.root.to_str().unwrap(), ".", "repo"] {
+        rm(&repo, &[target])
+            .code(24)
+            .stderr(predicate::str::contains(says));
+        rm(&repo, &["--force", target])
+            .code(24)
+            .stderr(predicate::str::contains(says));
+    }
+    let out = repo
+        .orca_term(&repo.root)
+        .args(["worktree", "rm", "repo", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(24));
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"]["kind"], "primary_checkout");
     assert!(repo.root.join(".git").exists());
+    assert!(has_branch(&repo, "main"));
 }
 
 #[test]

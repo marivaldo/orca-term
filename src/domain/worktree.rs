@@ -2,7 +2,6 @@
 //! `worktree rm` target means, and what happens to its branch when it is removed.
 
 use std::convert::Infallible;
-use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -11,6 +10,7 @@ use anyhow::{Result, bail};
 
 use crate::domain::branch::{self, Branch, BranchNameError, StartPoint};
 use crate::domain::config::Setting;
+use crate::domain::error::TypedError;
 use crate::domain::fleet::{Fleet, PrimaryCheckout, Worktree};
 use crate::domain::setup::SetupReport;
 use crate::domain::state::State;
@@ -213,17 +213,12 @@ pub(crate) fn path_for(
     Ok(base.join(repo).join(name.as_str()))
 }
 
-/// The worktree named `name` (a basename). Refuses the primary checkout, an unknown worktree and a
-/// name shared by several worktrees.
+/// The worktree named `name` (a basename), the primary checkout included (ADR 0013). Refuses an
+/// unknown worktree and a name shared by several worktrees.
 pub(crate) fn find_by_name<'f>(fleet: &'f Fleet, name: &str) -> Result<&'f Worktree> {
-    let primary = &fleet.primary.path;
     let matches: Vec<&Worktree> = fleet.worktrees.iter().filter(|l| l.name == name).collect();
     match matches.as_slice() {
         [worktree] => Ok(worktree),
-        [] if primary.file_name() == Some(OsStr::new(name)) => bail!(
-            "{} is the primary checkout, which is never a worktree",
-            primary.display()
-        ),
         [] => bail!("no worktree named `{name}`; `orca-term worktree ls` lists the fleet"),
         several => {
             let paths: Vec<String> = several
@@ -278,11 +273,24 @@ pub(crate) fn check_can_run_agent(worktree: &Worktree) -> Result<()> {
 /// Refuses to mark seen or unseen a worktree whose directory is gone, as removing it is refused:
 /// only `worktree prune` cleans it, and its state goes with it.
 pub(crate) fn check_can_mark(worktree: &Worktree) -> Result<()> {
-    check_removable(worktree)
+    check_not_gone(worktree)
 }
 
-/// Refuses to remove a worktree whose directory is gone: only `worktree prune` cleans it.
+/// Refuses to remove the primary checkout, which is never removed (ADR 0013), as the typed
+/// `primary_checkout`, and a worktree whose directory is gone: only `worktree prune` cleans it.
 pub(crate) fn check_removable(worktree: &Worktree) -> Result<()> {
+    if worktree.primary {
+        return Err(TypedError::PrimaryNotRemovable {
+            name: worktree.name.clone(),
+            path: worktree.path.clone(),
+        }
+        .into());
+    }
+    check_not_gone(worktree)
+}
+
+/// Refuses a worktree whose directory is gone: only `worktree prune` cleans it.
+fn check_not_gone(worktree: &Worktree) -> Result<()> {
     if let State::Broken(reason) = &worktree.state
         && reason.is_gone()
     {
@@ -403,6 +411,7 @@ mod tests {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/fix"),
             branch: None,
+            primary: false,
             state,
             activity: None,
             agent: None,
@@ -432,6 +441,46 @@ mod tests {
             "{err}"
         );
         assert!(check_can_run_agent(&with(State::Broken(BrokenReason::DirectoryMissing))).is_err());
+    }
+
+    fn fleet_of(paths: &[&str]) -> Fleet {
+        use crate::domain::fleet::WorktreeEntry;
+        let entries = paths
+            .iter()
+            .map(|path| WorktreeEntry {
+                path: PathBuf::from(path),
+                branch: None,
+                prunable: None,
+                bare: false,
+            })
+            .collect();
+        Fleet::from_entries(entries).unwrap()
+    }
+
+    #[test]
+    fn the_primary_checkout_is_found_by_its_name_like_any_worktree() {
+        let fleet = fleet_of(&["/src/repo", "/w/repo/fix"]);
+        let found = find_by_name(&fleet, "repo").unwrap();
+        assert!(found.primary);
+        assert_eq!(found.path, PathBuf::from("/src/repo"));
+        assert!(!find_by_name(&fleet, "fix").unwrap().primary);
+    }
+
+    #[test]
+    fn a_worktree_sharing_the_primary_checkouts_name_is_ambiguous() {
+        let fleet = fleet_of(&["/src/api", "/w/api"]);
+        let err = find_by_name(&fleet, "api").unwrap_err().to_string();
+        assert!(err.contains("`api` names 2 worktrees"), "{err}");
+    }
+
+    #[test]
+    fn the_primary_checkout_is_never_removed_but_may_be_marked() {
+        let fleet = fleet_of(&["/src/repo", "/w/repo/fix"]);
+        let err = check_removable(&fleet.worktrees[0]).unwrap_err();
+        let typed = crate::domain::error::typed(&err).unwrap();
+        assert_eq!(typed.kind(), "primary_checkout");
+        check_removable(&fleet.worktrees[1]).unwrap();
+        check_can_mark(&fleet.worktrees[0]).unwrap();
     }
 
     #[test]

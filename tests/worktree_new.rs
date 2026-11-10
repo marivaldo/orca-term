@@ -442,8 +442,8 @@ fn the_worktree_state_is_written_to_the_admin_dir_and_lists_as_no_agent() {
         .output()
         .unwrap();
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(doc["worktrees"][0]["name"], "fresh");
-    assert_eq!(doc["worktrees"][0]["state"], "no_agent");
+    assert_eq!(doc["worktrees"][1]["name"], "fresh");
+    assert_eq!(doc["worktrees"][1]["state"], "no_agent");
     repo.orca_term(&repo.root)
         .args(["worktree", "ls"])
         .assert()

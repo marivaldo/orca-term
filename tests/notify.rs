@@ -439,6 +439,24 @@ fn a_hook_event_notifies_every_registered_neovim() {
 }
 
 #[test]
+fn the_primary_checkouts_hooks_and_marks_notify_with_its_path() {
+    let fx = AgentRepo::new();
+    let root = fx.repo.root.clone();
+    let admin = fx.admin_dir(&root);
+    let path = listed_path(&fx, "repo");
+    assert_eq!(path, root.to_str().unwrap());
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
+
+    fx.ok(&["agent", "start", "repo"]);
+    assert_eq!(neovim.paths(), times(&path, 1));
+    fire_session_start(&root, &admin);
+    assert_eq!(neovim.paths(), times(&path, 1), "its hook");
+    fx.ok(&["worktree", "unseen", "repo"]);
+    assert_eq!(neovim.paths(), times(&path, 1));
+}
+
+#[test]
 fn worktree_new_setup_and_rm_notify_with_the_worktrees_path() {
     let fx = AgentRepo::new();
     commit_setup(&fx, "echo set up");

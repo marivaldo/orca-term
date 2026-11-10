@@ -56,6 +56,16 @@ impl<'a> Played<'a> {
     /// Creates the worktree `name` and starts its agent.
     fn start(fx: &'a AgentRepo, name: &str) -> Self {
         let worktree = fx.new_worktree(name);
+        Self::start_at(fx, name, worktree)
+    }
+
+    /// Starts the agent of the primary checkout, the worktree `repo` (ADR 0013).
+    fn start_in_primary(fx: &'a AgentRepo) -> Self {
+        Self::start_at(fx, "repo", fx.repo.root.clone())
+    }
+
+    /// Starts the agent of the worktree `name` at `worktree`.
+    fn start_at(fx: &'a AgentRepo, name: &str, worktree: PathBuf) -> Self {
         let admin = fx.admin_dir(&worktree);
         fx.ok(&["agent", "start", name]);
         let settings =
@@ -923,28 +933,82 @@ fn seen_and_unseen_take_no_lock_so_they_are_never_busy() {
 }
 
 #[test]
-fn seen_and_unseen_refuse_the_primary_checkout_and_an_unknown_worktree() {
+fn seen_and_unseen_refuse_an_unknown_worktree() {
     let fx = AgentRepo::new();
     fx.new_worktree("fix");
-    let root = fx.repo.root.to_str().unwrap().to_owned();
     for command in ["seen", "unseen"] {
-        for (target, says) in [
-            ("repo", "is the primary checkout"),
-            (root.as_str(), "is the primary checkout"),
-            ("nope", "no worktree named `nope`"),
-        ] {
-            let out = fx.run(&["worktree", command, target, "--json"]);
-            assert_eq!(out.status.code(), Some(1), "{command} {target}");
-            let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-            assert_eq!(doc["error"]["kind"], "other");
-            let message = doc["error"]["message"].as_str().unwrap();
-            assert!(message.contains(says), "{message}");
-            let out = fx.run(&["worktree", command, target]);
-            assert_eq!(out.status.code(), Some(1));
-            assert!(String::from_utf8_lossy(&out.stderr).contains(says));
-        }
+        let says = "no worktree named `nope`";
+        let out = fx.run(&["worktree", command, "nope", "--json"]);
+        assert_eq!(out.status.code(), Some(1), "{command}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["error"]["kind"], "other");
+        let message = doc["error"]["message"].as_str().unwrap();
+        assert!(message.contains(says), "{message}");
+        let out = fx.run(&["worktree", command, "nope"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(says));
     }
-    assert!(!fx.repo.root.join(".git/orca-term/seen.json").exists());
+}
+
+#[test]
+fn the_primary_checkout_keeps_its_turns_unseen_mark_notes_and_sessions_like_any_worktree() {
+    let fx = AgentRepo::new();
+    fx.repo.write("app.txt", "one\ntwo\n");
+    fx.repo.commit_all("app");
+    let played = Played::start_in_primary(&fx);
+    assert_eq!(
+        played.admin,
+        fx.repo.root.join(".git/orca-term"),
+        "git's admin directory of the primary checkout is the common dir (ADR 0013)"
+    );
+
+    played.play("p-hello-2.1.300.log");
+
+    assert_eq!(played.shown(), ("finished".to_owned(), activity("ok")));
+    assert_eq!(
+        played.turn_summary(),
+        [turn(1, "start", ""), turn(1, "end", "finished")]
+    );
+    let end = played.status()["latest"]["end"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        fx.repo.git(&["rev-parse", "refs/orca-term/primary"]).trim(),
+        end,
+        "its chain of snapshots, outside the chains prune may delete"
+    );
+    let turns: Value = serde_json::from_str(&fx.ok(&["turn", "ls", "repo", "--json"])).unwrap();
+    assert_eq!(turns["turns"][0]["outcome"], "finished");
+    assert_eq!(turns["turns"][0]["end"], json!(end));
+    let sessions: Value =
+        serde_json::from_str(&fx.ok(&["session", "ls", "repo", "--json"])).unwrap();
+    assert_eq!(
+        sessions["sessions"][0]["id"],
+        json!(played.session_of("p-hello-2.1.300.log"))
+    );
+
+    assert!(played.unseen(), "its turn ended after it was last reviewed");
+    let reviewed: Value =
+        serde_json::from_str(&fx.ok(&["worktree", "review", "repo", "--json"])).unwrap();
+    assert_eq!(reviewed["against"], "main");
+    assert!(!played.unseen(), "reviewing it clears the mark");
+    assert_eq!(played.mark("unseen"), "repo: unseen\n");
+    assert!(played.unseen());
+
+    let noted = fx.ok(&[
+        "note", "add", "repo", "app.txt", "--line", "2", "--body", "why?",
+    ]);
+    assert_eq!(noted, "repo: note 1 on app.txt, line 2\n");
+    assert_eq!(fx.listed("repo")["notes"], 1);
+    assert!(played.admin.join("notes.json").is_file());
+
+    fx.ok(&["worktree", "prune"]);
+    assert_eq!(
+        fx.repo.git(&["rev-parse", "refs/orca-term/primary"]).trim(),
+        end,
+        "prune leaves the primary checkout's chain alone"
+    );
 }
 
 #[test]
@@ -1036,15 +1100,12 @@ fn review_gives_the_commit_the_worktree_forked_from_and_marks_it_seen() {
 }
 
 #[test]
-fn review_refuses_the_primary_checkout_an_unknown_worktree_and_a_broken_one() {
+fn review_refuses_an_unknown_worktree_and_a_broken_one() {
     let fx = AgentRepo::new();
     let gone = fx.new_worktree("gone");
     let gone_admin = fx.admin_dir(&gone);
     fs::remove_dir_all(&gone).unwrap();
-    let root = fx.repo.root.to_str().unwrap().to_owned();
     for (target, says) in [
-        ("repo", "is the primary checkout"),
-        (root.as_str(), "is the primary checkout"),
         ("nope", "no worktree named `nope`"),
         ("gone", "nothing to review"),
     ] {

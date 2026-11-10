@@ -22,6 +22,7 @@ pub(crate) fn worktree(path: &str, state: State) -> Worktree {
         branch: Some(Branch::new(&name)),
         name,
         path,
+        primary: false,
         state,
         activity: None,
         agent: None,

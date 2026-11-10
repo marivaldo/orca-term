@@ -143,7 +143,7 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         .iter()
         .map(|worktree| {
             [
-                worktree.name.clone(),
+                name_cell(worktree),
                 worktree
                     .branch
                     .as_ref()
@@ -183,6 +183,15 @@ fn render_fleet_table(fleet: &Fleet) -> String {
         }
     }
     render_columns(&lines)
+}
+
+/// A worktree's name as the table shows it: the primary checkout tagged `(primary)` (ADR 0013).
+fn name_cell(worktree: &Worktree) -> String {
+    if worktree.primary {
+        format!("{} (primary)", worktree.name)
+    } else {
+        worktree.name.clone()
+    }
 }
 
 /// Prints what `project add` did: one line, or one JSON document.
@@ -1378,6 +1387,7 @@ mod tests {
             name: name.to_owned(),
             path: PathBuf::from(format!("/l/{name}")),
             branch: Some(Branch::new(name)),
+            primary: false,
             state,
             activity: None,
             agent: None,
@@ -1820,6 +1830,23 @@ mod tests {
     fn one_changed_file_is_singular() {
         assert_eq!(files_changed(1), "1 file changed");
         assert_eq!(files_changed(4), "4 files changed");
+    }
+
+    #[test]
+    fn the_primary_checkout_is_tagged_beside_its_name() {
+        let table = render_fleet_table(&fleet(vec![
+            Worktree {
+                primary: true,
+                ..worktree("repo", State::NoAgent)
+            },
+            worktree("fix", State::Idle),
+        ]));
+        assert_eq!(
+            table,
+            "NAME            BRANCH  STATE     PATH\n\
+             repo (primary)  repo    no agent  /l/repo\n\
+             fix             fix     idle      /l/fix"
+        );
     }
 
     #[test]

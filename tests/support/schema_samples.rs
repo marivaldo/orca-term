@@ -73,6 +73,25 @@ pub(crate) fn build(fx: &AgentRepo, schema: u64) -> Sampled {
     Sampled { worktree, files }
 }
 
+/// Copies the samples of `schema` as [`build`] does, then the worktree's state files once more
+/// into the primary checkout's admin directory, the git common dir's own `orca-term/` (ADR 0013):
+/// the same files, in the place the primary checkout's state lives. Returns every file written.
+pub(crate) fn build_in_primary(fx: &AgentRepo, schema: u64) -> Sampled {
+    let mut sampled = build(fx, schema);
+    let transcripts = fx.repo.tmp.path().join("transcripts");
+    let placeholders = [("{{transcripts}}", transcripts.to_str().unwrap())];
+    let admin = fx.repo.root.join(".git/orca-term");
+    fs::create_dir_all(&admin).unwrap();
+    let from = samples_dir(schema)
+        .join("git/worktrees")
+        .join(WORKTREE)
+        .join("orca-term");
+    sampled
+        .files
+        .extend(copy_tree(&from, &admin, &placeholders));
+    sampled
+}
+
 /// Copies the project list of `schema` (`state/`, laid out as `$XDG_STATE_HOME`, #149) into the
 /// fixture's state directory, `~/.local/state` of its `HOME` (the agent fixture unsets
 /// `XDG_STATE_HOME`). Its placeholders: `{{repo}}` is the fixture's primary checkout, `{{gone}}` a

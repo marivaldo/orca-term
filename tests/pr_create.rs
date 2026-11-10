@@ -444,6 +444,30 @@ fn a_branch_with_no_commits_ahead_is_refused_before_anything_runs() {
 }
 
 #[test]
+fn the_primary_checkout_on_the_default_branch_opens_and_merges_no_pull_request() {
+    let repo = PrRepo::new();
+    let root = repo.fixture.repo.root.clone();
+    // A commit ahead of origin/main: only the branch stops the pull request.
+    repo.commit(&root, "local.txt", "Local change");
+    let before = repo.origin_has("main");
+
+    let error = repo.error_of(&["pr", "create", "repo", "--title", "Fix it"], 25);
+    assert_eq!(error["kind"], "default_branch");
+    assert_eq!(
+        error["message"],
+        "worktree repo is on main, the repository's default branch, which has no pull request; \
+         commit on a branch of its own to open one (nothing was pushed)"
+    );
+    let error = repo.error_of(&["pr", "compose", "."], 25);
+    assert_eq!(error["kind"], "default_branch");
+    let error = repo.error_of(&["pr", "merge", "repo"], 13);
+    assert_eq!(error["kind"], "no_open_pr");
+
+    assert_eq!(repo.gh_calls(), Vec::<String>::new(), "gh is never asked");
+    assert_eq!(repo.origin_has("main"), before, "nothing was pushed");
+}
+
+#[test]
 fn a_branch_whose_pull_request_is_open_is_refused_naming_it() {
     let repo = PrRepo::new();
     let demo = repo.new_worktree("demo");

@@ -38,7 +38,8 @@ pub(crate) fn run(target: &Target, with_lease: bool) -> Result<Pushed> {
     let uncommitted = create::count_uncommitted(&git::uncommitted_status(&worktree.path)?);
 
     let outcome = push_to_origin(worktree, branch, with_lease)?;
-    let facts = pr_refresh::refresh(worktree).with_context(|| {
+    let default = git::default_branch(&fleet.primary).ok();
+    let facts = pr_refresh::refresh(worktree, default.as_ref()).with_context(|| {
         format!(
             "branch {branch} was pushed to origin, but the pull request of worktree {} could not \
              be read again",

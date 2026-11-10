@@ -3,7 +3,8 @@
 //!
 //! It first asks gh about the branch's pull request (`gh pr view <branch>`, with the fields a
 //! merge needs) and refuses, merging nothing: gh missing or not logged in (`prerequisite`), no
-//! open pull request (`no_open_pr`), a draft (`pr_draft`), a conflict with the base
+//! open pull request (`no_open_pr`, also on no branch and on the default branch, ADR 0013, where
+//! gh is not asked), a draft (`pr_draft`), a conflict with the base
 //! (`pr_conflicting`) and a review that blocks it (`not_approved`). Then it runs
 //! `gh pr merge <number> --squash|--merge|--rebase`, never `--delete-branch`. Last it asks gh
 //! again, as `pr refresh` does, and keeps its answer in `pr.json` through the same writer, so the
@@ -14,12 +15,12 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use crate::adapters::{env, program};
+use crate::adapters::{env, git, program};
 use crate::domain::error::{NotOpen, TypedError};
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::create::first_line;
 use crate::domain::pr::merge::{self, Method, PrMerged};
-use crate::domain::pr::{Found, GH_MISSING, PrFacts, PullRequest};
+use crate::domain::pr::{self, Found, GH_MISSING, PrFacts, PullRequest};
 use crate::domain::worktree::Target;
 use crate::ops::{find_target, pr_refresh, read_fleet};
 
@@ -35,7 +36,9 @@ pub(crate) fn run(target: &Target, method: Method) -> Result<PrMerged> {
             worktree.name
         );
     }
-    let Some(branch) = &worktree.branch else {
+    // On no branch, or on the default branch (ADR 0013), there is no pull request to merge.
+    let default = git::default_branch(&fleet.primary).ok();
+    let Some(branch) = pr::branch_to_ask(worktree.branch.as_ref(), default.as_ref()) else {
         return Err(TypedError::NoOpenPr {
             name: worktree.name.clone(),
             found: NotOpen::None,
@@ -54,7 +57,7 @@ pub(crate) fn run(target: &Target, method: Method) -> Result<PrMerged> {
 
     run_gh_merge(&gh, &before, method, worktree)?;
 
-    let after = pr_refresh::ask(Some(&gh), worktree);
+    let after = pr_refresh::ask(Some(&gh), worktree, default.as_ref());
     let facts = PrFacts {
         fetched_at: env::now_millis(),
         found: Found::Pr(merge::merged_pr(&before, after)),

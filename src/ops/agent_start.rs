@@ -505,6 +505,7 @@ pub(crate) fn refreshed(worktree: &Worktree, admin: &AdminDir) -> Result<Worktre
         name: worktree.name.clone(),
         path: worktree.path.clone(),
         branch: worktree.branch.clone(),
+        primary: worktree.primary,
         state: derived.state,
         activity: derived.activity,
         agent: derived.agent,

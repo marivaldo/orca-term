@@ -201,7 +201,7 @@ fn new_commits_are_pushed_files_not_committed_are_left_out_and_the_pr_is_read_ag
     assert_eq!(doc["pr"]["checks"], "none");
     assert_eq!(repo.on_origin("demo"), repo.head(&demo));
     let listed = repo.json_of(&["worktree", "ls"]);
-    assert_eq!(listed["worktrees"][0]["pr"]["number"], 7, "pr.json is kept");
+    assert_eq!(listed["worktrees"][1]["pr"]["number"], 7, "pr.json is kept");
     assert_eq!(listed["has_origin"], true);
 
     repo.commit_in(&demo, "c.txt", "c\n", "Add c");

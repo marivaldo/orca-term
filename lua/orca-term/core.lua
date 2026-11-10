@@ -48,6 +48,9 @@
 ---@field name string
 ---@field path string
 ---@field branch? string
+---Whether it is the primary checkout (ADR 0013); the fleets this client reads never hold it
+---(`without_primary`)
+---@field primary? boolean
 ---`no_agent`, `idle`, `working`, `waiting`, `finished`, `failed`, `interrupted`, `setting_up`,
 ---`not_ready` or `broken`
 ---@field state string
@@ -346,20 +349,50 @@ local function run_async(args, cwd, on_done, timeout)
   end
 end
 
----The fleet of the repository `cwd` is in: `orca-term worktree ls --json`.
+---`fleet` without the worktree the core marks `primary`, the primary checkout (#175). The core
+---lists it first in its fleet since ADR 0013, but this client is frozen (ADR 0012): it keeps
+---showing the primary checkout only in the project header, so neither the sidebar nor the status
+---strip draws or counts it. The terminal application draws it as a row. `nil` stays `nil`.
+---@param fleet? orca_term.Fleet
+---@return orca_term.Fleet?
+local function without_primary(fleet)
+  if fleet and fleet.worktrees then
+    fleet.worktrees = vim.tbl_filter(function(worktree)
+      return not worktree.primary
+    end, fleet.worktrees)
+  end
+  return fleet
+end
+
+---`fleets` with each project's fleet `without_primary`. `nil` stays `nil`.
+---@param fleets? orca_term.Fleets
+---@return orca_term.Fleets?
+local function without_primaries(fleets)
+  for _, project in ipairs(fleets and fleets.projects or {}) do
+    without_primary(project.fleet)
+  end
+  return fleets
+end
+
+---The fleet of the repository `cwd` is in: `orca-term worktree ls --json`, without the primary
+---checkout (`without_primary`).
 ---@param cwd string
 ---@return orca_term.Fleet? fleet
 ---@return orca_term.Error? err
 function M.worktree_ls(cwd)
-  return run({ 'worktree', 'ls' }, cwd)
+  local fleet, err = run({ 'worktree', 'ls' }, cwd)
+  return without_primary(fleet), err
 end
 
 ---The fleet of the repository `cwd` is in, without waiting: `orca-term worktree ls --json`,
----handed to `on_done` in Neovim's main loop. It is stopped after 10 seconds, as `worktree_ls` is.
+---without the primary checkout, handed to `on_done` in Neovim's main loop. It is stopped after 10
+---seconds, as `worktree_ls` is.
 ---@param cwd string
 ---@param on_done fun(fleet: orca_term.Fleet?, err: orca_term.Error?)
 function M.worktree_ls_async(cwd, on_done)
-  run_async({ 'worktree', 'ls' }, cwd, on_done, TIMEOUT_SECONDS)
+  run_async({ 'worktree', 'ls' }, cwd, function(fleet, err)
+    on_done(without_primary(fleet), err)
+  end, TIMEOUT_SECONDS)
 end
 
 ---One project of the project list with its fleet, as `fleets --json` prints it (`CONTEXT.md`,
@@ -384,20 +417,24 @@ end
 ---The fleet of every project on the project list, in one call: `orca-term fleets --json`. The list
 ---belongs to the person, not to a repository, so `cwd` only has to exist. A project that is gone
 ---or broken is not an error: it comes with no fleet and its own `error`. A project list that
----cannot be read is one.
+---cannot be read is one. No fleet holds its primary checkout (`without_primary`).
 ---@param cwd string
 ---@return orca_term.Fleets? fleets
 ---@return orca_term.Error? err
 function M.fleets(cwd)
-  return run({ 'fleets' }, cwd)
+  local fleets, err = run({ 'fleets' }, cwd)
+  return without_primaries(fleets), err
 end
 
 ---The fleet of every project on the project list, without waiting: `orca-term fleets --json`,
----handed to `on_done` in Neovim's main loop. It is stopped after 10 seconds, as `fleets` is.
+---each without its primary checkout, handed to `on_done` in Neovim's main loop. It is stopped
+---after 10 seconds, as `fleets` is.
 ---@param cwd string
 ---@param on_done fun(fleets: orca_term.Fleets?, err: orca_term.Error?)
 function M.fleets_async(cwd, on_done)
-  run_async({ 'fleets' }, cwd, on_done, TIMEOUT_SECONDS)
+  run_async({ 'fleets' }, cwd, function(fleets, err)
+    on_done(without_primaries(fleets), err)
+  end, TIMEOUT_SECONDS)
 end
 
 ---What `project add --json` prints: the project, and whether it was added.

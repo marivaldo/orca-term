@@ -8,8 +8,9 @@
 //!
 //! The snapshots of a worktree form one chain, each the parent of the next, held by the ref
 //! `refs/orca-term/worktrees/<id>`, `<id>` being the worktree's git admin directory
-//! (`.git/worktrees/<id>`). The ref is shared by every worktree so that a `git gc` run anywhere
-//! keeps the chain. `status.json` records the chain's tip: a ref that does not match it belongs to
+//! (`.git/worktrees/<id>`); the primary checkout, which has no id, holds its chain in
+//! `refs/orca-term/primary` (ADR 0013). The ref is shared by every worktree so that a `git gc` run
+//! anywhere keeps the chain. `status.json` records the chain's tip: a ref that does not match it belongs to
 //! a previous worktree (git reuses a freed id) and is replaced by a snapshot with no parent.
 //!
 //! A snapshot that ends a turn is authored by the turn's agent; one that only begins a turn holds
@@ -19,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::state::GIT_WORKTREES_DIR;
+use crate::domain::state::{AdminDir, GIT_WORKTREES_DIR};
 use crate::domain::turn::{RecordKind, Status, TurnRecord};
 
 /// Where every worktree's chain of snapshots lives: `refs/orca-term/worktrees/<id>`.
@@ -34,9 +35,22 @@ const PERSON: &str = "person";
 /// The name every snapshot is committed with.
 const COMMITTER: &str = "orca-term";
 
+/// Where the primary checkout's chain lives (ADR 0013). Its admin directory has no id, and the
+/// ref stays outside [`CHAIN_REFS`], whose chains `worktree prune` deletes once git no longer has
+/// their worktree.
+pub(crate) const PRIMARY_CHAIN_REF: &str = "refs/orca-term/primary";
+
 /// The ref holding the chain of the worktree whose git admin directory is `.git/worktrees/<id>`.
 pub(crate) fn chain_ref(id: &str) -> String {
     format!("{CHAIN_REFS}{id}")
+}
+
+/// The ref holding the chain of the worktree whose admin directory is `admin`: by its id, or
+/// [`PRIMARY_CHAIN_REF`] for the primary checkout.
+pub(crate) fn chain_ref_of(admin: &AdminDir) -> String {
+    admin
+        .worktree_id()
+        .map_or_else(|| PRIMARY_CHAIN_REF.to_owned(), chain_ref)
 }
 
 /// The id of the worktree whose chain the ref `name` holds, `None` for a ref outside
@@ -455,6 +469,15 @@ mod tests {
         assert_eq!(chain_id("refs/orca-term/worktrees/"), None);
         assert_eq!(chain_id("refs/orca-term/worktrees/a/b"), None);
         assert_eq!(chain_id("refs/heads/fix1"), None);
+        let linked = AdminDir::new(PathBuf::from("/r/.git/worktrees/fix1/orca-term"));
+        assert_eq!(chain_ref_of(&linked), "refs/orca-term/worktrees/fix1");
+        let primary = AdminDir::new(PathBuf::from("/r/.git/orca-term"));
+        assert_eq!(chain_ref_of(&primary), "refs/orca-term/primary");
+        assert_eq!(
+            chain_id(&chain_ref_of(&primary)),
+            None,
+            "outside the chains `worktree prune` may delete"
+        );
         assert_eq!(
             git_admin_dir(Path::new("/r/.git"), "fix1"),
             PathBuf::from("/r/.git/worktrees/fix1")

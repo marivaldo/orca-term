@@ -13,7 +13,7 @@ use crate::ops::{find_target, notify_changed, read_fleet, read_status};
 
 /// Marks the worktree `target` names or locates in the repository containing the current
 /// directory as seen or unseen, as `mark` says, then tells the running Neovims. Works on any
-/// worktree still on disk, ready or not, with an agent or none; refuses the primary checkout.
+/// worktree still on disk, ready or not, with an agent or none, the primary checkout included.
 pub(crate) fn run(target: &Target, mark: Mark) -> Result<Marked> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;

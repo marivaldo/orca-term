@@ -196,6 +196,10 @@ fn an_agent_started_elsewhere_shows_up_on_its_own() {
     fx.ok(&["project", "add"]);
 
     let mut app = Running::start(&fx);
+    // Started in the primary checkout, which it opens (#175): `fix` comes after it.
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
     app.wait_for("no agent running");
     fx.ok(&["agent", "start", "fix"]);
     app.wait_for("fake claude ready");
@@ -211,6 +215,9 @@ fn enter_starts_the_agent_of_a_worktree_with_none() {
     fx.ok(&["project", "add"]);
 
     let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
     app.wait_for("no agent running");
     app.type_in(b"\r");
     app.wait_for("fake claude ready");

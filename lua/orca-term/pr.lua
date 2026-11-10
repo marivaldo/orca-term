@@ -263,22 +263,44 @@ function M.stop()
   state.fleets, state.states = {}, {}
 end
 
+---Says how many worktrees a `:OrcaTerm pr-refresh` refreshed, `count`, or why it could not.
+---@param count? integer `nil` when it failed
+---@param err? orca_term.Error
+local function say_refreshed(count, err)
+  if not count then
+    vim.notify(err and err.message or 'orca-term: pr refresh failed', vim.log.levels.ERROR)
+    return
+  end
+  vim.notify(
+    ('orca-term: refreshed the pull request of %d worktree%s'):format(
+      count,
+      count == 1 and '' or 's'
+    ),
+    vim.log.levels.INFO
+  )
+end
+
 ---`:OrcaTerm pr-refresh`: refreshes the pull request of every worktree of the repository Neovim's
 ---current directory is in, without waiting, then says how many it refreshed, or why it could not.
+---The worktrees are the ones the sidebar shows, named to the core: the core's own "every
+---worktree" would take in the primary checkout, which this frozen client never shows (#175).
 function M.refresh_all()
-  M.refresh({}, vim.fn.getcwd(), function(refreshed, err)
-    if not refreshed then
-      vim.notify(err and err.message or 'orca-term: pr refresh failed', vim.log.levels.ERROR)
+  local cwd = vim.fn.getcwd()
+  core.worktree_ls_async(cwd, function(fleet, err)
+    if not fleet then
+      say_refreshed(nil, err)
       return
     end
-    local count = #refreshed.worktrees
-    vim.notify(
-      ('orca-term: refreshed the pull request of %d worktree%s'):format(
-        count,
-        count == 1 and '' or 's'
-      ),
-      vim.log.levels.INFO
-    )
+    local paths = paths_where(fleet, function()
+      return true
+    end)
+    if #paths == 0 then
+      say_refreshed(0)
+      return
+    end
+    M.refresh(paths, cwd, function(refreshed, refresh_err)
+      say_refreshed(refreshed and #refreshed.worktrees, refresh_err)
+    end)
   end)
 end
 

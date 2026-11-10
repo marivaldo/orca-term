@@ -214,14 +214,29 @@ fn a_worktree_whose_directory_is_gone_still_gives_its_state() {
 }
 
 #[test]
-fn detail_refuses_the_primary_checkout_and_an_unknown_worktree() {
+fn detail_refuses_an_unknown_worktree() {
     let repo = Repo::new();
     new_worktree(&repo, "fix");
-    for target in ["nope", ".", repo.root.to_str().unwrap()] {
-        let out = orca_term(&repo, &["worktree", "detail", target, "--json"]);
-        assert_eq!(out.status.code(), Some(1), "{target}");
-        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(doc["error"]["kind"], "other", "{target}");
+    let out = orca_term(&repo, &["worktree", "detail", "nope", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"]["kind"], "other");
+}
+
+#[test]
+fn the_primary_checkout_has_a_detail_like_any_worktree() {
+    let repo = Repo::new();
+    for target in [".", "repo", repo.root.to_str().unwrap()] {
+        let doc = detail(&repo, target);
+        assert_eq!(doc["worktree"]["name"], "repo", "{target}");
+        assert_eq!(doc["worktree"]["primary"], true);
+        assert_eq!(doc["worktree"]["state"], "no_agent");
+        assert_eq!(doc["setup"], Value::Null, "nothing set it up");
+        assert_eq!(
+            doc["drift"],
+            json!({"against": "main", "ahead": 0, "behind": 0}),
+            "on the default branch itself"
+        );
     }
 }
 
@@ -259,7 +274,7 @@ fn operation(repo: &Repo) -> (Value, Value) {
     let listed: Value = serde_json::from_slice(&out.stdout).unwrap();
     let doc = detail(repo, "fix");
     assert_eq!(
-        listed["worktrees"][0]["operation"],
+        listed["worktrees"][1]["operation"],
         doc["worktree"]["operation"]
     );
     (
