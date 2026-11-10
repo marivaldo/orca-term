@@ -10,10 +10,11 @@
 //!
 //! Live updates come from reading every project's fleet again each second, on a thread of its own
 //! (`ops::fleets::run_quick`): one listing of the worktrees by git per project, and their small
-//! state files. The core runs nothing of its own to push changes, and the push it has, to the Neovims that
-//! registered (`orca-term nvim register`), speaks Neovim's own protocol; a second kind of listener
-//! would mean a socket and a registry for the application, where the read costs a few
-//! milliseconds a second and the side menu needs a clock anyway, for the ages and the spinner.
+//! state files. The core runs nothing of its own to push changes, and the push it has, to the
+//! Neovims that registered (`orca-term nvim register`), speaks Neovim's own protocol; a second
+//! kind of listener would mean a socket and a registry for the application, where the read is one
+//! git process per project a second, and the side menu needs a clock anyway, for the ages and the
+//! spinner.
 
 pub(crate) mod draw;
 #[cfg(test)]
