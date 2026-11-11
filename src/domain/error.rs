@@ -240,6 +240,21 @@ pub(crate) enum TypedError {
         name: String,
         candidates: Vec<PathBuf>,
     },
+    /// `worktree rm` was given the primary checkout, which is a worktree of its fleet but is never
+    /// removed (ADR 0013). Nothing was removed.
+    #[error(
+        "worktree {name} at {} is the primary checkout, which is never removed (nothing was \
+         removed)",
+        path.display()
+    )]
+    PrimaryNotRemovable { name: String, path: PathBuf },
+    /// `pr create` or `pr compose` of a worktree on the repository's default branch, which has no
+    /// pull request (ADR 0013): the primary checkout, most of the time. Nothing was pushed.
+    #[error(
+        "worktree {name} is on {branch}, the repository's default branch, which has no pull \
+         request; commit on a branch of its own to open one (nothing was pushed)"
+    )]
+    OnDefaultBranch { name: String, branch: String },
 }
 
 /// `paths` as a refusal lists them: comma-separated.
@@ -523,6 +538,8 @@ impl TypedError {
             Self::PushDiverged { .. } => "push_diverged",
             Self::NotARepository { .. } => "not_a_repository",
             Self::AmbiguousProject { .. } => "ambiguous_project",
+            Self::PrimaryNotRemovable { .. } => "primary_checkout",
+            Self::OnDefaultBranch { .. } => "default_branch",
         }
     }
 
@@ -552,6 +569,8 @@ impl TypedError {
             Self::PushDiverged { .. } => 21,
             Self::NotARepository { .. } => 22,
             Self::AmbiguousProject { .. } => 23,
+            Self::PrimaryNotRemovable { .. } => 24,
+            Self::OnDefaultBranch { .. } => 25,
         }
     }
 }
@@ -1122,6 +1141,30 @@ mod tests {
             23,
             "several projects are named app: /a/app, /b/app; remove one by its path (nothing was \
              removed)",
+        );
+    }
+
+    #[test]
+    fn the_primary_checkout_refusals_have_their_kinds_and_exit_codes() {
+        assert_typed(
+            TypedError::PrimaryNotRemovable {
+                name: "repo".to_owned(),
+                path: PathBuf::from("/src/repo"),
+            },
+            "primary_checkout",
+            24,
+            "worktree repo at /src/repo is the primary checkout, which is never removed (nothing \
+             was removed)",
+        );
+        assert_typed(
+            TypedError::OnDefaultBranch {
+                name: "repo".to_owned(),
+                branch: "main".to_owned(),
+            },
+            "default_branch",
+            25,
+            "worktree repo is on main, the repository's default branch, which has no pull \
+             request; commit on a branch of its own to open one (nothing was pushed)",
         );
     }
 

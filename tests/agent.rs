@@ -751,14 +751,56 @@ fn start_refuses_a_worktree_that_is_not_ready_and_a_claude_that_is_old_or_missin
     );
     assert!(!holder_alive(&admin));
     assert_eq!(state_file(&admin)["agent"], Value::Null);
+}
 
-    let primary = fx.run(&["agent", "start", "."]);
-    assert_eq!(primary.status.code(), Some(1));
-    assert!(
-        stderr(&primary).contains("is the primary checkout"),
-        "{}",
-        stderr(&primary)
+#[test]
+fn an_agent_starts_attaches_and_stops_in_the_primary_checkout() {
+    let fx = AgentRepo::new();
+    let root = fx.repo.root.clone();
+    let admin = fx.admin_dir(&root);
+    assert_eq!(
+        admin,
+        root.join(".git/orca-term"),
+        "its state lives in git's admin directory, the common dir itself (ADR 0013)"
     );
+
+    let out = fx.run(&["agent", "start", "repo"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("started agent claude-code in worktree repo\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(holder_alive(&admin), "agent.lock is held by the holder");
+    assert_eq!(state_file(&admin)["agent"], "claude-code");
+    let entry = fx.listed("repo");
+    assert_eq!(entry["primary"], true);
+    assert_eq!(entry["state"], "idle");
+    assert_eq!(entry["agent"], "claude-code");
+    assert_eq!(entry["holder"], true);
+    let hooks = &fx.settings()["hooks"]["Stop"][0]["hooks"][0]["args"];
+    assert_eq!(
+        hooks[3],
+        admin.to_str().unwrap(),
+        "the hooks report to its admin directory"
+    );
+
+    // Attached by its path, as the client names a worktree.
+    let mut attach = fx.attach(root.to_str().unwrap());
+    attach.wait_for("fake claude ready");
+    attach.send("hi\n");
+    attach.wait_for("you said: hi");
+    assert!(attach.detach().status.success());
+    let cwd = fs::read_to_string(fx.log.with_extension("cwd")).unwrap();
+    assert_eq!(cwd.trim(), root.to_str().unwrap(), "the agent runs in it");
+
+    let out = fx.run(&["agent", "stop", "repo"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "stopped the agent of worktree repo\n");
+    assert!(!holder_alive(&admin));
+    assert!(!admin.join("agent.sock").exists());
+    assert_eq!(fx.listed("repo")["holder"], false);
 }
 
 #[test]

@@ -196,6 +196,10 @@ fn an_agent_started_elsewhere_shows_up_on_its_own() {
     fx.ok(&["project", "add"]);
 
     let mut app = Running::start(&fx);
+    // Started in the primary checkout, which it opens (#175): `fix` comes after it.
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
     app.wait_for("no agent running");
     fx.ok(&["agent", "start", "fix"]);
     app.wait_for("fake claude ready");
@@ -211,10 +215,34 @@ fn enter_starts_the_agent_of_a_worktree_with_none() {
     fx.ok(&["project", "add"]);
 
     let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
     app.wait_for("no agent running");
     app.type_in(b"\r");
     app.wait_for("fake claude ready");
     assert!(holder_alive(&admin));
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn started_in_the_primary_checkout_it_opens_it_tagged_and_enter_starts_its_agent() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let admin = fx.admin_dir(&fx.repo.root);
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo  primary");
+    app.wait_for("repo/repo");
+    app.wait_for("no agent running");
+    app.type_in(b"\r");
+    app.wait_for("fake claude ready");
+    assert!(
+        holder_alive(&admin),
+        "its agent runs in the primary checkout"
+    );
     app.type_in(b"\x01q");
     assert!(app.wait_ended().success());
 }

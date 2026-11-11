@@ -1,7 +1,9 @@
 //! Domain: the fleet, every worktree of one repository, derived from what git lists.
 //!
-//! The fleet is `git worktree list` minus the primary checkout, which git always lists first. A
-//! worktree is keyed by its path and named by that directory's basename.
+//! The fleet is `git worktree list`, the primary checkout included (ADR 0013): git always lists it
+//! first, and it stays first, tagged `primary`. A bare repository has no checkout there, so its
+//! first entry is left out. A worktree is keyed by its path and named by that directory's
+//! basename.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -22,9 +24,13 @@ pub(crate) struct WorktreeEntry {
     pub(crate) branch: Option<Branch>,
     /// Why git marks the worktree prunable, when it does: its directory or `.git` file is gone.
     pub(crate) prunable: Option<String>,
+    /// Whether git marks it bare: a bare repository, which has no files checked out.
+    pub(crate) bare: bool,
 }
 
-/// The repository's primary checkout: the working tree git lists first, never a worktree.
+/// The repository's primary checkout: the working tree git lists first. It is also the first
+/// worktree of the fleet (ADR 0013); this keeps where it is, for the commands that work on the
+/// repository as a whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrimaryCheckout {
     pub(crate) path: PathBuf,
@@ -48,6 +54,8 @@ pub(crate) struct Worktree {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
     pub(crate) branch: Option<Branch>,
+    /// Whether it is the primary checkout (ADR 0013): first in its fleet, never removed.
+    pub(crate) primary: bool,
     pub(crate) state: State,
     /// What the agent is doing or said last, in one line, beside a state from its hooks
     /// (working, waiting, finished, failed, interrupted); `None` otherwise.
@@ -95,33 +103,24 @@ pub(crate) struct Fleet {
 }
 
 impl Fleet {
-    /// The fleet of the worktrees git listed, primary checkout first. Every worktree starts with
-    /// no agent; its state is read afterwards.
+    /// The fleet of the worktrees git listed, primary checkout first and tagged `primary`, unless
+    /// the repository is bare. Every worktree starts with no agent; its state is read afterwards.
     pub(crate) fn from_entries(entries: Vec<WorktreeEntry>) -> Result<Self> {
-        let mut entries = entries.into_iter();
-        let Some(primary) = entries.next() else {
+        let Some(first) = entries.first() else {
             bail!("git listed no worktrees");
         };
+        let primary = PrimaryCheckout {
+            path: first.path.clone(),
+            branch: first.branch.clone(),
+        };
         let worktrees = entries
-            .map(|wt| Worktree {
-                name: worktree_name(&wt.path),
-                path: wt.path,
-                branch: wt.branch,
-                state: State::NoAgent,
-                activity: None,
-                agent: None,
-                holder: HolderStatus::Gone,
-                unseen: false,
-                notes: 0,
-                denials: 0,
-                operation: None,
-                pr: None,
-                last_activity: None,
-                changed_files: None,
-            })
+            .into_iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.bare)
+            .map(|(index, entry)| Worktree::listed(entry, index == 0))
             .collect();
         Ok(Self {
-            primary: PrimaryCheckout::from_entry(primary),
+            primary,
             worktrees,
             remote_base: None,
             has_origin: false,
@@ -135,6 +134,27 @@ impl Fleet {
 }
 
 impl Worktree {
+    /// The worktree git listed as `entry`, the primary checkout when `primary`, with no agent yet.
+    fn listed(entry: WorktreeEntry, primary: bool) -> Self {
+        Self {
+            name: worktree_name(&entry.path),
+            path: entry.path,
+            branch: entry.branch,
+            primary,
+            state: State::NoAgent,
+            activity: None,
+            agent: None,
+            holder: HolderStatus::Gone,
+            unseen: false,
+            notes: 0,
+            denials: 0,
+            operation: None,
+            pr: None,
+            last_activity: None,
+            changed_files: None,
+        }
+    }
+
     /// Whether the worktree is gone from disk, so that only `worktree prune` can clean it.
     pub(crate) fn is_gone(&self) -> bool {
         match &self.state {
@@ -222,6 +242,7 @@ mod tests {
             path: PathBuf::from(path),
             branch: branch.map(Branch::new),
             prunable: None,
+            bare: false,
         }
     }
 
@@ -255,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_primary_checkout_is_never_a_worktree() {
+    fn the_primary_checkout_is_the_first_worktree_of_its_fleet() {
         let fleet = Fleet::from_entries(vec![
             wt("/repo", Some("main")),
             wt("/worktrees/repo/fix", Some("fix")),
@@ -263,8 +284,24 @@ mod tests {
         .unwrap();
         assert_eq!(fleet.primary.path, PathBuf::from("/repo"));
         assert_eq!(fleet.primary.branch, Some(Branch::new("main")));
+        assert_eq!(fleet.worktrees.len(), 2);
+        assert_eq!(fleet.worktrees[0].name, "repo");
+        assert_eq!(fleet.worktrees[0].path, PathBuf::from("/repo"));
+        assert_eq!(fleet.worktrees[0].branch, Some(Branch::new("main")));
+        assert!(fleet.worktrees[0].primary, "it carries the primary tag");
+        assert_eq!(fleet.worktrees[1].name, "fix");
+        assert!(!fleet.worktrees[1].primary);
+    }
+
+    #[test]
+    fn a_bare_repository_has_no_checkout_to_list() {
+        let mut bare = wt("/repo.git", None);
+        bare.bare = true;
+        let fleet = Fleet::from_entries(vec![bare, wt("/w/fix", Some("fix"))]).unwrap();
+        assert_eq!(fleet.primary.path, PathBuf::from("/repo.git"));
         assert_eq!(fleet.worktrees.len(), 1);
         assert_eq!(fleet.worktrees[0].name, "fix");
+        assert!(!fleet.worktrees[0].primary);
     }
 
     #[test]
@@ -275,16 +312,16 @@ mod tests {
             wt("/b/api", Some("api-2")),
         ])
         .unwrap();
-        assert_eq!(fleet.worktrees[0].name, fleet.worktrees[1].name);
-        assert_ne!(fleet.worktrees[0].path, fleet.worktrees[1].path);
+        assert_eq!(fleet.worktrees[1].name, fleet.worktrees[2].name);
+        assert_ne!(fleet.worktrees[1].path, fleet.worktrees[2].path);
     }
 
     #[test]
     fn an_unreadable_state_is_broken_but_not_gone() {
         let mut fleet = Fleet::from_entries(vec![wt("/repo", None), wt("/a", None)]).unwrap();
-        fleet.worktrees[0].state =
+        fleet.worktrees[1].state =
             State::Broken(BrokenReason::StateUnreadable("corrupt".to_owned()));
-        assert!(!fleet.worktrees[0].is_gone());
+        assert!(!fleet.worktrees[1].is_gone());
         assert_eq!(fleet.gone_worktrees().count(), 0);
     }
 
@@ -292,8 +329,8 @@ mod tests {
     fn pruned_lists_the_gone_worktrees_that_left_the_fleet() {
         let mut before =
             Fleet::from_entries(vec![wt("/repo", None), wt("/a", None), wt("/b", None)]).unwrap();
-        before.worktrees[0].state = State::Broken(BrokenReason::DirectoryMissing);
         before.worktrees[1].state = State::Broken(BrokenReason::DirectoryMissing);
+        before.worktrees[2].state = State::Broken(BrokenReason::DirectoryMissing);
         let after = Fleet::from_entries(vec![wt("/repo", None), wt("/b", None)]).unwrap();
         assert_eq!(pruned(&before, &after), vec![PathBuf::from("/a")]);
     }

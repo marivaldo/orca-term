@@ -3,7 +3,8 @@
 //! `domain/pr/create.rs`). One of the two ops that push, with `worktree push` (`cargo xtask
 //! gh-guard`).
 //!
-//! It refuses first, pushing nothing: an empty title, a branch with no commits ahead of the base
+//! It refuses first, pushing nothing: an empty title, the repository's default branch, which has
+//! no pull request (`default_branch`, ADR 0013), a branch with no commits ahead of the base
 //! (`no_commits`), a branch whose pull request is already open (`pr_exists`, asked of gh as
 //! `pr refresh` asks), and gh missing or not logged in (`prerequisite`). Then it runs
 //! `git push -u origin <branch>` (a failure is `push_failed`, with git's words), then
@@ -54,7 +55,8 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
         }
         .into());
     };
-    create::check_no_open_pr(&worktree.name, &pr_refresh::ask(Some(&gh), worktree))?;
+    // `prepare` refused the default branch already, so gh is always asked about this branch.
+    create::check_no_open_pr(&worktree.name, &pr_refresh::ask(Some(&gh), worktree, None))?;
 
     let body = body_of(&cwd, wanted.body_file.as_deref())?;
     push(worktree, &composed.branch)?;
@@ -67,7 +69,7 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
     );
     let printed = run_gh_create(&gh, &args, worktree, &composed.branch)?;
 
-    let found = match pr_refresh::ask(Some(&gh), worktree) {
+    let found = match pr_refresh::ask(Some(&gh), worktree, None) {
         Found::Pr(pr) => Found::Pr(pr),
         // GitHub may not show a pull request created a moment ago: keep what gh printed.
         Found::NoPr | Found::Unavailable(_) => {

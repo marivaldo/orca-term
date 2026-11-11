@@ -30,7 +30,10 @@ const WORKTREE_FILE: &str = "worktree.json";
 /// worktree's state.
 const LOCK_FILE: &str = "lock";
 
-/// The directory, inside git's per-worktree admin directory, that holds the worktree's state.
+/// The directory, inside git's per-worktree admin directory, that holds the worktree's state. For
+/// the primary checkout, git's admin directory is the common dir itself (ADR 0013), so the same
+/// directory also holds what belongs to the whole repository (the registry of running Neovims,
+/// the approvals' lock); their names never meet.
 pub(crate) const ADMIN_DIR_NAME: &str = "orca-term";
 
 /// The lock the holder keeps for its whole life: held means the agent runs (ADR 0009).
@@ -92,7 +95,8 @@ const SNAPSHOT_INDEX_FILE: &str = "snapshot.index";
 /// The directory of the git common dir holding git's admin directory of each worktree.
 pub(crate) const GIT_WORKTREES_DIR: &str = "worktrees";
 
-/// The directory, inside git's per-worktree admin directory, that holds one worktree's state.
+/// The directory, inside git's per-worktree admin directory, that holds one worktree's state:
+/// `<common>/worktrees/<id>/orca-term`, or `<common>/orca-term` for the primary checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdminDir(PathBuf);
 
@@ -214,6 +218,33 @@ impl AdminDir {
         git_dir.file_name()?.to_str()
     }
 
+    /// Whether this is the primary checkout's admin directory, which git puts in the common dir
+    /// itself, `<common>/orca-term` (ADR 0013), rather than in `<common>/worktrees/<id>/`.
+    pub(crate) fn is_primary(&self) -> bool {
+        self.worktree_id().is_none()
+    }
+
+    /// The git common dir, when this is the primary checkout's admin directory: the directory
+    /// holding it. `None` for a linked worktree's, whose `commondir` file names it.
+    pub(crate) fn common_dir(&self) -> Option<&Path> {
+        if self.is_primary() {
+            self.0.parent()
+        } else {
+            None
+        }
+    }
+
+    /// The primary checkout, when this is its admin directory and its git dir is the `.git`
+    /// directory inside it, as git makes it. `None` for a linked worktree's, whose `gitdir` file
+    /// names it, and for a git dir kept apart from the checkout, which nothing here names.
+    pub(crate) fn primary_checkout(&self) -> Option<&Path> {
+        let common = self.common_dir()?;
+        if common.file_name()? != DOT_GIT {
+            return None;
+        }
+        common.parent()
+    }
+
     /// The worktree's own git dir, which holds this directory: where git leaves the markers of a
     /// merge or rebase in progress (`domain/operation.rs`). `None` when this directory has no
     /// parent.
@@ -236,6 +267,9 @@ impl AdminDir {
 /// git's file, in a worktree's git admin directory, naming the git common dir.
 const COMMONDIR_FILE: &str = "commondir";
 
+/// The name git gives the git dir it makes inside the primary checkout.
+const DOT_GIT: &str = ".git";
+
 /// git's file, in a worktree's git admin directory, naming the worktree's `.git` file.
 const GITDIR_FILE: &str = "gitdir";
 
@@ -253,7 +287,7 @@ pub(crate) fn common_dir_from(file: &Path, text: &str) -> Option<PathBuf> {
 pub(crate) fn worktree_path_from(file: &Path, text: &str) -> Option<PathBuf> {
     let dot_git = path_in_git_file(file, text)?;
     match dot_git.file_name() {
-        Some(name) if name == ".git" => dot_git.parent().map(Path::to_path_buf),
+        Some(name) if name == DOT_GIT => dot_git.parent().map(Path::to_path_buf),
         _ => Some(dot_git),
     }
 }
@@ -1087,6 +1121,27 @@ mod tests {
         );
         let primary = AdminDir::new(PathBuf::from("/r/.git/orca-term"));
         assert_eq!(primary.worktree_id(), None, "the primary checkout has none");
+    }
+
+    #[test]
+    fn the_primary_checkouts_admin_dir_is_in_the_common_dir_inside_the_checkout() {
+        let primary = AdminDir::new(PathBuf::from("/src/repo/.git/orca-term"));
+        assert!(primary.is_primary());
+        assert_eq!(primary.common_dir(), Some(Path::new("/src/repo/.git")));
+        assert_eq!(primary.primary_checkout(), Some(Path::new("/src/repo")));
+
+        let linked = AdminDir::new(PathBuf::from("/src/repo/.git/worktrees/fix/orca-term"));
+        assert!(!linked.is_primary());
+        assert_eq!(linked.common_dir(), None, "named by git's commondir file");
+        assert_eq!(linked.primary_checkout(), None);
+
+        let separate = AdminDir::new(PathBuf::from("/git/repo/orca-term"));
+        assert!(separate.is_primary());
+        assert_eq!(
+            separate.primary_checkout(),
+            None,
+            "a git dir apart from its checkout does not name the checkout"
+        );
     }
 
     #[test]

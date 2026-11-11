@@ -99,6 +99,7 @@ mod tests {
             name: "demo".to_owned(),
             path: PathBuf::from("/l/demo"),
             branch: Some(Branch::new("demo")),
+            primary: false,
             state,
             activity: None,
             agent: None,

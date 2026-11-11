@@ -25,7 +25,8 @@ pub(crate) fn run(target: &Target) -> Result<Composed> {
 }
 
 /// What a new pull request of `worktree` into `base` (the default branch when `None`) starts from.
-/// Refuses a worktree whose directory is gone, and one on no branch.
+/// Refuses a worktree whose directory is gone, one on no branch, and, as the typed
+/// `default_branch`, one on the default branch, which has no pull request (ADR 0013).
 pub(crate) fn prepare(
     primary: &PrimaryCheckout,
     worktree: &Worktree,
@@ -44,9 +45,13 @@ pub(crate) fn prepare(
             worktree.name
         );
     };
-    let base = match base {
-        Some(base) => base.clone(),
-        None => git::default_branch(primary)?,
+    let default = git::default_branch(primary).ok();
+    create::check_not_default_branch(&worktree.name, &branch, default.as_ref())?;
+    let base = match (base, default) {
+        (Some(base), _) => base.clone(),
+        (None, Some(default)) => default,
+        // Asked again for git's own reason.
+        (None, None) => git::default_branch(primary)?,
     };
     let base_point = git::base_point(primary, &base)?;
     let commits = create::parse_log(&git::commits_ahead(&worktree.path, &base_point)?);

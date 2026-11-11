@@ -844,6 +844,7 @@ mod tests {
             name: "demo".to_owned(),
             path: PathBuf::from("/l/demo"),
             branch: None,
+            primary: false,
             state,
             activity: None,
             agent: None,

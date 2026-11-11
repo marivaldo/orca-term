@@ -145,10 +145,15 @@ fn an_open_pull_request_with_running_checks_is_kept_and_shown_by_ls_and_detail()
     });
     assert_eq!(refreshed["contract"], 1);
     let worktrees = refreshed["worktrees"].as_array().unwrap();
-    assert_eq!(worktrees.len(), 1);
-    assert_eq!(worktrees[0]["name"], "demo");
-    assert_eq!(worktrees[0]["path"], demo.to_str().unwrap());
-    assert_eq!(without_time(worktrees[0]["pr"].clone()), shown);
+    assert_eq!(worktrees.len(), 2);
+    assert_eq!(worktrees[0]["name"], "repo", "the primary checkout first");
+    assert_eq!(
+        without_time(worktrees[0]["pr"].clone()),
+        json!({"none": true})
+    );
+    assert_eq!(worktrees[1]["name"], "demo");
+    assert_eq!(worktrees[1]["path"], demo.to_str().unwrap());
+    assert_eq!(without_time(worktrees[1]["pr"].clone()), shown);
     assert_eq!(without_time(listed_pr(&fixture, "demo")), shown);
     let detail = json_of(&fixture, &["worktree", "detail", "demo"]);
     assert_eq!(without_time(detail["worktree"]["pr"].clone()), shown);
@@ -158,7 +163,7 @@ fn an_open_pull_request_with_running_checks_is_kept_and_shown_by_ls_and_detail()
             "{}|pr view demo --json number,title,state,isDraft,url,statusCheckRollup,headRefOid",
             demo.display()
         )],
-        "gh asked once, in the worktree, about its branch"
+        "gh asked once, in the worktree, about its branch; never about the default branch"
     );
     let file = pr_file(&fixture, &demo);
     assert_eq!(file["schema"], 1);
@@ -168,7 +173,7 @@ fn an_open_pull_request_with_running_checks_is_kept_and_shown_by_ls_and_detail()
         file["pr"]["head"], HEAD,
         "the cache keeps the head commit (#137)"
     );
-    assert_eq!(file["fetched_at"], worktrees[0]["pr"]["fetched_at"]);
+    assert_eq!(file["fetched_at"], worktrees[1]["pr"]["fetched_at"]);
 }
 
 #[test]
@@ -179,7 +184,10 @@ fn each_worktree_says_in_one_line_what_was_found_and_a_new_refresh_replaces_it()
     answer(&fixture, "demo", &view("OPEN", true, &json!([])));
 
     let first = fixture.ok(&["pr", "refresh"]);
-    assert_eq!(first, "demo: PR #12 draft, no checks\ndocs: no PR\n");
+    assert_eq!(
+        first,
+        "repo: no PR\ndemo: PR #12 draft, no checks\ndocs: no PR\n"
+    );
     assert_eq!(
         without_time(listed_pr(&fixture, "docs")),
         json!({"none": true})
@@ -188,7 +196,10 @@ fn each_worktree_says_in_one_line_what_was_found_and_a_new_refresh_replaces_it()
     let passed = json!([{"__typename": "StatusContext", "context": "ci", "state": "SUCCESS"}]);
     answer(&fixture, "demo", &view("MERGED", false, &passed));
     let second = fixture.ok(&["pr", "refresh"]);
-    assert_eq!(second, "demo: PR #12 merged, checks passing\ndocs: no PR\n");
+    assert_eq!(
+        second,
+        "repo: no PR\ndemo: PR #12 merged, checks passing\ndocs: no PR\n"
+    );
     assert_eq!(listed_pr(&fixture, "demo")["state"], "merged");
 }
 
@@ -202,7 +213,7 @@ fn without_gh_on_path_every_worktree_is_unavailable_and_the_command_succeeds() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "demo: PR unavailable: GitHub CLI is unavailable\n"
+        "repo: no PR\ndemo: PR unavailable: GitHub CLI is unavailable\n"
     );
     assert_eq!(
         without_time(listed_pr(&fixture, "demo")),
@@ -242,7 +253,7 @@ fn a_repository_with_no_remote_on_github_is_unavailable_as_not_a_github_remote()
 
     assert_eq!(
         fixture.ok(&["pr", "refresh"]),
-        "demo: PR unavailable: not a GitHub remote\n"
+        "repo: no PR\ndemo: PR unavailable: not a GitHub remote\n"
     );
     assert_eq!(
         without_time(listed_pr(&fixture, "demo")),
@@ -261,7 +272,7 @@ fn a_closed_pull_request_is_closed_with_its_failing_checks() {
 
     assert_eq!(
         fixture.ok(&["pr", "refresh"]),
-        "demo: PR #12 closed, checks failing\n"
+        "repo: no PR\ndemo: PR #12 closed, checks failing\n"
     );
     let pr = listed_pr(&fixture, "demo");
     assert_eq!(
@@ -271,7 +282,7 @@ fn a_closed_pull_request_is_closed_with_its_failing_checks() {
 }
 
 #[test]
-fn named_worktrees_are_the_only_ones_asked_and_the_primary_or_an_unknown_one_is_refused() {
+fn named_worktrees_are_the_only_ones_asked_and_an_unknown_one_is_refused() {
     let fixture = with_gh();
     let demo = fixture.new_worktree("demo");
     let docs = fixture.new_worktree("docs");
@@ -285,13 +296,42 @@ fn named_worktrees_are_the_only_ones_asked_and_the_primary_or_an_unknown_one_is_
     assert_eq!(unknown.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&unknown.stdout).unwrap();
     assert_eq!(error["error"]["kind"], "other");
-    let primary = fixture.run(&["pr", "refresh", "."]);
-    assert_eq!(primary.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&primary.stderr).contains("is the primary checkout"),
-        "{primary:?}"
-    );
     assert_eq!(gh_calls(&fixture).len(), 1, "gh ran only for docs");
+}
+
+#[test]
+fn the_primary_checkout_has_no_pull_request_on_the_default_branch_and_one_on_any_other() {
+    let fixture = with_gh();
+    let root = fixture.repo.root.clone();
+
+    assert_eq!(fixture.ok(&["pr", "refresh", "."]), "repo: no PR\n");
+    assert_eq!(
+        without_time(listed_pr(&fixture, "repo")),
+        json!({"none": true})
+    );
+    assert_eq!(
+        gh_calls(&fixture),
+        Vec::<String>::new(),
+        "gh is never asked about the default branch"
+    );
+    assert!(
+        root.join(".git/orca-term/pr.json").is_file(),
+        "kept in its admin directory, the common dir's own"
+    );
+
+    fixture.repo.git(&["checkout", "--quiet", "-b", "feature"]);
+    answer(&fixture, "feature", &view("OPEN", false, &json!([])));
+    assert_eq!(
+        fixture.ok(&["pr", "refresh", "repo"]),
+        "repo: PR #12 open, no checks\n"
+    );
+    assert_eq!(
+        gh_calls(&fixture),
+        [format!(
+            "{}|pr view feature --json number,title,state,isDraft,url,statusCheckRollup,headRefOid",
+            root.display()
+        )]
+    );
 }
 
 #[test]

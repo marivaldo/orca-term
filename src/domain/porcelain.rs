@@ -21,7 +21,12 @@ pub(crate) fn parse(raw: &[u8]) -> Vec<WorktreeEntry> {
                 path: PathBuf::from(OsStr::from_bytes(path)),
                 branch: None,
                 prunable: None,
+                bare: false,
             });
+        } else if field == b"bare"
+            && let Some(wt) = current.as_mut()
+        {
+            wt.bare = true;
         } else if let (Some(branch), Some(wt)) = (field.strip_prefix(b"branch "), current.as_mut())
         {
             let branch = branch.strip_prefix(b"refs/heads/").unwrap_or(branch);
@@ -44,6 +49,7 @@ mod tests {
             path: PathBuf::from(path),
             branch: branch.map(Branch::new),
             prunable: None,
+            bare: false,
         }
     }
 
@@ -76,5 +82,15 @@ worktree /held\0HEAD 456\0branch refs/heads/held\0locked\0\0";
             Some("gitdir file points to non-existent location")
         );
         assert_eq!(parsed[2], wt("/held", Some("held")));
+    }
+
+    #[test]
+    fn marks_a_bare_repository() {
+        let raw = b"worktree /repo.git\0bare\0\0\
+worktree /w/fix\0HEAD def\0branch refs/heads/fix\0\0";
+        let parsed = parse(raw);
+        assert!(parsed[0].bare);
+        assert!(!parsed[1].bare);
+        assert_eq!(parsed[1], wt("/w/fix", Some("fix")));
     }
 }

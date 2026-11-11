@@ -55,8 +55,10 @@ struct FleetView<'a> {
     has_origin: bool,
 }
 
-/// A worktree as `worktree ls` and `worktree detail` print it: the worktree object, then `pr`,
-/// what `pr refresh` last found about its pull request (null when it never ran for it), then
+/// A worktree as `worktree ls` and `worktree detail` print it: the worktree object, then
+/// `primary`, whether it is the primary checkout (ADR 0013; true only for the first worktree of
+/// the fleet), then `pr`, what `pr refresh` last found about its pull request (null when it never
+/// ran for it), then
 /// `last_activity`, when its current session was last active, in milliseconds since the Unix
 /// epoch (the latest of that session's turn starts and ends and the hooks' last report; null when
 /// it has no current session or nothing says), then `changed_files`, how many files it changed
@@ -66,6 +68,7 @@ struct FleetView<'a> {
 struct ListedWorktreeView<'a> {
     #[serde(flatten)]
     worktree: WorktreeView<'a>,
+    primary: bool,
     pr: Option<PrView<'a>>,
     last_activity: Option<u64>,
     changed_files: Option<usize>,
@@ -885,8 +888,9 @@ fn set_up_worktree(
         notes: setup.notes,
         denials: setup.denials,
         operation: setup.operation,
-        // Not printed: only `worktree ls` and `worktree detail` carry the pull request and the
-        // last activity.
+        // Not printed: only `worktree ls` and `worktree detail` carry the primary tag, the pull
+        // request and the last activity.
+        primary: false,
         pr: None,
         last_activity: None,
         changed_files: None,
@@ -1323,6 +1327,7 @@ fn worktree_view(worktree: &Worktree) -> WorktreeView<'_> {
 fn listed_worktree_view(worktree: &Worktree) -> ListedWorktreeView<'_> {
     ListedWorktreeView {
         worktree: worktree_view(worktree),
+        primary: worktree.primary,
         pr: worktree.pr.as_ref().map(pr_view),
         last_activity: worktree.last_activity,
         changed_files: worktree.changed_files,
@@ -1402,24 +1407,26 @@ mod tests {
                 path: PathBuf::from("/repo"),
                 branch: Some(Branch::new("main")),
                 prunable: None,
+                bare: false,
             },
             WorktreeEntry {
                 path: PathBuf::from("/l/docs"),
                 branch: None,
                 prunable: Some("gone".to_owned()),
+                bare: false,
             },
         ])
         .unwrap();
-        listed.worktrees[0].state = State::Broken(BrokenReason::DirectoryMissing);
+        listed.worktrees[1].state = State::Broken(BrokenReason::DirectoryMissing);
         assert_eq!(
             fleet(&listed).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":null,"has_origin":false}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"repo","path":"/repo","branch":"main","state":"no_agent","detail":null,"activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"primary":true,"pr":null,"last_activity":null,"changed_files":null}},{{"name":"docs","path":"/l/docs","branch":null,"state":"broken","detail":"directory missing; run orca-term worktree prune","activity":null,"agent":null,"holder":false,"unseen":false,"notes":0,"denials":0,"operation":null,"primary":false,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":null,"has_origin":false}}"#
             )
         );
-        listed.worktrees[0].unseen = true;
+        listed.worktrees[1].unseen = true;
         let doc: serde_json::Value = serde_json::from_str(&fleet(&listed).unwrap()).unwrap();
-        assert_eq!(doc["worktrees"][0]["unseen"], true);
+        assert_eq!(doc["worktrees"][1]["unseen"], true);
     }
 
     #[test]
@@ -1533,7 +1540,7 @@ mod tests {
             let fleet_doc = fleet_doc_of(listed);
             assert!(
                 fleet_doc.contains(&format!(
-                    r#""denials":0,"operation":null,"pr":{shape},"last_activity":null,"changed_files":null}}]"#
+                    r#""denials":0,"operation":null,"primary":false,"pr":{shape},"last_activity":null,"changed_files":null}}]"#
                 )),
                 "{fleet_doc}"
             );
@@ -1591,15 +1598,17 @@ mod tests {
             path: PathBuf::from("/repo"),
             branch: Some(Branch::new("main")),
             prunable: None,
+            bare: false,
         }])
         .unwrap();
-        fleet.worktrees.push(worktree);
+        // Only the working worktree, the primary checkout left out, to keep the document short.
+        fleet.worktrees = vec![worktree];
         fleet.remote_base = Some(Branch::new("main"));
         fleet.has_origin = true;
         assert_eq!(
             super::fleet(&fleet).unwrap(),
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main","has_origin":true}}"#
+                r#"{{"contract":1,"version":"{VERSION}","primary":{{"path":"/repo","branch":"main"}},"worktrees":[{{"name":"fix","path":"/l/fix","branch":"fix","state":"working","detail":null,"activity":"Bash: npm test","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":0,"operation":null,"primary":false,"pr":null,"last_activity":null,"changed_files":null}}],"remote_base":"origin/main","has_origin":true}}"#
             )
         );
     }
@@ -1624,6 +1633,7 @@ mod tests {
             name: "fix".to_owned(),
             path: PathBuf::from("/l/fix"),
             branch: Some(Branch::new("fix")),
+            primary: false,
             state: State::Idle,
             activity: None,
             agent: Some("claude-code".to_owned()),
@@ -2009,7 +2019,7 @@ mod tests {
         assert_eq!(
             doc,
             format!(
-                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase","pr":null,"last_activity":1700000000000,"changed_files":3}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
+                r#"{{"contract":1,"version":"{VERSION}","worktree":{{"name":"fix","path":"/l/fix","branch":"fix","state":"failed","detail":null,"activity":"API Error: 400","agent":"claude-code","holder":true,"unseen":false,"notes":0,"denials":1,"operation":"rebase","primary":false,"pr":null,"last_activity":1700000000000,"changed_files":3}},"detail":"API Error: 400\n{{}}","denials":[{{"tool":"Bash","text":"Bash: FOO=bar ls"}}],"setup":{{"status":"failed","log":"/a/setup.log","tail":["installing","error: boom"]}},"drift":{{"against":"main","ahead":2,"behind":1}},"operation_step":{{"current":2,"total":5}}}}"#
             )
         );
     }

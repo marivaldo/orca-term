@@ -78,9 +78,10 @@ use crate::domain::worktree::{self, Target};
 /// Reads the fleet of the repository containing `dir`, with each worktree's state. Never writes.
 pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
     let entries = git::worktree_list(dir)?;
+    // In the fleet's order: every entry but a bare repository's, as `Fleet::from_entries` keeps.
     let prunable: Vec<Option<String>> = entries
         .iter()
-        .skip(1)
+        .filter(|entry| !entry.bare)
         .map(|entry| entry.prunable.clone())
         .collect();
     let mut fleet = Fleet::from_entries(entries)?;
@@ -400,16 +401,9 @@ pub(crate) fn find_target<'f>(
     }
 }
 
-/// The worktree at `wanted`, compared through symlinks. Refuses the primary checkout and a path
-/// that is no worktree of the fleet.
+/// The worktree at `wanted`, compared through symlinks, the primary checkout included (ADR 0013).
+/// Refuses a path that is no worktree of the fleet.
 fn find_by_path<'f>(fleet: &'f Fleet, wanted: &Path) -> Result<&'f Worktree> {
-    let primary = &fleet.primary.path;
-    if fs::same_path(primary, wanted) {
-        bail!(
-            "{} is the primary checkout, which is never a worktree",
-            primary.display()
-        );
-    }
     match fleet
         .worktrees
         .iter()
@@ -698,13 +692,19 @@ pub(crate) struct Changed {
 
 impl Changed {
     /// The worktree whose admin directory is `admin`, found from git's own files beside it
-    /// (`commondir` and `gitdir`) without running git, so that a hook stays fast. `None` when
-    /// they cannot be read: then nobody is told, which is never an error.
+    /// (`commondir` and `gitdir`) without running git, so that a hook stays fast; for the primary
+    /// checkout, whose admin directory sits in the common dir itself, from where it is. `None`
+    /// when they cannot be read: then nobody is told, which is never an error.
     pub(crate) fn of(admin: &AdminDir) -> Option<Self> {
-        let commondir = admin.commondir_file()?;
-        let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
+        let common = if let Some(common) = admin.common_dir() {
+            common.to_owned()
+        } else {
+            let commondir = admin.commondir_file()?;
+            let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
+            state::common_dir_from(&commondir, &commondir_text)?
+        };
         Some(Self {
-            common: state::common_dir_from(&commondir, &commondir_text)?,
+            common,
             worktree: worktree_of(admin)?,
         })
     }
@@ -744,8 +744,12 @@ impl Changed {
 }
 
 /// The path of the worktree whose admin directory is `admin`, as `worktree ls` prints it, from
-/// git's `gitdir` file beside it, without running git. `None` when it cannot be read.
+/// git's `gitdir` file beside it, without running git; for the primary checkout, the directory
+/// holding its `.git` (`AdminDir::primary_checkout`). `None` when it cannot be read.
 pub(crate) fn worktree_of(admin: &AdminDir) -> Option<PathBuf> {
+    if admin.is_primary() {
+        return admin.primary_checkout().map(Path::to_path_buf);
+    }
     let gitdir = admin.gitdir_file()?;
     let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
     state::worktree_path_from(&gitdir, &gitdir_text)
@@ -763,8 +767,8 @@ pub(crate) fn notify_changed(admin: &AdminDir) {
 const NOTES_LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// The worktree `target` names or locates in the repository containing the current directory,
-/// for a note command, with its admin directory. Refuses the primary checkout, an unknown worktree
-/// and one whose directory is gone.
+/// for a note command, with its admin directory, the primary checkout included. Refuses an unknown
+/// worktree and one whose directory is gone.
 pub(crate) fn find_noted(target: &Target) -> Result<(Worktree, AdminDir)> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
@@ -864,8 +868,8 @@ fn current_anchor(worktree: &Path, admin: &AdminDir, note: &Note) -> Result<Anch
 }
 
 /// The worktree `target` names or locates in the repository containing the current directory,
-/// for a turn command, with its admin directory. Refuses the primary checkout, an unknown worktree
-/// and one whose directory is gone.
+/// for a turn command, with its admin directory, the primary checkout included. Refuses an unknown
+/// worktree and one whose directory is gone.
 pub(crate) fn find_turned(target: &Target) -> Result<(Worktree, AdminDir)> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;

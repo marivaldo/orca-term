@@ -183,6 +183,24 @@ pub(crate) fn check_title(title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses, as the typed `default_branch`, the worktree `name` on `branch` when it is the
+/// repository's `default` branch (ADR 0013): pull requests go into it, and it has none of its own.
+/// The primary checkout is on it most of the time.
+pub(crate) fn check_not_default_branch(
+    name: &str,
+    branch: &Branch,
+    default: Option<&Branch>,
+) -> Result<()> {
+    if default == Some(branch) {
+        return Err(TypedError::OnDefaultBranch {
+            name: name.to_owned(),
+            branch: branch.to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Refuses a branch with no commits ahead of the base: a pull request would hold nothing.
 pub(crate) fn check_has_commits(name: &str, composed: &Composed) -> Result<()> {
     if composed.commits == 0 {
@@ -437,6 +455,16 @@ mod tests {
         let err = check_has_commits("demo", &composed(0)).unwrap_err();
         assert_eq!(error::kind(&err), "no_commits");
         assert!(check_has_commits("demo", &composed(2)).is_ok());
+    }
+
+    #[test]
+    fn the_default_branch_is_refused_as_default_branch() {
+        let main = Branch::new("main");
+        let err = check_not_default_branch("repo", &main, Some(&main)).unwrap_err();
+        assert_eq!(error::kind(&err), "default_branch");
+        assert!(err.to_string().contains("main"), "{err}");
+        check_not_default_branch("repo", &Branch::new("fix"), Some(&main)).unwrap();
+        check_not_default_branch("repo", &main, None).unwrap();
     }
 
     fn pr(state: PrState) -> Found {

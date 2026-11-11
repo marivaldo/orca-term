@@ -174,10 +174,6 @@ fn add_refuses_what_a_note_cannot_be() {
     let add = |args: &[&str]| fx.run(&[&["note", "add"], args].concat());
     refused(&add(&["nope", "src/app.rs", "--body", "x"]), "nope");
     refused(
-        &add(&[".", "src/app.rs", "--body", "x"]),
-        "primary checkout",
-    );
-    refused(
         &add(&["fix", "../outside", "--body", "x"]),
         "leaves the worktree",
     );

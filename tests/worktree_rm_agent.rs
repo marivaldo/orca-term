@@ -89,7 +89,9 @@ fn removing_a_worktree_whose_agent_runs_stops_it_then_removes_it_keeping_an_unme
     assert!(!holder_alive(&admin), "the holder is gone");
     assert!(has_branch(&fx, "fix"), "the unmerged branch is kept");
     let fleet: Value = serde_json::from_str(&fx.ok(&["worktree", "ls", "--json"])).unwrap();
-    assert_eq!(fleet["worktrees"].as_array().unwrap().len(), 0);
+    let left = fleet["worktrees"].as_array().unwrap();
+    assert_eq!(left.len(), 1, "the primary checkout alone");
+    assert_eq!(left[0]["primary"], true);
 }
 
 #[test]

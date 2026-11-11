@@ -65,6 +65,11 @@ fn pick(list: &Value, fields: &[&str]) -> Vec<Value> {
 /// `status.json`, `seen.json`, `notes.json` and `pr.json`.
 fn check_the_listed_worktree(listed: &Value) {
     assert_eq!(listed["name"], WORKTREE);
+    check_the_listed_state(listed);
+}
+
+/// What the samples' state files say of a worktree, whichever it is.
+fn check_the_listed_state(listed: &Value) {
     assert_eq!(
         listed["state"], "finished",
         "status.json: the latest turn finished"
@@ -100,7 +105,7 @@ fn every_schema_1_file_still_reads_and_reading_rewrites_none() {
     let sampled = schema_samples::build(&fx, 1);
 
     let fleet = json_of(&fx, &["worktree", "ls"]);
-    check_the_listed_worktree(&fleet["worktrees"][0]);
+    check_the_listed_worktree(&fleet["worktrees"][1]);
 
     let detail = json_of(&fx, &["worktree", "detail", WORKTREE]);
     check_the_listed_worktree(&detail["worktree"]);
@@ -146,6 +151,27 @@ fn every_schema_1_file_still_reads_and_reading_rewrites_none() {
         ],
         "status.json's current session and the turn log's sessions"
     );
+
+    assert_eq!(
+        sampled.changed_files(),
+        Vec::<std::path::PathBuf>::new(),
+        "a read rewrote a state file"
+    );
+}
+
+#[test]
+fn the_schema_1_files_read_in_the_primary_checkouts_admin_directory_too() {
+    let fx = AgentRepo::new();
+    let sampled = schema_samples::build_in_primary(&fx, 1);
+
+    let fleet = json_of(&fx, &["worktree", "ls"]);
+    assert_eq!(fleet["worktrees"][0]["name"], "repo");
+    assert_eq!(fleet["worktrees"][0]["primary"], true);
+    check_the_listed_state(&fleet["worktrees"][0]);
+    let turns = json_of(&fx, &["turn", "ls", "repo"]);
+    assert_eq!(turns["turns"].as_array().unwrap().len(), 3);
+    let notes = json_of(&fx, &["note", "ls", "repo"]);
+    assert_eq!(notes["notes"].as_array().unwrap().len(), 2);
 
     assert_eq!(
         sampled.changed_files(),

@@ -162,6 +162,12 @@ the adapters, and returns a domain value that `output` prints.
   after `remote_base`; `worktree push` prints `name`, `path`, `branch`, `remote` (`origin/demo`),
   `outcome` (`pushed` or `up_to_date`), `with_lease`, `uncommitted` and `pr` as `pr refresh`
   shows it, read again after the push.
+- The primary checkout as a worktree (#175, ADR 0013): `worktree ls` and `fleets` list it first
+  in its fleet, and in `worktree ls --json`, `fleets --json` and `worktree detail --json` every
+  worktree object carries `primary` after `operation` (`ListedWorktreeView`): `true` for it,
+  `false` for the others. The top-level `primary` object (`path`, `branch`) stays. The text table
+  shows its name as `repo (primary)` (`name_cell`). The contract stays 1: the field is additive,
+  and the one more item a client may ignore by it.
 - The project list's surface (#149): `cli` parses `project add [<path>]`, `project ls`, `project
   rm <path or name>` (a `ProjectTarget`) and `fleets`, each with `--json`; only `project add` and
   `fleets` check git first. `output` prints `added project <name> at <path>` or `project <name>
@@ -203,7 +209,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
   quits, anything else (`esc`) disarms it. The focused side menu moves its cursor with `j`/`k`
   and the arrows and opens with `enter`, giving the centre the focus. The centre types every key
   into a running agent, encoded again (`keys.rs`); where none runs `enter` starts it. A fleet read
-  opens the worktree containing the directory the application started in, else the first, when
+  opens the worktree containing the directory the application started in (the deepest such one,
+  since a worktree may sit inside the primary checkout, #175), else the first, when
   none is open or the open one is gone, and attaches to the open one's agent once its holder is
   alive.
 - `app/panel.rs`: the agent's panel: a `vt100` screen fed with the replay and then the agent's
@@ -224,7 +231,9 @@ touch the outside world; everything under `app/` is pure and tested without a te
   claude-code, a worktree's message (its activity, else its state in words) and its age (`now`,
   `9m`, `3h`, `2d`).
 - `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
-  project's initial and name, its worktrees in three lines, or two under 40 rows, the open one in
+  project's initial and name, its worktrees in three lines, or two under 40 rows, the primary
+  checkout first as the fleet lists it, with the ` primary ` tag (TEXT_2 on RAISED) after its name
+  and unseen mark (#175), the open one in
   a half-line card, the cursor's in the accent with the focus; `no worktrees yet`; a project that
   cannot be read shows its error, wrapped to three lines and muted; the list scrolls to the open or
   cursor's worktree, and to its end from the last one), the centre (`centre.rs`: the `1 agent`
@@ -281,23 +290,23 @@ touch the outside world; everything under `app/` is pure and tested without a te
   processes, only read, every worktree on a scoped thread of its own so that they run at once.
   `worktree detail` counts its one worktree the same way (`ops::read_changed_files`). The other
   commands read the fleet without counting.
-- `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (refusing the
-  primary checkout), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
+- `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (the primary
+  checkout included), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
   (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
   nothing more. `mark` writes the mark and notifies; `worktree review` marks through it too.
-- `ops/worktree_review.rs`: `worktree review`: find the target (refusing the primary checkout
-  and a worktree whose directory is gone), resolve the default branch as `worktree new` resolves
+- `ops/worktree_review.rs`: `worktree review`: find the target (refusing a worktree whose
+  directory is gone; the primary checkout is reviewed against the default branch like any), resolve the default branch as `worktree new` resolves
   its start point, find the review's base with `git merge-base <default branch> HEAD` in the
   worktree, then mark it seen as `worktree seen` does. The base comes first, so a failure (no
   default branch, unrelated histories) marks nothing.
-- `ops/worktree_detail.rs`: `worktree detail`: find the target (refusing the primary checkout and
-  an unknown worktree), read the hooks' live status for the whole detail and the latest turn's
+- `ops/worktree_detail.rs`: `worktree detail`: find the target (the primary checkout included;
+  refusing an unknown worktree), read the hooks' live status for the whole detail and the latest turn's
   denials, `worktree.json` and the end of the setup log (64 KiB at most), and the drift: the
   default branch only when it exists locally (`refs/heads/<default>`, never `origin/`), `git
   merge-base` against it (none: unrelated histories, no drift), then `git rev-list --left-right
   --count`. A worktree whose directory is gone gives only its state and reason. Only reads.
-- `ops/worktree_rm.rs`: `worktree rm`: find the target, lock it (or fail as `busy`, even with
-  `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
+- `ops/worktree_rm.rs`: `worktree rm`: find the target (refusing the primary checkout as the
+  typed `primary_checkout`, #175), lock it (or fail as `busy`, even with `--force`), refuse modified or untracked files without `--force` (the typed `dirty`), decide
   the branch's fate; only then stop a running agent under the lock as `agent stop` does (#94:
   `agent stop` takes no worktree lock, so no deadlock; an agent that does not stop is `busy`,
   `AgentDidNotStop`, and nothing is removed), go back to the primary checkout (talking to the
@@ -316,7 +325,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
 - `ops/worktree_prune.rs`: `worktree prune`: `git worktree prune`, then delete every chain of
   snapshots whose `.git/worktrees/<id>` is gone (a worktree removed by hand), and report both.
 - `ops/agent_start.rs`: `agent start` (and `run_in`, the same from a given directory, which the
-  application starts a worktree's agent with, #174): find the target (ready, not the primary checkout), lock it
+  application starts a worktree's agent with, #174): find the target (ready; the primary checkout
+  too), lock it
   (or fail as `busy`), report a holder already alive, probe the sandbox (or fail as
   `no_sandbox`), find claude on PATH and check its version (or fail as `prerequisite`), resolve
   the extra writable paths (those of a committed `orca-term.yaml` approved, else asked for or
@@ -339,7 +349,7 @@ touch the outside world; everything under `app/` is pure and tested without a te
   gpg-agent's (`gpgconf --list-dirs agent-socket`), each by its real path and only when it is a
   socket; claude's settings list them in `allowUnixSockets`, opencode's `Policy` in
   `unix_sockets`.
-- `ops/agent_swap.rs`: `agent swap` (#35): find the target (ready, not the primary checkout), lock
+- `ops/agent_swap.rs`: `agent swap` (#35): find the target (ready; the primary checkout too), lock
   it (or fail as `busy`), and when another agent's holder is alive refuse as `busy` an agent in a
   turn (`working` or `waiting`), check the new agent's sandbox and program, stop the holder
   (`agent_stop::stop_holder`); then start the new agent as `agent start` does, resuming only its
@@ -366,8 +376,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
   fast. When `ORCA_TERM_RECORD` names a file, the payload is first appended to it as received
   (`domain/hook/record.rs`), claude's after the event its command line names: the live checks'
   recording tap (#44), off unless the variable is set.
-- `ops/note_add.rs`: `note add`: check the body and the path, find the target (refusing the
-  primary checkout and a worktree whose directory is gone), refuse a path that leaves the worktree
+- `ops/note_add.rs`: `note add`: check the body and the path, find the target (the primary
+  checkout included; refusing a worktree whose directory is gone), refuse a path that leaves the worktree
   through a symlink, read the file for a note on lines and check the lines fit, then, under
   `notes.lock`, keep the file's content under its blob id and record the note; notify.
 - `ops/note_ls.rs`: `note ls`: the pending notes, each with its anchor translated to the file now.
@@ -419,16 +429,18 @@ touch the outside world; everything under `app/` is pure and tested without a te
   nothing and never stops the launch. Nothing is added when Neovim is not opened: the usage, the
   refusal inside Neovim, a missing Neovim.
 - `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
-  none is named; a named one whose directory is gone, the primary checkout or an unknown one is
-  refused), find gh on PATH, run `gh pr view <branch> --json
+  none is named, the primary checkout included; a named one whose directory is gone or an unknown
+  one is refused), find gh on PATH, run `gh pr view <branch> --json
   number,title,state,isDraft,url,statusCheckRollup` in every worktree at once (one thread each,
   `program::run_within`, 10 s each), turn each answer into a finding (`domain/pr.rs`), then write
   each `pr.json` whole with no lock (never over a newer schema) and notify only for a worktree whose
-  finding changed. A worktree on no branch has no pull request and runs no gh. With
+  finding changed. A worktree on no branch, or on the default branch (#175, `pr::branch_to_ask`),
+  has no pull request and runs no gh. With
   `ops/pr_create.rs`, the only file that names gh; `pr create` finds gh, asks about a branch and
   keeps the answer through its `find_gh`, `ask` and `keep`.
 - `ops/pr_compose.rs`: `pr compose` (#132): find the target (refusing a worktree whose directory
-  is gone and one on no branch), the base (the default branch, or `--base` for `pr create`)
+  is gone, one on no branch and, as the typed `default_branch`, one on the default branch, #175),
+  the base (the default branch, or `--base` for `pr create`)
   counted from the local branch or else `origin/<base>` (`git::base_point`), the commits ahead
   (`git log -z --reverse --format=%s%x1f%b <base>..HEAD`), the pull request template on disk
   (the first `pull_request_template*` in `.github/`, the root, `docs/`, any case) and the files
@@ -445,7 +457,7 @@ touch the outside world; everything under `app/` is pure and tested without a te
   when gh does not show the new pull request yet, the record is made from the address `gh pr
   create` printed. One of the two ops that push, with `worktree push` (`cargo xtask gh-guard`).
 - `ops/pr_merge.rs`: `pr merge` (#136): find the target (refusing a worktree whose directory is
-  gone; one on no branch is `no_open_pr`), find gh (`pr_refresh::find_gh`; missing is
+  gone; one on no branch or on the default branch is `no_open_pr`, gh not asked), find gh (`pr_refresh::find_gh`; missing is
   `prerequisite`), ask gh `gh pr view <branch>` with the merge fields through `pr_refresh::view`
   and refuse what `merge::check_mergeable` refuses, then `gh pr merge <number>
   --squash|--merge|--rebase` (60 s at most, never `--delete-branch`; a failure is gh's first
@@ -613,10 +625,11 @@ touch the outside world; everything under `app/` is pure and tested without a te
   and the branch's fate on removal.
 - `domain/branch.rs`: a branch's name, the start point a new branch is created from, and git's
   rules for a valid branch name, mirrored without running git.
-- `domain/fleet.rs`: the fleet derived from git's list: the primary checkout apart, names,
-  gone worktrees, what a prune cleaned, and how many distinct files a worktree changed from git's
+- `domain/fleet.rs`: the fleet derived from git's list: the primary checkout first, tagged
+  `primary` (ADR 0013, #175), and kept apart too as `PrimaryCheckout`; a bare repository's entry
+  left out; names, gone worktrees, what a prune cleaned, and how many distinct files a worktree changed from git's
   two lists of paths (`count_changed_files`, #92).
-- `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`.
+- `domain/porcelain.rs`: parsing `git worktree list --porcelain -z`, a `bare` entry marked.
 - `domain/config.rs`: `orca-term.yaml` parsing (`base`, `scripts.setup`, `sandbox.writable`,
   `sandbox.agent_socket`), the precedence of the config files, which checkout supplies the
   committed file (the primary checkout for `base`, the worktree for `scripts.setup`,
@@ -626,7 +639,9 @@ touch the outside world; everything under `app/` is pure and tested without a te
 - `domain/state.rs`: a worktree's state and why it is broken or not ready, derived from
   `worktree.json`, the lock and the setup log; its admin directory and the files in it; and the
   `worktree.json` schema rules and bytes; and the git common dir and the worktree's path read
-  from git's `commondir` and `gitdir` files beside the admin directory.
+  from git's `commondir` and `gitdir` files beside the admin directory, or, for the primary
+  checkout's admin directory, which sits in the common dir itself (`AdminDir::is_primary`,
+  `common_dir`, `primary_checkout`, #175), from where it is.
 - `domain/operation.rs`: the git operation a worktree is in the middle of (#86), told from which
   of git's markers its own git dir holds (`rebase-merge/`, `rebase-apply/` without `applying`,
   `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`; a rebase wins), and a rebase's step from the
@@ -701,7 +716,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
   the person for a begin alone; `orca-term` commits), how it joins the chain (`chain_step`: the
   ref's commit is the parent only when it is the tip `status.json` records; any other ref is
   stale and replaced), filling its id into the records and the status (`fill`), and the chain's
-  ref `refs/orca-term/worktrees/<admin-dir id>`.
+  ref `refs/orca-term/worktrees/<admin-dir id>`, or `refs/orca-term/primary` for the primary
+  checkout (`chain_ref_of`, #175).
 - `domain/history.rs`: a worktree's turns as `turn ls` and `turn diff` show them (`turns`: the
   turn log's start and end lines merged per number, oldest first, the open turn and its phase
   from the live status), and the snapshots a turn's diff runs between (`diff_bounds`, refusing
@@ -962,7 +978,9 @@ validate"):
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
   doctor's lines say) and `Untrusted` (a setup script or writable list from a committed
   `orca-term.yaml` not approved, with its `Subject` and file, which the client shows before
-  approving it).
+  approving it). Since #175 also `PrimaryNotRemovable` (kind `primary_checkout`, exit 24: `worktree
+  rm` of the primary checkout) and `OnDefaultBranch` (kind `default_branch`, exit 25: `pr create`
+  or `pr compose` of a worktree on the default branch, which has no pull request).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -1026,7 +1044,22 @@ validate"):
   refuses to run when another holds `agent.lock`. `worktree setup` fails as `busy` while a
   holder is alive, naming `agent stop`; `worktree rm` stops the holder first, once its own checks
   pass (#94). `agent start` refuses a worktree that is
-  not ready, and the primary checkout.
+  not ready; the primary checkout runs an agent like any worktree (ADR 0013).
+- **The primary checkout is the first worktree of its fleet, and is never removed** (ADR 0013,
+  #175). `Fleet::from_entries` keeps git's first entry as the first worktree, `primary: true`
+  (a bare repository's first entry, which checks out nothing, is left out); `fleet.primary` still
+  holds its path and branch for the commands that work on the whole repository. Its admin
+  directory is the one `git rev-parse --git-path orca-term` gives there, the common dir's own
+  `orca-term/`, which also holds the repository-wide registry of Neovims (`nvim/`) and the
+  approvals' lock (`trust.lock`), names no worktree file takes. `AdminDir::is_primary` tells it
+  from a linked worktree's (no id under `worktrees/`); the hook, `Changed` and `worktree_of` find
+  its common dir and checkout from where it is (the checkout being the directory holding `.git`),
+  since it has no `commondir` or `gitdir` file. Its chain of snapshots is
+  `refs/orca-term/primary`, outside `refs/orca-term/worktrees/`, so `worktree prune` never takes
+  it. `worktree rm` refuses it as `primary_checkout` (exit 24), `--force` or not. On the
+  repository's default branch a worktree has no pull request: `pr refresh` records none without
+  running gh (`pr::branch_to_ask`), `pr merge` refuses as `no_open_pr`, and `pr create` and `pr
+  compose` refuse as `default_branch` (exit 25).
 - **The agent is launched only through `domain/launch.rs`.** The command line is
   `claude --settings <admin>/claude-settings.json --permission-mode acceptEdits [--resume <id>]`,
   in the worktree,
@@ -1624,6 +1657,9 @@ what they print.
   `bin/orca-term` (the build hook's), `target/release/orca-term` or `target/debug/orca-term` in the
   repository the client is loaded from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
   and refuses a document whose `contract` differs from the client's own `CONTRACT`.
+  `worktree_ls`, `worktree_ls_async`, `fleets` and `fleets_async` drop the worktree marked
+  `primary` (#175, `without_primary`): the client is frozen (ADR 0012) and keeps showing the
+  primary checkout only in the project header, while the application draws it as a row.
   `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` (with
   `--approve-setup` when asked to approve) and `worktree_rm`
   (which may run a setup for minutes) do not: `vim.system` runs them with no time limit and their

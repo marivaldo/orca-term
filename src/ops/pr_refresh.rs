@@ -17,6 +17,7 @@ use std::thread;
 use anyhow::{Result, bail};
 
 use crate::adapters::{env, fs, git, program};
+use crate::domain::branch::Branch;
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::{self, Found, GhRun, PrFacts, Refreshed, RefreshedWorktree};
 use crate::domain::worktree::Target;
@@ -26,11 +27,13 @@ use crate::ops::{find_target, notify_changed, read_fleet, read_pr};
 const GH: &str = "gh";
 
 /// Refreshes the pull request of every worktree `targets` names or locates in the repository
-/// containing the current directory, or of every worktree still on disk when it names none.
-/// Refuses the primary checkout, an unknown worktree and one whose directory is gone.
+/// containing the current directory, or of every worktree still on disk when it names none, the
+/// primary checkout included. Refuses an unknown worktree and one whose directory is gone. A
+/// worktree on the default branch has no pull request, and gh is not asked about it (ADR 0013).
 pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
+    let default = git::default_branch(&fleet.primary).ok();
     let chosen: Vec<&Worktree> = if targets.is_empty() {
         fleet.worktrees.iter().filter(|w| !w.is_gone()).collect()
     } else {
@@ -48,7 +51,7 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
         named
     };
     let gh = find_gh();
-    let answers = ask_all(gh.as_deref(), &chosen);
+    let answers = ask_all(gh.as_deref(), &chosen, default.as_ref());
     let fetched_at = env::now_millis();
     let mut refreshed = Refreshed::default();
     for (worktree, found) in chosen.into_iter().zip(answers) {
@@ -64,11 +67,11 @@ pub(crate) fn run(targets: &[Target]) -> Result<Refreshed> {
 }
 
 /// Asks gh about the pull request of `worktree` again and keeps the answer, as `pr refresh` of
-/// that worktree alone does. `worktree push` calls it after a push, so the row's checks show the
-/// new run (#146). gh missing or not logged in is an answer too: this fails only when the answer
-/// cannot be written.
-pub(crate) fn refresh(worktree: &Worktree) -> Result<PrFacts> {
-    let found = ask(find_gh().as_deref(), worktree);
+/// that worktree alone does, given the repository's `default` branch when known. `worktree push`
+/// calls it after a push, so the row's checks show the new run (#146). gh missing or not logged
+/// in is an answer too: this fails only when the answer cannot be written.
+pub(crate) fn refresh(worktree: &Worktree, default: Option<&Branch>) -> Result<PrFacts> {
+    let found = ask(find_gh().as_deref(), worktree, default);
     let facts = PrFacts {
         fetched_at: env::now_millis(),
         found,
@@ -84,12 +87,13 @@ pub(crate) fn find_gh() -> Option<PathBuf> {
 }
 
 /// Asks gh, found at `gh` (`None` when it is not on PATH), about every worktree of `worktrees` at
-/// once, one thread each. The answers come back in the same order.
-fn ask_all(gh: Option<&Path>, worktrees: &[&Worktree]) -> Vec<Found> {
+/// once, one thread each, given the repository's `default` branch when known. The answers come
+/// back in the same order.
+fn ask_all(gh: Option<&Path>, worktrees: &[&Worktree], default: Option<&Branch>) -> Vec<Found> {
     thread::scope(|scope| {
         let asking: Vec<_> = worktrees
             .iter()
-            .map(|worktree| scope.spawn(move || ask(gh, worktree)))
+            .map(|worktree| scope.spawn(move || ask(gh, worktree, default)))
             .collect();
         asking
             .into_iter()
@@ -102,9 +106,11 @@ fn ask_all(gh: Option<&Path>, worktrees: &[&Worktree]) -> Vec<Found> {
     })
 }
 
-/// What gh says about the pull request of `worktree`'s branch. A worktree on no branch has none.
-pub(crate) fn ask(gh: Option<&Path>, worktree: &Worktree) -> Found {
-    let Some(branch) = &worktree.branch else {
+/// What gh says about the pull request of `worktree`'s branch, given the repository's `default`
+/// branch when known. A worktree on no branch, or on the default branch, has none, and gh is not
+/// asked (`pr::branch_to_ask`).
+pub(crate) fn ask(gh: Option<&Path>, worktree: &Worktree, default: Option<&Branch>) -> Found {
+    let Some(branch) = pr::branch_to_ask(worktree.branch.as_ref(), default) else {
         return Found::NoPr;
     };
     pr::found(&view(gh, &pr::view_args(branch.as_str()), worktree))

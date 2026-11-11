@@ -358,6 +358,16 @@ fn check_the_gone_project(project: &Value, gone: &Path) {
     );
 }
 
+/// Each worktree of `fleet` (a `fleets --json` project's) as its name and its `primary` field.
+fn named(fleet: &Value) -> Vec<(Value, Value)> {
+    fleet["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|worktree| (worktree["name"].clone(), worktree["primary"].clone()))
+        .collect()
+}
+
 #[test]
 fn fleets_reads_every_project_and_reports_a_broken_and_a_gone_one() {
     let first = Repo::new();
@@ -385,7 +395,11 @@ fn fleets_reads_every_project_and_reports_a_broken_and_a_gone_one() {
     assert_eq!(projects[0]["gone"], false);
     assert_eq!(projects[0]["fleet"], listed);
     assert_eq!(projects[0]["error"], Value::Null);
-    assert_eq!(projects[0]["fleet"]["worktrees"][0]["name"], "fix");
+    assert_eq!(
+        named(&projects[0]["fleet"]),
+        [(json!("repo"), json!(true)), (json!("fix"), json!(false))],
+        "its primary checkout first"
+    );
 
     assert_eq!(projects[1]["name"], "broken");
     assert_eq!(projects[1]["gone"], false);
@@ -401,7 +415,11 @@ fn fleets_reads_every_project_and_reports_a_broken_and_a_gone_one() {
     );
 
     assert_eq!(projects[2]["path"], text(&second.root));
-    assert_eq!(projects[2]["fleet"]["worktrees"], json!([]));
+    assert_eq!(
+        named(&projects[2]["fleet"]),
+        [(json!("repo"), json!(true))],
+        "its primary checkout alone"
+    );
     assert_eq!(projects[2]["error"], Value::Null);
 
     check_the_gone_project(&projects[3], &gone);

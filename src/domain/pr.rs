@@ -22,6 +22,8 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::branch::Branch;
+
 pub(crate) mod create;
 pub(crate) mod merge;
 
@@ -49,6 +51,17 @@ const NO_GITHUB_REMOTE: &[&str] = &[
     "no git remotes found",
     "none of the git remotes configured for this repository point to a known github host",
 ];
+
+/// The branch gh is asked about for a worktree on `branch`, given the repository's `default`
+/// branch when known. `None` when the worktree has no pull request and gh is not asked: it is on
+/// no branch, or on the default branch, the one pull requests go into (ADR 0013; the primary
+/// checkout, most of the time).
+pub(crate) fn branch_to_ask<'b>(
+    branch: Option<&'b Branch>,
+    default: Option<&Branch>,
+) -> Option<&'b Branch> {
+    branch.filter(|branch| default != Some(*branch))
+}
 
 /// gh's arguments to report the pull request of `branch`, run in the worktree.
 pub(crate) fn view_args(branch: &str) -> Vec<String> {
@@ -430,6 +443,24 @@ mod tests {
         format!(
             r#"{{"number":12,"title":"Fix the login","state":"{state}","isDraft":{draft},"url":"https://github.com/o/r/pull/12","statusCheckRollup":{rollup},"headRefOid":"{HEAD}"}}"#
         )
+    }
+
+    #[test]
+    fn no_branch_and_the_default_branch_have_no_pull_request_without_asking_gh() {
+        let main = Branch::new("main");
+        let fix = Branch::new("fix");
+        assert_eq!(branch_to_ask(None, Some(&main)), None);
+        assert_eq!(
+            branch_to_ask(Some(&main), Some(&main)),
+            None,
+            "the default branch is what pull requests go into"
+        );
+        assert_eq!(branch_to_ask(Some(&fix), Some(&main)), Some(&fix));
+        assert_eq!(
+            branch_to_ask(Some(&main), None),
+            Some(&main),
+            "no default branch known: gh is asked"
+        );
     }
 
     fn pr_of(run: &GhRun) -> PullRequest {

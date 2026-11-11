@@ -34,25 +34,41 @@ fn ls_json(repo: &Repo, dir: &std::path::Path) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+/// The paths of the worktrees other than the primary checkout.
 fn worktree_paths(doc: &Value) -> Vec<String> {
-    doc["worktrees"]
-        .as_array()
-        .unwrap()
+    linked(doc)
         .iter()
         .map(|l| l["path"].as_str().unwrap().to_owned())
         .collect()
 }
 
+/// The worktrees other than the primary checkout, in the fleet's order.
+fn linked(doc: &Value) -> Vec<Value> {
+    doc["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|worktree| worktree["primary"] == false)
+        .cloned()
+        .collect()
+}
+
 #[test]
-fn a_repository_without_worktrees_has_an_empty_fleet() {
+fn a_repository_without_worktrees_lists_its_primary_checkout_alone() {
     let repo = Repo::new();
     repo.orca_term(&repo.root)
         .args(["worktree", "ls"])
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("no worktrees in "));
+        .stdout(predicate::str::contains("repo (primary)  main"));
     let doc = ls_json(&repo, &repo.root);
-    assert_eq!(doc["worktrees"], Value::Array(vec![]));
+    let worktrees = doc["worktrees"].as_array().unwrap();
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0]["name"], "repo");
+    assert_eq!(worktrees[0]["path"], repo.root.to_str().unwrap());
+    assert_eq!(worktrees[0]["branch"], "main");
+    assert_eq!(worktrees[0]["state"], "no_agent");
+    assert_eq!(worktrees[0]["primary"], true);
 }
 
 #[test]
@@ -86,30 +102,37 @@ fn json_carries_the_contract_and_version() {
 }
 
 #[test]
-fn a_hand_made_worktree_is_listed_and_the_primary_checkout_is_not() {
+fn a_hand_made_worktree_is_listed_after_the_primary_checkout() {
     let repo = Repo::new();
     let worktree = repo.add_worktree(&repo.tmp.path().join("worktrees/fix-login"), "fix-login");
 
     let doc = ls_json(&repo, &repo.root);
     let worktrees = doc["worktrees"].as_array().unwrap();
-    assert_eq!(worktrees.len(), 1);
-    assert_eq!(worktrees[0]["name"], "fix-login");
-    assert_eq!(worktrees[0]["branch"], "fix-login");
-    assert_eq!(worktrees[0]["path"], worktree.to_str().unwrap());
-    assert_eq!(worktrees[0]["state"], "no_agent");
+    assert_eq!(worktrees.len(), 2);
+    assert_eq!(worktrees[0]["path"], repo.root.to_str().unwrap());
+    assert_eq!(
+        worktrees[0]["primary"], true,
+        "the primary checkout comes first"
+    );
+    assert_eq!(worktrees[1]["name"], "fix-login");
+    assert_eq!(worktrees[1]["branch"], "fix-login");
+    assert_eq!(worktrees[1]["path"], worktree.to_str().unwrap());
+    assert_eq!(worktrees[1]["state"], "no_agent");
+    assert_eq!(worktrees[1]["primary"], false);
     assert_eq!(doc["primary"]["path"], repo.root.to_str().unwrap());
-    assert!(!worktree_paths(&doc).contains(&repo.root.to_str().unwrap().to_owned()));
 
-    repo.orca_term(&repo.root)
+    let listed = repo
+        .orca_term(&repo.root)
         .args(["worktree", "ls"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("fix-login")
-                .and(predicate::str::contains("no agent"))
-                .and(predicate::str::contains(worktree.to_str().unwrap())),
-        )
-        .stdout(predicate::str::contains(format!("{}\n", repo.root.display())).not());
+        .output()
+        .unwrap();
+    let listed = String::from_utf8(listed.stdout).unwrap();
+    let rows: Vec<&str> = listed.lines().skip(1).collect();
+    assert!(rows[0].starts_with("repo (primary)"), "{listed}");
+    assert!(rows[0].ends_with(repo.root.to_str().unwrap()), "{listed}");
+    assert!(rows[1].starts_with("fix-login"), "{listed}");
+    assert!(rows[1].contains("no agent"), "{listed}");
+    assert!(rows[1].ends_with(worktree.to_str().unwrap()), "{listed}");
 }
 
 #[test]
@@ -128,13 +151,7 @@ fn worktrees_sharing_a_basename_are_told_apart() {
             b.to_str().unwrap().to_owned()
         ]
     );
-    assert!(
-        doc["worktrees"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|l| l["name"] == "api")
-    );
+    assert!(linked(&doc).iter().all(|l| l["name"] == "api"));
 }
 
 #[test]
@@ -158,9 +175,13 @@ fn listing_never_writes_to_the_repository() {
         !admin.exists(),
         "reading a worktree's state never creates its admin dir"
     );
+    assert!(
+        !repo.root.join(".git/orca-term").exists(),
+        "nor the primary checkout's, in the git common dir"
+    );
 }
 
-/// The git commands `worktree ls` runs from `repo`'s primary checkout, one line of arguments each,
+/// The git commands `worktree ls` runs from `repo`'s primary checkout, one line of arguments each, sorted,
 /// through a `git` on PATH that logs its arguments to a file in the fixture and runs the real one.
 fn git_runs_of_ls(repo: &Repo) -> Vec<String> {
     let real = std::process::Command::new("sh")
@@ -190,11 +211,14 @@ fn git_runs_of_ls(repo: &Repo) -> Vec<String> {
         .env("PATH", path)
         .assert()
         .success();
-    std::fs::read_to_string(&log)
+    // Sorted: the worktrees' changed files are counted on threads of their own, in any order.
+    let mut runs: Vec<String> = std::fs::read_to_string(&log)
         .unwrap()
         .lines()
         .map(str::to_owned)
-        .collect()
+        .collect();
+    runs.sort();
+    runs
 }
 
 #[test]
@@ -212,7 +236,7 @@ fn an_operation_in_progress_is_read_without_running_git_again() {
 
     repo.git_failing(&["-C", wt, "merge", "--quiet", "main"]);
     assert_eq!(
-        ls_json(&repo, &repo.root)["worktrees"][0]["operation"],
+        ls_json(&repo, &repo.root)["worktrees"][1]["operation"],
         "merge"
     );
     assert_eq!(
@@ -229,7 +253,8 @@ fn a_worktree_state_of_a_newer_schema_still_lists_and_is_left_untouched() {
     let newer = r#"{"schema":9,"agent":null,"future":{"x":1}}"#;
     let file = repo.write(".git/worktrees/docs/orca-term/worktree.json", newer);
     let doc = ls_json(&repo, &repo.root);
-    assert_eq!(doc["worktrees"][0]["state"], "no_agent");
+    assert_eq!(doc["worktrees"][1]["name"], "docs");
+    assert_eq!(doc["worktrees"][1]["state"], "no_agent");
     assert_eq!(std::fs::read_to_string(file).unwrap(), newer);
 }
 
@@ -257,9 +282,9 @@ fn a_worktree_whose_directory_is_gone_lists_as_broken_and_is_not_pruned() {
     std::fs::remove_dir_all(&worktree).unwrap();
 
     let doc = ls_json(&repo, &repo.root);
-    assert_eq!(doc["worktrees"][0]["path"], worktree.to_str().unwrap());
-    assert_eq!(doc["worktrees"][0]["state"], "broken");
-    let detail = doc["worktrees"][0]["detail"].as_str().unwrap();
+    assert_eq!(doc["worktrees"][1]["path"], worktree.to_str().unwrap());
+    assert_eq!(doc["worktrees"][1]["state"], "broken");
+    let detail = doc["worktrees"][1]["detail"].as_str().unwrap();
     assert!(detail.contains("directory missing"), "{detail}");
     assert!(detail.contains("orca-term worktree prune"), "{detail}");
 

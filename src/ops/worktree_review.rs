@@ -13,7 +13,8 @@ use crate::ops::{find_target, read_fleet, worktree_seen};
 
 /// Finds the review's base for the worktree `target` names or locates in the repository
 /// containing the current directory, marks the worktree seen and tells the running Neovims.
-/// Refuses the primary checkout, an unknown worktree and one whose directory is gone.
+/// The primary checkout is reviewed like any worktree. Refuses an unknown worktree and one whose
+/// directory is gone.
 pub(crate) fn run(target: &Target) -> Result<Reviewed> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;

@@ -67,6 +67,7 @@ describe('core', function()
         name = 'fix',
         path = path,
         branch = 'fix',
+        primary = false,
         state = 'no_agent',
         holder = false,
         unseen = false,
@@ -76,6 +77,44 @@ describe('core', function()
       },
     }, fleet.worktrees)
   end)
+
+  it(
+    'leaves out the primary checkout the core lists, the frozen client showing it only in the header',
+    function()
+      orca_term.setup({ binary = support.binary })
+      local repo = support.repo()
+      local path = support.add_worktree(repo, repo.tmp .. '/fix', 'fix')
+      support.add_project(repo)
+      -- The core lists it first in its fleet, marked `primary` (ADR 0013).
+      local raw =
+        vim.json.decode(support.run({ support.binary, 'worktree', 'ls', '--json' }, repo.root))
+      assert.are.same({ true, false }, {
+        raw.worktrees[1].primary,
+        raw.worktrees[2].primary,
+      })
+      local paths = function(fleet)
+        return vim.tbl_map(function(worktree)
+          return worktree.path
+        end, fleet.worktrees)
+      end
+
+      assert.are.same({ path }, paths(assert(core.worktree_ls(repo.root))))
+      assert.are.same({ path }, paths(assert(core.fleets(repo.tmp)).projects[1].fleet))
+      local read = {}
+      core.worktree_ls_async(repo.root, function(fleet)
+        read.fleet = fleet
+      end)
+      core.fleets_async(repo.tmp, function(fleets)
+        read.fleets = fleets
+      end)
+      support.wait_for(function()
+        return read.fleet ~= nil and read.fleets ~= nil
+      end, 'both reads')
+      assert.are.same({ path }, paths(read.fleet))
+      assert.are.same({ path }, paths(read.fleets.projects[1].fleet))
+      assert.are.equal(repo.root, read.fleet.primary.path, 'still in the header')
+    end
+  )
 
   it("reads every project's fleet, and why a gone project has none, from anywhere", function()
     orca_term.setup({ binary = support.binary })

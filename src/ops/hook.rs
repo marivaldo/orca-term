@@ -154,10 +154,7 @@ fn take_snapshot(
     bounds: &Bounds,
     now: u64,
 ) -> Result<Commit> {
-    let id = admin
-        .worktree_id()
-        .context("the admin directory is not in git's admin directory of a worktree")?;
-    let worktree = worktree_of(admin).context("git's gitdir file names no worktree")?;
+    let worktree = worktree_of(admin).context("git's files name no worktree")?;
     let name = worktree.file_name().unwrap_or_default().to_string_lossy();
     let author = if snapshot::authored_by_agent(bounds) {
         Identity::agent(agent.program())
@@ -168,7 +165,7 @@ fn take_snapshot(
         )
     };
     let tree = snapshot_tree(admin, &worktree)?;
-    let chain = snapshot::chain_ref(id);
+    let chain = snapshot::chain_ref_of(admin);
     let current = git::read_ref(&worktree, &chain)?;
     let step = snapshot::chain_step(
         applied.status.snapshot.as_deref(),

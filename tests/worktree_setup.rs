@@ -72,12 +72,13 @@ fn override_setup(repo: &Repo, script: &str) {
     repo.write(".git/orca-term.yaml", &setup_yaml(script));
 }
 
-/// The one worktree of `worktree ls --json`.
+/// The one worktree of `worktree ls --json` after the primary checkout.
 fn listed(repo: &Repo) -> Value {
     let out = orca_term(repo, &["worktree", "ls", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    doc["worktrees"][0].clone()
+    assert_eq!(doc["worktrees"][0]["primary"], true);
+    doc["worktrees"][1].clone()
 }
 
 fn recorded_setup(repo: &Repo, worktree: &Path) -> Value {

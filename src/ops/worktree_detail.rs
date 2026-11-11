@@ -26,7 +26,7 @@ use crate::ops::{
 const SETUP_LOG_TAIL: u64 = 64 * 1024;
 
 /// The detail of the worktree `target` names or locates in the repository containing the current
-/// directory. Refuses the primary checkout and an unknown worktree.
+/// directory, the primary checkout included. Refuses an unknown worktree.
 pub(crate) fn run(target: &Target) -> Result<Detail> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;

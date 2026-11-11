@@ -220,6 +220,18 @@ fn a_project_with_no_worktrees() {
 }
 
 #[test]
+fn the_primary_checkout_comes_first_in_its_project_with_its_tag() {
+    let mut fleets = fleets();
+    if let Ok(fleet) = fleets[0].fleet.as_mut() {
+        // The first worktree, so the one the application opens.
+        let mut primary = fixture::primary("/code/app", State::Idle);
+        primary.last_activity = Some(minutes_ago(300));
+        fleet.worktrees.insert(0, primary);
+    }
+    check("primary", &app(150, 44, fleets));
+}
+
+#[test]
 fn a_gone_project() {
     let mut fleets = fleets();
     fleets.insert(0, fixture::gone("/code/old"));
