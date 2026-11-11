@@ -12,10 +12,11 @@ set -euo pipefail
 
 mirrors=/etc/apt/apt-mirrors.txt
 if [ -f "$mirrors" ]; then
-  printf '%s\n' \
-    'http://mirrors.edge.kernel.org/ubuntu/ priority:1' \
-    'http://archive.ubuntu.com/ubuntu/ priority:2' \
-    'http://azure.archive.ubuntu.com/ubuntu/ priority:3' |
+  # One mirror per line, its address and its priority separated by a tab.
+  printf '%s\t%s\n' \
+    'http://mirrors.edge.kernel.org/ubuntu/' 'priority:1' \
+    'http://archive.ubuntu.com/ubuntu/' 'priority:2' \
+    'http://azure.archive.ubuntu.com/ubuntu/' 'priority:3' |
     sudo tee "$mirrors" >/dev/null
 fi
 
