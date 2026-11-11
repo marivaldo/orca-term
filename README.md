@@ -377,7 +377,10 @@ the worktree's claude. `lazy = false` loads it when Neovim starts, so its lock f
 claude starts; loaded only on a key or a command, it writes none until then. Open that Neovim in
 the worktree (`cd` into it first): the lock file names Neovim's working directory, and claude
 links only to an editor open on its own worktree. A Neovim started after claude is not picked up
-by `--ide`: type `/ide` in claude to link it. Without claudecode.nvim, claude starts as before.
+by `--ide`: type `/ide` in claude to link it. In the [application](#application), the worktree's
+Neovim already runs in the worktree, but it starts the first time its tab shows, often after the
+agent: show it (`^a 2`), then type `/ide` in the agent. Without claudecode.nvim, claude starts as
+before.
 
 `orca-term doctor` asks the Neovims registered with orca-term in the repository (the Lua client
 registers each Neovim that loads it) whether they have claudecode.nvim loaded: `ok` when they
