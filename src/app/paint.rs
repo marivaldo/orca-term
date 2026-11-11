@@ -223,6 +223,34 @@ impl Painter<'_> {
         x
     }
 
+    /// Veils everything on `screen` but its status bar and returns where a card floating over it
+    /// goes: in the middle, at most `width` by `height`, two columns and a row from the edges.
+    pub(crate) fn floating(&mut self, screen: Rect, width: u16, height: u16) -> Rect {
+        let above_status = screen.height.saturating_sub(1);
+        self.veil(Rect::new(0, 0, screen.width, above_status));
+        let width = width.min(screen.width.saturating_sub(4));
+        let height = height.min(screen.height.saturating_sub(3));
+        Rect::new(
+            (screen.width - width) / 2,
+            above_status.saturating_sub(height) / 2,
+            width,
+            height,
+        )
+    }
+
+    /// Veils everything in `area` behind a floating card: text turns VEIL and loses its
+    /// attributes, while the cards' half-line edges and the accent's strokes keep their shapes.
+    pub(crate) fn veil(&mut self, area: Rect) {
+        for position in area.intersection(self.buf.area).positions() {
+            let cell = &mut self.buf[position];
+            if !["▄", "▀", "▗", "▖", "▝", "▘", "▐", "▌", "▁", "▎"].contains(&cell.symbol())
+            {
+                cell.fg = theme::VEIL.color();
+                cell.modifier = Modifier::empty();
+            }
+        }
+    }
+
     /// A card: its body filled with `bg`, and its top and bottom rows half blocks in `bg` over
     /// `under` (`▗▄▄▖`, `▝▀▀▘`). `stroke` cells of the accent `▁` over its title, from the third
     /// column, say the keys go to it; 0 draws none.
@@ -301,7 +329,10 @@ fn mono(cell: &mut Cell) {
         } else {
             Modifier::BOLD | Modifier::UNDERLINED
         };
-    } else if is(fg_was, theme::TEXT_2) || is(fg_was, theme::BORDER) {
+    } else if [theme::TEXT_2, theme::BORDER, theme::VEIL]
+        .iter()
+        .any(|tok| is(fg_was, *tok))
+    {
         cell.modifier |= Modifier::DIM;
     }
 }

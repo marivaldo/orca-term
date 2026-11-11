@@ -7,26 +7,35 @@
 //! except the prefix, `Ctrl-a`, which arms the application's own keys for one keystroke (ADR
 //! 0012): `h` and `l` move the focus (between the split's halves and to the right column too), `j`
 //! and `k` open the next or previous worktree, `1`, `2` and `3` show the agent, Neovim or the
-//! shell, `|` splits, `z` zooms, `f` shows or hides the right column, `a` sends a literal `Ctrl-a`,
-//! `q` quits, and `esc` (or waiting 1.5 s) disarms it.
+//! shell, `|` splits, `z` zooms, `f` shows or hides the right column, `w` opens the picker, `P` a
+//! draft pull request, `?` help, `a` sends a literal `Ctrl-a`, `q` quits, and `esc` (or waiting
+//! 1.5 s) disarms it. While the picker or help floats over the screen, every key goes to it.
 
+mod failure;
+mod picker;
 mod programs;
 mod right_column;
+mod side_menu;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 
+pub(crate) use crate::app::state::failure::Log;
+pub(crate) use crate::app::state::picker::Picker;
+pub(crate) use crate::app::state::side_menu::Typing;
+
 use crate::app::layout::{self, Layout};
 use crate::app::panel::{Panel, Status};
 use crate::app::program::{Kind, Program, ProgramId};
 use crate::app::view::{Tab, View};
 use crate::app::{keys, menu};
-use crate::domain::agent::Size;
+use crate::domain::agent::{Size, StartMode};
 use crate::domain::project::ProjectFleet;
+use crate::domain::worktree::WorktreeName;
 
 pub(crate) use right_column::ChangesRead;
 
@@ -56,8 +65,9 @@ pub(crate) enum Effect {
     Type(Vec<u8>),
     /// Attach the agent's panel to the holder of the worktree at this path.
     Attach(PathBuf),
-    /// Start the agent of the worktree at this path through the core, at this size.
-    Start(PathBuf, Size),
+    /// Start the agent of the worktree at this path through the core, at this size, resuming its
+    /// session or on a new one.
+    Start(PathBuf, Size, StartMode),
     /// Tell the agent's holder the panel is now this size.
     SizeAgent(Size),
     /// Start this worktree's Neovim or shell, at this size.
@@ -73,8 +83,28 @@ pub(crate) enum Effect {
         worktree: PathBuf,
         file: String,
     },
+    /// Read the last output the agent of the worktree at this path left, for [`App::log_read`].
+    ReadLog(PathBuf),
+    /// Create the worktree `name` in the project at `project` through the core, then tell
+    /// [`App::created`].
+    NewWorktree {
+        project: PathBuf,
+        name: WorktreeName,
+    },
+    /// Open a draft pull request for the worktree at this path through the core, then tell
+    /// [`App::drafted`].
+    DraftPr(PathBuf),
     /// Quit the application. The agents keep running; the Neovims and shells end.
     Quit,
+}
+
+/// What floats over the screen and takes every key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Overlay {
+    /// `^a w`: every worktree, filtered by what is typed.
+    Picker(Picker),
+    /// `^a ?`: the keys; any key closes it.
+    Help,
 }
 
 /// Everything the application shows and remembers.
@@ -105,6 +135,18 @@ pub(crate) struct App {
     pub(crate) layout: Layout,
     /// The working glyph's frame.
     pub(crate) frame: usize,
+    /// The picker or help, while it floats over the screen.
+    pub(crate) overlay: Option<Overlay>,
+    /// What the side menu's worktrees are filtered by (`/`); empty for all of them.
+    pub(crate) filter: String,
+    /// What the side menu is typing: its filter, or a new worktree's name.
+    pub(crate) typing: Option<Typing>,
+    /// The failure cards dismissed (`x`): each worktree's, by when its agent ended.
+    pub(crate) dismissed: BTreeSet<(PathBuf, u64)>,
+    /// The failed agent's last output, read for its card and shown as the log (`l`).
+    pub(crate) log: Option<Log>,
+    /// A worktree just created (its project and name), opened once a read of the fleets lists it.
+    to_open: Option<(PathBuf, String)>,
     /// The screen's size, which the layout is made for.
     area: Rect,
     /// The worktree to open first, when the fleets come: the one the application was started in.
@@ -130,6 +172,12 @@ impl App {
             message: None,
             layout: layout::layout(area, view),
             frame: 0,
+            overlay: None,
+            filter: String::new(),
+            typing: None,
+            dismissed: BTreeSet::new(),
+            log: None,
+            to_open: None,
             area,
             start_in,
         }
@@ -176,7 +224,9 @@ impl App {
     /// and attaches to the open one's agent when it started meanwhile.
     pub(crate) fn set_fleets(&mut self, fleets: Vec<ProjectFleet>) -> Vec<Effect> {
         let mut effects = self.read_fleets(fleets);
+        effects.extend(self.open_created());
         effects.extend(self.start_shown());
+        effects.extend(self.want_log());
         effects
     }
 
@@ -252,30 +302,38 @@ impl App {
         let mut effects = self.press(key, now);
         self.relayout();
         effects.extend(self.start_shown());
+        effects.extend(self.want_log());
         effects
     }
 
     fn press(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
+        if let Some(overlay) = self.overlay.take() {
+            return match overlay {
+                Overlay::Picker(picker) => self.picker_key(picker, key),
+                // Any key closes help, and does nothing else.
+                Overlay::Help => Vec::new(),
+            };
+        }
         let armed = self
             .prefix
             .take()
             .is_some_and(|at| now.duration_since(at) < PREFIX_FOR);
         if armed {
-            return self.command(key);
+            return self.command(key, now);
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char(PREFIX) {
             self.prefix = Some(now);
             return Vec::new();
         }
         match self.focus {
-            Focus::SideMenu => self.side_menu_key(key),
+            Focus::SideMenu => self.side_menu_key(key, now),
             Focus::Centre => self.centre_key(key),
             Focus::RightColumn => self.right_column_key(key),
         }
     }
 
     /// The key after the prefix.
-    fn command(&mut self, key: KeyEvent) -> Vec<Effect> {
+    fn command(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
         match key.code {
             KeyCode::Char('h') | KeyCode::Left => self.focus_left(),
             KeyCode::Char('l') | KeyCode::Right => self.focus_right(),
@@ -291,6 +349,9 @@ impl App {
                 self.focus = Focus::Centre;
             }
             KeyCode::Char('f') => self.toggle_files(),
+            KeyCode::Char('w') => self.open_picker(),
+            KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
+            KeyCode::Char('P') => return self.draft_pr(now),
             KeyCode::Char(PREFIX) => {
                 let ctrl_a = KeyEvent::new(KeyCode::Char(PREFIX), KeyModifiers::CONTROL);
                 return self.type_focused(ctrl_a);
@@ -347,9 +408,24 @@ impl App {
         }
     }
 
-    fn side_menu_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let order = menu::order(&self.fleets);
+    fn side_menu_key(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
+        if let Some(typing) = self.typing.take() {
+            return self.typing_key(typing, key, now);
+        }
+        let order = self.side_menu_order();
         match key.code {
+            KeyCode::Char('n') => {
+                self.ask_new_worktree();
+                Vec::new()
+            }
+            KeyCode::Char('/') => {
+                self.typing = Some(Typing::Filter);
+                Vec::new()
+            }
+            KeyCode::Esc => {
+                self.set_filter(String::new());
+                Vec::new()
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.cursor = menu::step(&order, self.cursor.as_deref(), 1);
                 Vec::new()
@@ -378,9 +454,15 @@ impl App {
     }
 
     /// A key for the agent's panel: every key goes to a running agent; where none runs, `enter`
-    /// starts it.
+    /// starts it, and a failed agent's card and log take their own keys.
     fn agent_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let body = self.layout.body_of(Tab::Agent);
+        if self.log_shown().is_some() {
+            self.log_key(key);
+            return Vec::new();
+        }
+        if self.failure().is_some() {
+            return self.failure_key(key);
+        }
         let Some(panel) = self.panel.as_mut() else {
             return Vec::new();
         };
@@ -390,10 +472,39 @@ impl App {
                 panel.screen.application_cursor(),
             ))],
             Status::NoAgent | Status::Ended(_) if key.code == KeyCode::Enter => {
-                panel.status = Status::Starting;
-                vec![Effect::Start(panel.worktree.clone(), size_of(body))]
+                self.start_agent(StartMode::Resume)
             }
             Status::NoAgent | Status::Ended(_) | Status::Starting => Vec::new(),
+        }
+    }
+
+    /// Starts the open worktree's agent through the core, on the session `mode` says, where none
+    /// runs.
+    fn start_agent(&mut self, mode: StartMode) -> Vec<Effect> {
+        let body = self.layout.body_of(Tab::Agent);
+        let Some(panel) = self.panel.as_mut() else {
+            return Vec::new();
+        };
+        if matches!(panel.status, Status::Attached | Status::Starting) {
+            return Vec::new();
+        }
+        panel.status = Status::Starting;
+        vec![Effect::Start(panel.worktree.clone(), size_of(body), mode)]
+    }
+
+    /// `^a P`: opens a draft pull request for the open worktree through the core.
+    fn draft_pr(&mut self, now: Instant) -> Vec<Effect> {
+        let Some(open) = self.open.clone() else {
+            return Vec::new();
+        };
+        self.say("opening a draft pull request…", now);
+        vec![Effect::DraftPr(open)]
+    }
+
+    /// The core opened the draft pull request (`Ok` says which) or could not (`Err` says why).
+    pub(crate) fn drafted(&mut self, result: Result<String, String>, now: Instant) {
+        match result {
+            Ok(text) | Err(text) => self.say(text, now),
         }
     }
 

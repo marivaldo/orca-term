@@ -423,6 +423,7 @@ mod tests {
             pr: None,
             last_activity: None,
             changed_files: None,
+            agent_end: None,
         };
         check_can_run_agent(&with(State::NoAgent)).unwrap();
         check_can_run_agent(&with(State::Idle)).unwrap();

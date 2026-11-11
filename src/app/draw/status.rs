@@ -7,7 +7,7 @@
 
 use crate::app::menu::{self, Counts};
 use crate::app::paint::{Painter, Seg, bold, fg, key, pill, seg, segs_width, trunc, width};
-use crate::app::state::{App, Focus};
+use crate::app::state::{App, Focus, Overlay};
 use crate::app::theme::{
     self, ACCENT, BG, CANVAS, FAILED, FOCUS_BG, FOCUS_SEL, SELECTION, TEXT, TEXT_2, Tok, WAITING,
     WORKING,
@@ -20,7 +20,7 @@ const KEYS: &[(&str, &str)] = &[
     ("^a j k", "worktree"),
     ("^a z", "zoom"),
     ("^a |", "split"),
-    ("^a q", "quit"),
+    ("^a ?", "help"),
 ];
 const ARMED_KEYS: &[(&str, &str)] = &[
     ("h l", "focus"),
@@ -30,6 +30,10 @@ const ARMED_KEYS: &[(&str, &str)] = &[
     ("|", "split"),
     ("f", "files"),
     ("a", "send ^A"),
+    ("P", "draft PR"),
+    // Last, so a narrow bar keeps them: the first keys go when there is no room.
+    ("w", "picker"),
+    ("?", "help"),
     ("q", "quit"),
     ("esc", "cancel"),
 ];
@@ -88,11 +92,13 @@ fn where_keys_go(app: &App, bar: Tok) -> Vec<Seg> {
     let Some((project, worktree)) = found else {
         return vec![seg("no worktree", fg(TEXT_2))];
     };
-    let (glyph, tok) = theme::look(&worktree.state, app.frame);
-    let focus = match app.focus {
-        Focus::SideMenu => "worktrees",
-        Focus::Centre => app.view.tab.name(),
-        Focus::RightColumn => "files",
+    let (glyph, tok) = theme::look(menu::state(worktree), app.frame);
+    let focus = match (&app.overlay, app.focus) {
+        (Some(Overlay::Picker(_)), _) => "picker",
+        (Some(Overlay::Help), _) => "help",
+        (None, Focus::SideMenu) => "worktrees",
+        (None, Focus::Centre) => app.view.tab.name(),
+        (None, Focus::RightColumn) => "files",
     };
     let mut segs = vec![
         seg(glyph.to_string(), bold(tok)),

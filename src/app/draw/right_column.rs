@@ -1,13 +1,13 @@
 //! App: the right column's card (#177, the design's `right2`): `changes` with how many files and
 //! the lines added and deleted, each changed file with its letter, name, directory and counts, a
 //! diffstat bar; then `pull request`, its number and title, its state and how many checks fail and
-//! run, and each check; then `branch`, how far it is ahead of and behind the local default branch.
-//! With the focus, the file under the cursor takes the accent; enter opens its diff in Neovim.
+//! run, and each check (with none, `○ none yet` and `^a P open a draft`, #178); then `branch`,
+//! how far it is ahead of and behind the local default branch. With the focus, the file under the cursor takes the accent; enter opens its diff in Neovim.
 
 use ratatui::layout::Rect;
 
 use crate::app::menu;
-use crate::app::paint::{Painter, Seg, bold, fg, seg, segs_width, trunc, trunc_left, width};
+use crate::app::paint::{Painter, Seg, bold, fg, key, seg, segs_width, trunc, trunc_left, width};
 use crate::app::state::{App, Focus};
 use crate::app::theme::{
     ACCENT, BORDER, CANVAS, DONE, FAILED, FOCUS_SEL, PANEL, TEXT, TEXT_2, WORKING,
@@ -54,7 +54,8 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App, card: Rect) {
     };
     p.rsegs(column.end, card.y + 1, &totals(changes.totals()));
     let pr = worktree.and_then(pull_request);
-    let tail = FIXED_ROWS + pr.map_or(1, |pr| 3 + pr_check_rows(pr));
+    // With no pull request: `○ none yet`, a blank row and `^a P open a draft`.
+    let tail = FIXED_ROWS + pr.map_or(3, |pr| 3 + pr_check_rows(pr));
     let room = (column.bottom.saturating_sub(card.y + 3 + tail)).max(1);
     let mut row = files(p, app, &column, card, changes, room, focused);
     row += 1;
@@ -251,7 +252,13 @@ fn pull_request_section(
                 row,
                 &[seg("○", fg(TEXT_2)), seg("  none yet", fg(TEXT_2))],
             );
-            row + 1
+            // `^a P` opens one (#178), as the design offers it.
+            column.put(
+                p,
+                row + 2,
+                &[key("^a P", false), seg("  open a draft", fg(TEXT_2))],
+            );
+            row + 3
         }
     }
 }

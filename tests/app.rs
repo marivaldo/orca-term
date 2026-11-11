@@ -415,6 +415,145 @@ fn enter_starts_the_agent_of_a_worktree_with_none() {
     assert!(app.wait_ended().success());
 }
 
+/// A stand-in claude that says a word, then dies with exit 3.
+const FAILING_CLAUDE: &str = r#"#!/bin/bash
+if [ "$1" = "--version" ]; then echo "2.1.296 (Claude Code)"; exit 0; fi
+echo "stand-in agent, will fail"
+# No `sleep` on the isolated PATH: wait on the terminal, which nobody types into.
+read -r -t 2 _
+exit 3
+"#;
+
+#[test]
+fn an_agent_that_failed_while_another_worktree_was_open_shows_failed_and_its_card() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["project", "add"]);
+    fx.write_tool("claude", FAILING_CLAUDE);
+    fx.ok(&["agent", "start", "fix"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    wait_until("the agent failing", || {
+        admin.join("agent-end.json").exists()
+    });
+    wait_until("its holder leaving", || !holder_alive(&admin));
+    app.wait_for("✗ fix");
+    app.wait_for("✗ 1 ");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
+    app.wait_for("agent stopped");
+    app.wait_for("exit 3 after");
+    app.wait_for("stand-in agent, will fail");
+    // Nothing changed in the worktree: the card counts no files.
+    app.wait_for("safe in the worktree. The session");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn an_agent_started_elsewhere_that_fails_once_its_worktree_is_open_shows_its_card() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+    fx.write_tool("claude", FAILING_CLAUDE);
+    fx.ok(&["agent", "start", "fix"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
+    app.wait_for("agent stopped");
+    app.wait_for("exit 3 after");
+    app.wait_for("✗ 1 ");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn a_failed_agent_shows_its_card_its_log_and_r_resumes_it() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("no agent running");
+    app.type_in(b"\r");
+    app.wait_for("fake claude ready");
+    after_the_jiggle();
+    app.type_in(b"exit 3\r");
+    app.wait_for("agent stopped");
+    app.wait_for("exit 3 after");
+    app.wait_for("resume session");
+
+    app.type_in(b"l");
+    app.wait_for("agent log");
+    app.wait_for("bye");
+    app.type_in(b"\x1b");
+    app.wait_for("resume session");
+
+    app.type_in(b"r");
+    wait_until("the card going once the agent runs again", || {
+        !app.shown().contains("agent stopped")
+    });
+    app.wait_for("fake claude ready");
+    after_the_jiggle();
+    app.type_in(b"again\r");
+    app.wait_for("you said: again");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+/// Waits out the second size jiggle the holder gives an agent a second after an attach: the fake
+/// claude's WINCH trap cuts the line it is reading, so a line typed meanwhile can arrive in two.
+fn after_the_jiggle() {
+    thread::sleep(Duration::from_millis(1500));
+}
+
+#[test]
+fn the_picker_opens_a_worktree_by_name_and_n_creates_one() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01w");
+    app.wait_for("switch worktree");
+    app.type_in(b"fi\r");
+    app.wait_for("repo/fix");
+
+    app.type_in(b"\x01h");
+    app.type_in(b"n");
+    app.wait_for("new worktree in repo");
+    app.type_in(b"made-here\r");
+    app.wait_for("repo/made-here");
+    assert!(
+        fx.repo
+            .home
+            .join("orca-term/worktrees/repo/made-here")
+            .is_dir()
+    );
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn a_draft_pull_request_of_the_primary_checkout_on_the_default_branch_is_refused() {
+    let fx = AgentRepo::new();
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01P");
+    app.wait_for("the repository's default branch");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
 #[test]
 fn started_in_the_primary_checkout_it_opens_it_tagged_and_enter_starts_its_agent() {
     let fx = AgentRepo::new();

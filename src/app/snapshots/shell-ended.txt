@@ -27,7 +27,7 @@
                                                                                                                         
                                  shell ended (exit 0)  ·   enter  starts it again                                       
  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ 
- ▐orca▌  ? app/fix-login  shell    ? 1   ✗ 1   ◐ 1   ○ 2      ^a j k  worktree   ^a z  zoom   ^a |  split   ^a q  quit  
+ ▐orca▌  ? app/fix-login  shell    ? 1   ✗ 1   ◐ 1   ○ 2      ^a j k  worktree   ^a z  zoom   ^a |  split   ^a ?  help  
 
 TppppppppppppppppppppppppppppTbbbbbbbbbbbbbbbbbbbbbAAAAAAAAAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbT
 TTTttttttttTTTTTTTTTTTTTTTTTTTTTtttttttttTttttttttTfAAAAAAAfTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTttttttttDDDFFFFFFTTTTTTTTT

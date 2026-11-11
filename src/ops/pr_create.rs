@@ -22,7 +22,7 @@ use crate::adapters::{env, fs, program};
 use crate::domain::branch::Branch;
 use crate::domain::error::TypedError;
 use crate::domain::fleet::Worktree;
-use crate::domain::pr::create::{self, Body, PrCreated, Readiness};
+use crate::domain::pr::create::{self, Body, Composed, PrCreated, Readiness};
 use crate::domain::pr::{Found, GH_MISSING, PrFacts};
 use crate::domain::push::PushRun;
 use crate::domain::worktree::Target;
@@ -47,7 +47,38 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
     let fleet = read_fleet(&cwd)?;
     let worktree = find_target(&fleet, &cwd, target)?;
     let composed = pr_compose::prepare(&fleet.primary, worktree, wanted.base.as_ref())?;
-    create::check_has_commits(&worktree.name, &composed)?;
+    let body = || body_of(&cwd, wanted.body_file.as_deref());
+    create_pr(worktree, &composed, &wanted.title, body, wanted.readiness)
+}
+
+/// Opens a draft pull request for the worktree `target` names in the repository containing `dir`,
+/// into the default branch, its title and body what `pr compose` gives (#178): the application's
+/// `^a P`. It refuses what [`run`] refuses, the default branch first.
+pub(crate) fn draft_in(dir: &Path, target: &Target) -> Result<PrCreated> {
+    let fleet = read_fleet(dir)?;
+    let worktree = find_target(&fleet, dir, target)?;
+    let composed = pr_compose::prepare(&fleet.primary, worktree, None)?;
+    let message = &composed.message;
+    let body = || {
+        Ok(if message.body.trim().is_empty() {
+            Body::Empty
+        } else {
+            Body::Text(message.body.clone())
+        })
+    };
+    create_pr(worktree, &composed, &message.title, body, Readiness::Draft)
+}
+
+/// Creates the pull request of `worktree`, whose message and branches `composed` holds, with
+/// `title` and the body `body` gives, once nothing refuses it; then records it.
+fn create_pr(
+    worktree: &Worktree,
+    composed: &Composed,
+    title: &str,
+    body: impl FnOnce() -> Result<Body>,
+    readiness: Readiness,
+) -> Result<PrCreated> {
+    create::check_has_commits(&worktree.name, composed)?;
     let Some(gh) = pr_refresh::find_gh() else {
         return Err(TypedError::GhUnavailable {
             name: worktree.name.clone(),
@@ -58,22 +89,16 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
     // `prepare` refused the default branch already, so gh is always asked about this branch.
     create::check_no_open_pr(&worktree.name, &pr_refresh::ask(Some(&gh), worktree, None))?;
 
-    let body = body_of(&cwd, wanted.body_file.as_deref())?;
+    let body = body()?;
     push(worktree, &composed.branch)?;
-    let args = create::create_args(
-        &composed.base,
-        &composed.branch,
-        &wanted.title,
-        &body,
-        wanted.readiness,
-    );
+    let args = create::create_args(&composed.base, &composed.branch, title, &body, readiness);
     let printed = run_gh_create(&gh, &args, worktree, &composed.branch)?;
 
     let found = match pr_refresh::ask(Some(&gh), worktree, None) {
         Found::Pr(pr) => Found::Pr(pr),
         // GitHub may not show a pull request created a moment ago: keep what gh printed.
         Found::NoPr | Found::Unavailable(_) => {
-            match create::created_pr(&printed, &wanted.title, wanted.readiness) {
+            match create::created_pr(&printed, title, readiness) {
                 Some(pr) => Found::Pr(pr),
                 None => bail!(
                     "gh created the pull request of worktree {} but printed no address for it; \

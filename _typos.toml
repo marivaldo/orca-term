@@ -7,6 +7,9 @@ extend-exclude = [
   "docs/wayfinder-input.md",
   "tests/fixtures/claude-hooks/",
   "tests/fixtures/opencode-events/",
+  # The application's screens as drawn (#174): words cut wherever a column ends (`stopp…`), and
+  # grids of one letter per cell.
+  "src/app/snapshots/",
 ]
 
 [default.extend-words]

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::agent::AgentEnd;
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::{Checks, Found};
 use crate::domain::project::ProjectFleet;
@@ -17,6 +18,35 @@ pub(crate) fn order(fleets: &[ProjectFleet]) -> Vec<PathBuf> {
         .filter_map(|project| project.fleet.as_ref().ok())
         .flat_map(|fleet| fleet.worktrees.iter().map(|worktree| worktree.path.clone()))
         .collect()
+}
+
+/// The paths of [`order`] whose worktree matches `query` (see [`matches`]); all of them for an
+/// empty query. The picker and the side menu's filter list these (#178).
+pub(crate) fn order_matching(fleets: &[ProjectFleet], query: &str) -> Vec<PathBuf> {
+    fleets
+        .iter()
+        .filter_map(|project| Some((project, project.fleet.as_ref().ok()?)))
+        .flat_map(|(project, fleet)| {
+            fleet
+                .worktrees
+                .iter()
+                .filter(move |worktree| matches(&project.path, worktree, query))
+        })
+        .map(|worktree| worktree.path.clone())
+        .collect()
+}
+
+/// Whether the worktree of the project at `project` matches what the person typed: its name, its
+/// branch or its project's name holds `query`, whatever the case.
+pub(crate) fn matches(project: &Path, worktree: &Worktree, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    let branch = worktree
+        .branch
+        .as_ref()
+        .map_or("", |branch| branch.as_str());
+    [worktree.name.as_str(), branch, &project_name(project)]
+        .iter()
+        .any(|text| text.to_lowercase().contains(&query))
 }
 
 /// The worktree at `path` and the project it belongs to.
@@ -68,7 +98,7 @@ pub(crate) struct Counts {
 pub(crate) fn counts(fleets: &[ProjectFleet]) -> Counts {
     let mut counts = Counts::default();
     for worktree in worktrees(fleets) {
-        match worktree.state {
+        match state(worktree) {
             State::Waiting => counts.needs_you += 1,
             State::Failed => counts.failed += 1,
             State::Working => counts.running += 1,
@@ -80,7 +110,34 @@ pub(crate) fn counts(fleets: &[ProjectFleet]) -> Counts {
 
 /// Whether any worktree is working, so the spinner turns.
 pub(crate) fn any_working(fleets: &[ProjectFleet]) -> bool {
-    worktrees(fleets).any(|worktree| worktree.state == State::Working)
+    worktrees(fleets).any(|worktree| *state(worktree) == State::Working)
+}
+
+/// The state the application shows for `worktree`: the one the core read, except that an agent
+/// whose holder recorded a failed end (#178) shows as failed. Its hooks may never say so: an
+/// agent can die between two turns, or before its first, and the core's own state, which the
+/// Neovim client and `worktree ls` read too, stays as it was.
+pub(crate) fn state(worktree: &Worktree) -> &State {
+    if failed_end(worktree).is_some() {
+        &State::Failed
+    } else {
+        &worktree.state
+    }
+}
+
+/// How the worktree's agent failed, while no holder runs there.
+fn failed_end(worktree: &Worktree) -> Option<&AgentEnd> {
+    worktree
+        .agent_end
+        .as_ref()
+        .filter(|end| end.failed && !worktree.holder.is_alive())
+}
+
+/// When the worktree was last active: its session's last activity, or its agent's failed end
+/// when that came later.
+pub(crate) fn last_active(worktree: &Worktree) -> Option<u64> {
+    let ended = failed_end(worktree).map(|end| end.ended_at);
+    worktree.last_activity.max(ended)
 }
 
 fn worktrees(fleets: &[ProjectFleet]) -> impl Iterator<Item = &Worktree> {
@@ -115,8 +172,12 @@ pub(crate) fn agent_label(agent: &str) -> &str {
     }
 }
 
-/// What the worktree's agent said or is doing last, or else its state in words.
+/// What the worktree's agent said or is doing last, or else its state in words; for an agent that
+/// failed, that it stopped and how.
 pub(crate) fn message(worktree: &Worktree) -> String {
+    if let Some(end) = failed_end(worktree) {
+        return format!("agent stopped ({})", end.exit);
+    }
     worktree
         .activity
         .clone()
@@ -135,9 +196,77 @@ pub(crate) fn age(then_ms: u64, now_ms: u64) -> String {
     }
 }
 
+/// How long `ms` milliseconds lasted, short: `12s` under a minute, then as [`age`] says it.
+pub(crate) fn span(ms: u64) -> String {
+    if ms < 60_000 {
+        return format!("{}s", ms / 1000);
+    }
+    age(0, ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::fixture;
+
+    #[test]
+    fn a_query_matches_a_name_a_branch_or_a_project_whatever_the_case() {
+        let fleets = vec![
+            fixture::project(
+                "/code/app",
+                vec![
+                    fixture::worktree("/code/app.wt/fix-login", State::Idle),
+                    fixture::worktree("/code/app.wt/docs", State::Idle),
+                ],
+            ),
+            fixture::project(
+                "/code/api",
+                vec![fixture::worktree("/code/api.wt/pagination", State::Idle)],
+            ),
+            fixture::gone("/code/old"),
+        ];
+        let paths = |query: &str| -> Vec<String> {
+            order_matching(&fleets, query)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        };
+        assert_eq!(paths("").len(), 3, "everything");
+        assert_eq!(paths("LOG"), ["/code/app.wt/fix-login"]);
+        assert_eq!(paths("api"), ["/code/api.wt/pagination"], "by project");
+        assert!(paths("zzz").is_empty());
+    }
+
+    #[test]
+    fn an_agent_whose_holder_recorded_a_failure_shows_and_counts_as_failed() {
+        let mut fix = fixture::worktree("/code/app.wt/fix", State::Idle);
+        fix.last_activity = Some(1_000);
+        fix.agent_end = Some(AgentEnd::new(Some(3), None, false, 2_000, 5_000));
+        assert_eq!(state(&fix), &State::Failed);
+        assert_eq!(message(&fix), "agent stopped (exit 3)");
+        assert_eq!(
+            last_active(&fix),
+            Some(5_000),
+            "its end, later than its turns"
+        );
+        let fleets = vec![fixture::project("/code/app", vec![fix.clone()])];
+        assert_eq!(counts(&fleets).failed, 1);
+
+        let mut stopped = fix.clone();
+        stopped.agent_end = Some(AgentEnd::new(Some(129), None, true, 2_000, 5_000));
+        assert_eq!(state(&stopped), &State::Idle, "a stop asked for");
+        assert_eq!(last_active(&stopped), Some(1_000));
+        let mut running = fix;
+        running.holder = crate::domain::agent::HolderStatus::Alive;
+        assert_eq!(state(&running), &State::Idle, "a new holder runs");
+    }
+
+    #[test]
+    fn a_span_reads_in_seconds_under_a_minute() {
+        assert_eq!(span(12_400), "12s");
+        assert_eq!(span(41 * 60_000), "41m");
+        assert_eq!(span(3 * 3_600_000), "3h");
+    }
 
     #[test]
     fn an_age_reads_in_the_largest_unit() {

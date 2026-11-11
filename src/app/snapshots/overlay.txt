@@ -33,7 +33,7 @@
                                                                                                                         
                                                                                                                         
  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ 
- ▐orca▌  ? app/fix-login  files    ? 1   ✗ 1   ◐ 1   ○ 2      ^a j k  worktree   ^a z  zoom   ^a |  split   ^a q  quit  
+ ▐orca▌  ? app/fix-login  files    ? 1   ✗ 1   ◐ 1   ○ 2      ^a j k  worktree   ^a z  zoom   ^a |  split   ^a ?  help  
 
 TppppppppppppppppppppppppppppTbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbppAAAAAAApppppppppppppppppppppppppT
 TTTttttttttTTTTTTTTTTTTTTTTTTTTTsTTTTTTTsTttttttttTtttttttttTTTTTTTTTTTTTTTTTTTTTTTTTTTAAAAAAAtttTTTTTTTTTTTTTDDDFFFFTTT

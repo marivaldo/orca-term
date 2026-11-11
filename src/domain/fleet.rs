@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::domain::agent::HolderStatus;
+use crate::domain::agent::{AgentEnd, HolderStatus};
 use crate::domain::branch::Branch;
 use crate::domain::operation::Operation;
 use crate::domain::pr::PrFacts;
@@ -87,6 +87,9 @@ pub(crate) struct Worktree {
     /// files git does not ignore ([`count_changed_files`]). `None` when it cannot be counted, or
     /// was not: only `worktree ls` and `worktree detail` count it.
     pub(crate) changed_files: Option<usize>,
+    /// How its agent ended last, while no holder is alive (#178): what the application's failure
+    /// card says. Not part of any document the core prints.
+    pub(crate) agent_end: Option<AgentEnd>,
 }
 
 /// The primary checkout and every worktree of its repository.
@@ -152,6 +155,7 @@ impl Worktree {
             pr: None,
             last_activity: None,
             changed_files: None,
+            agent_end: None,
         }
     }
 

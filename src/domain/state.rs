@@ -47,6 +47,11 @@ const AGENT_RECORD_FILE: &str = "agent.json";
 /// socket address holds.
 pub(crate) const AGENT_SOCKET_FILE: &str = "agent.sock";
 
+/// How the agent ended last (`domain/agent.rs`), and its last output: the holder writes both as
+/// it leaves, and the next holder removes them as it starts (#178).
+const AGENT_END_FILE: &str = "agent-end.json";
+const AGENT_LOG_FILE: &str = "agent.log";
+
 /// The settings claude is launched with, rebuilt on every start.
 const CLAUDE_SETTINGS_FILE: &str = "claude-settings.json";
 
@@ -139,6 +144,16 @@ impl AdminDir {
     /// The holder's socket, `agent.sock`, for display and removal.
     pub(crate) fn agent_socket(&self) -> PathBuf {
         self.0.join(AGENT_SOCKET_FILE)
+    }
+
+    /// How the agent ended last, `agent-end.json`.
+    pub(crate) fn agent_end(&self) -> PathBuf {
+        self.0.join(AGENT_END_FILE)
+    }
+
+    /// The agent's last output, `agent.log`: what the holder kept of its terminal, as it was sent.
+    pub(crate) fn agent_log(&self) -> PathBuf {
+        self.0.join(AGENT_LOG_FILE)
     }
 
     /// claude's settings file, `claude-settings.json`.

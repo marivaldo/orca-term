@@ -238,6 +238,25 @@ fn an_agent_that_exits_on_its_own_ends_the_holder_and_tells_the_attached_client(
     assert_eq!(entry["holder"], false);
     let table = fx.ok(&["worktree", "ls"]);
     assert!(table.contains("claude-code (stopped)"), "{table}");
+
+    // The holder recorded the end, a failure, and kept the agent's last output (#178).
+    let end: Value =
+        serde_json::from_slice(&fs::read(admin.join("agent-end.json")).unwrap()).unwrap();
+    assert_eq!(end["exit"], "exit 7");
+    assert_eq!(end["failed"], true);
+    assert!(
+        end["started_at"].as_u64() <= end["ended_at"].as_u64(),
+        "{end}"
+    );
+    let log = fs::read(admin.join("agent.log")).unwrap();
+    assert!(
+        String::from_utf8_lossy(&log).contains("bye"),
+        "the log ends with the agent's last words"
+    );
+    // A new holder starts with no end recorded.
+    fx.ok(&["agent", "start", "fix"]);
+    fx.wait_for_output("fix", "fake claude ready");
+    assert!(!admin.join("agent-end.json").exists());
 }
 
 #[test]
@@ -361,6 +380,9 @@ fn stop_ends_the_agent_and_is_idempotent() {
     assert!(!holder_alive(&admin));
     assert!(!admin.join("agent.sock").exists());
     assert_eq!(fx.listed("fix")["holder"], false);
+    let end: Value =
+        serde_json::from_slice(&fs::read(admin.join("agent-end.json")).unwrap()).unwrap();
+    assert_eq!(end["failed"], false, "an agent asked to stop did not fail");
 
     let again = fx.run(&["agent", "stop", "fix"]);
     assert!(again.status.success());

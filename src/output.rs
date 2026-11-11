@@ -1416,6 +1416,7 @@ mod tests {
             pr: None,
             last_activity: None,
             changed_files: None,
+            agent_end: None,
         }
     }
 

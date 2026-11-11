@@ -34,6 +34,7 @@ pub(crate) fn worktree(path: &str, state: State) -> Worktree {
         pr: None,
         last_activity: None,
         changed_files: None,
+        agent_end: None,
     }
 }
 
@@ -62,6 +63,16 @@ pub(crate) fn project(path: &str, worktrees: Vec<Worktree>) -> ProjectFleet {
             has_origin: false,
         }),
     }
+}
+
+/// Two projects: `api` with `fix` (its agent running) and `docs` (none), and `web` with `ui`.
+pub(crate) fn fleets() -> Vec<ProjectFleet> {
+    let mut fix = worktree("/p/api.wt/fix", State::Working);
+    fix.holder = HolderStatus::Alive;
+    vec![
+        project("/p/api", vec![fix, worktree("/p/api.wt/docs", State::Idle)]),
+        project("/p/web", vec![worktree("/p/web.wt/ui", State::NoAgent)]),
+    ]
 }
 
 /// The project whose directory at `path` is gone, as `fleets` reports it.

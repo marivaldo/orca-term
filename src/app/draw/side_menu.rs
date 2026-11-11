@@ -3,12 +3,15 @@
 //! name and the unseen mark; the branch and the pull request; the agent's last message and its age.
 //! The open worktree sits in a half-line card; with the focus, the cursor's worktree takes the
 //! accent. A project with no worktrees says so, and one that cannot be read shows why, muted.
+//! With the focus, its footer shows its keys, or what it types (#178): the filter after `/`, which
+//! keeps only the worktrees it matches (and the title says it once typed), or a new worktree's
+//! name.
 
 use ratatui::layout::Rect;
 
 use crate::app::menu;
 use crate::app::paint::{Painter, Seg, bold, fg, italic, key, pill, seg, trunc, width, wrap};
-use crate::app::state::{App, Focus};
+use crate::app::state::{App, Focus, Typing};
 use crate::app::theme::{
     self, ACCENT, CANVAS, DONE, FOCUS_SEL, PANEL, RAISED, SELECTION, TEXT, TEXT_2,
 };
@@ -57,6 +60,11 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App, card: Rect, now_ms: u64) {
     p.card(card, PANEL, CANVAS, if focused { width(TITLE) } else { 0 });
     let title = if focused { ACCENT } else { TEXT_2 };
     p.text(card.x + 2, card.y + 1, TITLE, bold(title));
+    if !app.filter.is_empty() && app.typing != Some(Typing::Filter) {
+        let room = card.width.saturating_sub(width(TITLE) + 6);
+        let filter = trunc(&format!("/ {}", app.filter), room);
+        p.rtext(card.right() - 2, card.y + 1, &filter, fg(TEXT_2));
+    }
     let menu = Menu {
         app,
         card,
@@ -80,18 +88,45 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App, card: Rect, now_ms: u64) {
         draw_part(p, &menu, part, top + row);
     }
     if focused {
-        let hints = [
-            key("j k", false),
-            seg(" move  ", fg(TEXT_2)),
-            key("enter", false),
-            seg(" open", fg(TEXT_2)),
-        ];
-        p.segs(
-            card.x + 2,
-            card.bottom() - 2,
-            &hints,
-            card.width.saturating_sub(4),
-        );
+        footer(p, app, card);
+    }
+}
+
+/// From this width the footer says `/ filter` too, as the design does.
+const FILTER_HINT_FROM: u16 = 32;
+
+/// The footer, with the focus: the keys, or what is being typed (#178): the filter after its
+/// `/`, or a new worktree's name under the project it goes to.
+fn footer(p: &mut Painter<'_>, app: &App, card: Rect) {
+    let (x, y, room) = (card.x + 2, card.bottom() - 2, card.width.saturating_sub(4));
+    let typed = |p: &mut Painter<'_>, lead: &str, text: &str| {
+        let after = p.text(x, y, lead, bold(ACCENT));
+        let after = p.put(after + 1, y, text, fg(TEXT), room.saturating_sub(3));
+        p.text(after, y, "▏", fg(ACCENT));
+    };
+    match &app.typing {
+        Some(Typing::Filter) => typed(p, "/", &app.filter),
+        Some(Typing::NewWorktree { project, name }) => {
+            let label = format!("new worktree in {}", menu::project_name(project));
+            p.put(x, y - 1, &label, fg(TEXT_2), room);
+            typed(p, "›", name);
+        }
+        None => {
+            let mut hints = vec![
+                key("enter", false),
+                seg(" open  ", fg(TEXT_2)),
+                key("n", false),
+                seg(" new", fg(TEXT_2)),
+            ];
+            if card.width >= FILTER_HINT_FROM {
+                hints.extend([
+                    seg("  ", fg(TEXT)),
+                    key("/", false),
+                    seg(" filter", fg(TEXT_2)),
+                ]);
+            }
+            p.segs(x, y, &hints, room);
+        }
     }
 }
 
@@ -99,9 +134,21 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App, card: Rect, now_ms: u64) {
 /// blank row after each (or its note), and one more blank row between projects. `room` is how
 /// many cells a note's line may take.
 fn place(app: &App, room: u16, lines: u16) -> Vec<Placed<'_>> {
+    let filtering = !app.filter.trim().is_empty();
     let mut placed = Vec::new();
     let mut row = 0;
     for project in &app.fleets {
+        // The filter (#178) keeps only the worktrees it matches, and the projects holding one.
+        let matching: Vec<&Worktree> = project.fleet.as_ref().map_or(Vec::new(), |fleet| {
+            fleet
+                .worktrees
+                .iter()
+                .filter(|worktree| menu::matches(&project.path, worktree, &app.filter))
+                .collect()
+        });
+        if filtering && matching.is_empty() {
+            continue;
+        }
         placed.push(Placed {
             row,
             part: Part::Header(project),
@@ -110,8 +157,8 @@ fn place(app: &App, room: u16, lines: u16) -> Vec<Placed<'_>> {
         let notes = match &project.fleet {
             Err(err) => wrap(&format!("{err:#}"), room),
             Ok(fleet) if fleet.worktrees.is_empty() => vec!["no worktrees yet".to_owned()],
-            Ok(fleet) => {
-                for worktree in &fleet.worktrees {
+            Ok(_) => {
+                for worktree in matching {
                     placed.push(Placed {
                         row,
                         part: Part::Item(worktree),
@@ -212,7 +259,7 @@ fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
     if cursor || open {
         highlight(p, menu, row, cursor);
     }
-    let (glyph, state) = theme::look(&worktree.state, menu.app.frame);
+    let (glyph, state) = theme::look(menu::state(worktree), menu.app.frame);
     p.text(x + 4, row, &glyph.to_string(), bold(state));
     let unseen = worktree.unseen && !open;
     let tag = if worktree.primary { PRIMARY_TAG } else { "" };
@@ -259,8 +306,7 @@ fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
 /// right.
 fn last_line(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16, lead: &[Seg]) {
     let (x, end) = (menu.card.x, menu.card.x + menu.card.width - 2);
-    let age = worktree
-        .last_activity
+    let age = menu::last_active(worktree)
         .map(|then| menu::age(then, menu.now_ms))
         .unwrap_or_default();
     let after = p.line(x + 6, row, lead);

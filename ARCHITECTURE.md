@@ -184,7 +184,8 @@ the adapters, and returns a domain value that `output` prints.
 
 ### app
 
-The terminal application (#174, #176, #177, ADR 0012), drawn in the "Quiet v2" look of the design on the
+The terminal application (#174, #176, #177, #178, ADR 0012), drawn in the "Quiet v2" look of the
+design on the
 branch `prototype/terminal-application` (`prototype/terminal-application/design/`). It sits above
 the operations: it reads the fleets and starts agents through them, and talks to each agent's
 holder through the holder adapter, as `agent attach` does. Each worktree's Neovim and shell are
@@ -198,8 +199,11 @@ everything else under `app/` is pure and tested without a terminal.
   (`adapters/holder/client.rs`, tagged with the connection's number so a closed one is ignored),
   the end of an agent start (run on a thread, `ops::agent_start::run_in` with no approval
   possible), what a Neovim or a shell printed or that it ended (`adapters/pty.rs`), the open
-  worktree's changes read (`app/watch.rs`), and SIGTERM,
-  SIGHUP or SIGINT. Each batch of messages becomes effects from the state, which the loop carries
+  worktree's changes read (`app/watch.rs`), the end of a worktree's creation
+  (`ops::worktree_new::run_in`, on a thread, its setup's output to its log only, no approval
+  possible) and of a draft pull request (`ops::pr_create::draft_in`, on a thread) (#178), and
+  SIGTERM, SIGHUP or SIGINT. A failed agent's log is read at once (`ops::read_agent_log`, 8 MiB at
+  most). Each batch of messages becomes effects from the state, which the loop carries
   out (`Link` keeps the one connection to the open worktree's holder, `Running` the Neovims and
   shells), and the loop draws the next frame. Once the loop ends and the terminal is restored,
   every Neovim and shell is hung up, given 1 s, then killed. Live updates poll rather than
@@ -223,15 +227,18 @@ everything else under `app/` is pure and tested without a terminal.
   side menu's cursor, the focus, the view, the prefix's arming time, the agent's panel, every
   worktree's Neovim and shell started so far, a message, the layout, the spinner's frame), and
   what each key does to it, as `Effect`s: `Type` bytes into the agent, `Attach` to a holder,
-  `Start` an agent at a size, `SizeAgent`, `Run` a Neovim or a shell at a size, `TypeInto` it,
-  `Resize` it, `OpenDiff` in the worktree's Neovims, `Quit`. `Ctrl-a` arms the prefix for one key
-  within 1.5 s: `h`/`l` move the focus (between the split's halves, else to the side menu or the
-  right column while it shows), `f` shows or hides the right column, `j`/`k` open the next or
+  `Start` an agent at a size on the session a `StartMode` says, `SizeAgent`, `Run` a Neovim or a
+  shell at a size, `TypeInto` it, `Resize` it, `OpenDiff` in the worktree's Neovims, `ReadLog`,
+  `NewWorktree`, `DraftPr`, `Quit`. `Ctrl-a` arms the prefix for one key within 1.5 s: `h`/`l`
+  move the focus (between the split's halves, else to the side menu or the right column while it
+  shows), `f` shows or hides the right column, `j`/`k` open the next or
   previous worktree in the side menu's order (after the last comes the first), `1`/`2`/`3` show
   the agent, Neovim or the shell, `|` (or `\`) splits, `z` zooms (taking the focus to the
-  centre), `a` types `Ctrl-a` into the focused panel, `q` quits, anything else (`esc`) disarms it.
-  The focused side menu moves its cursor with `j`/`k` and the arrows and opens with `enter`,
-  giving the centre the focus. The centre types every key into the focused panel's running agent,
+  centre), `w` the picker, `P` a draft pull request, `?` help (#178), `a` types `Ctrl-a` into
+  the focused panel, `q` quits, anything else (`esc`) disarms it. The picker or help (an
+  `Overlay`) takes every key while it floats. The focused side menu moves its cursor with `j`/`k`
+  and the arrows and opens with `enter`, giving the centre the focus; `n` and `/` type
+  (`state/side_menu.rs`). The centre types every key into the focused panel's running agent,
   Neovim or shell, encoded again (`keys.rs`); where none runs `enter` starts it. After every key
   and every read of the fleets, each Neovim or shell shown for the open worktree that has not
   started yet is started (`state/programs.rs`), at its panel's size, and kept from then on. A fleet read
@@ -248,12 +255,28 @@ everything else under `app/` is pure and tested without a terminal.
 - `app/state/programs.rs` (#176): what the state does with the Neovims and shells: starting the
   ones shown, their keys and pastes, their output (whose answers go back as `TypeInto`), their
   end, a failed start, and `enter` starting one again.
+- `app/state/picker.rs` (#178): the picker's filter and cursor: letters (`j` and `k` too) type
+  into the filter, the arrows, `Ctrl-j`/`Ctrl-k` and `Ctrl-n`/`Ctrl-p` move, `enter` opens the
+  worktree under the cursor, `esc` closes; it lists the worktrees whose name, branch or project
+  holds what was typed, in the side menu's order (`menu::order_matching`).
+- `app/state/side_menu.rs` (#178): what the side menu types: `/` its filter, kept as typed and
+  cleared by `esc`; `n` a new worktree's name, checked as `WorktreeName` and created in the project
+  of the cursor's worktree (`NewWorktree`), then opened once a read of the fleets lists it.
+- `app/state/failure.rs` (#178): a failed agent: the open worktree's `AgentEnd` (from the fleet,
+  while no holder is alive) when it `failed` and its card was not dismissed; its log asked for
+  once (`ReadLog`) and fed to a screen that keeps 10 000 rows of scrollback; the card's keys (`r`
+  `Start` resuming, `R` `Start` fresh, as `agent start --fresh`, `l` the log, `x` dismiss, kept
+  in memory by when the agent ended) and the log's (`j`/`k`, `ctrl-u`/`ctrl-d`, the page keys,
+  `g`/`G`, `esc`/`q`/`l` close). A scrollable log rather than the worktree's Neovim: the log is a
+  terminal's output, which reads right only through a terminal emulator.
 - `app/emulator.rs`: every panel's screen (#174, #176): a `vt100` screen fed with a program's
   output, what the keys need of it (the cursor keys mode, bracketed paste), its painting with the
   16 ANSI colours on the theme, and the answers to the questions a program waits for (the cursor's
   position, DSR 5, DA1, DA2), which Neovim and fish ask as they start. `vt100` rather than
   `alacritty_terminal`: the research measured both drawing claude's and opencode's screens the
   same, and `vt100` is 6 crates instead of 56, read cell by cell, with no event loop to drive.
+  Since #178 a screen may keep a scrollback and show it (the log), and paint the end of its
+  output (above the failure card).
 - `app/panel.rs`: the agent's panel: its screen, fed with the replay and then the agent's output,
   and its `Status` (`NoAgent`, `Starting`, `Attached`, `Ended(how)`). Its screen's answers are not
   sent: every client of a holder would answer.
@@ -284,7 +307,11 @@ everything else under `app/` is pure and tested without a terminal.
   path, stepping through the order and wrapping at its ends, a project's name, the status bar's counts (needs you, failed,
   running, quiet: everything else), the pull request's number and checks, `claude` for
   claude-code, a worktree's message (its activity, else its state in words) and its age (`now`,
-  `9m`, `3h`, `2d`).
+  `9m`, `3h`, `2d`), how long something lasted (`12s`, then as the age), and which worktrees match
+  what the picker or the filter was given (#178). The state it shows is the core's, except that
+  a worktree whose holder recorded a failed end (`AgentEnd`) shows and counts as failed, with
+  `agent stopped (exit N)` and its end's age: its hooks may never say so, an agent dying between
+  turns or before its first, and the core's own state (`worktree ls`, the Neovim client) stays.
 - `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
   project's initial and name, its worktrees in three lines, or two under 40 rows, the primary
   checkout first as the fleet lists it, with the ` primary ` tag (TEXT_2 on RAISED) after its name
@@ -297,25 +324,39 @@ everything else under `app/` is pure and tested without a terminal.
   `split  agent | nvim`, the `zoom` pill and `^a z restore`; the active tab a pill, in the accent
   under the accent's stroke when focused; where the right column is not beside the centre, the
   summary `4 files +55 −21` and `^a f` instead of the open worktree; then the panel's screen, how
-  to start an agent, or that a Neovim or shell ended or could not start), the right column
-  (`right_column.rs`, #177: `changes` with the count and the lines added and deleted, each file
-  with its letter, name, directory cut from the left and counts, the cursor's in the accent with
-  the focus, the diffstat bar; `pull request` with its number, title, state, how many checks fail
-  and run, and each check, or `○ none yet`, or why gh could not say; `branch` with its drift) and
-  the status bar (`status.rs`, which names the focused part, `files` for the right column, and adds
-  the `zoom` pill). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
-  with `app/snapshots/*.txt`: the text, then each cell's text colour and background as one letter
-  per token; a changed screen is written beside its snapshot as `<name>.new.txt`.
+  to start an agent, or that a Neovim or shell ended or could not start), a failed agent over the
+  agent's card (`failure.rs`, #178, the design's 4e: the end of its output, then the card `✗  agent
+  stopped · exit 1 after 41m · 12m ago` on SELECTION, that the changes are kept with the right
+  column's count, and its keys, `r` lit; or the log filling the panel, how far back it shows and
+  its keys on its last row), the right column (`right_column.rs`, #177: `changes` with the count
+  and the lines added and deleted, each file with its letter, name, directory cut from the left
+  and counts, the cursor's in the accent with the focus, the diffstat bar; `pull request` with its
+  number, title, state, how many checks fail and run, and each check, or `○ none yet` and the
+  design's `^a P  open a draft` (#178), or why gh could not say; `branch` with its drift), the
+  status bar (`status.rs`, which names the focused part, `files` for the right column, `picker` or
+  `help` while one floats, and adds the `zoom` pill), and over everything, the rest veiled (VEIL),
+  the picker (`picker.rs`: `switch worktree`, `› ` and what was typed, each project
+  with its matching worktrees one line each, the cursor's in the accent) or help (`help.rs`). The
+  side menu's footer shows `enter open  n new  / filter` (no filter under 32 columns), or what it
+  types, and its title the filter. `draw/tests.rs` draws screens on ratatui's `TestBackend` and
+  compares them with `app/snapshots/*.txt`: the text, then each cell's text colour and background
+  as one letter per token, or, for `NO_COLOR`, each cell's attributes as one character; a changed
+  screen is written beside its snapshot as `<name>.new.txt`.
 - `app/paint.rs`: the painter (text at a column, cards with half-line edges, pills, keycaps,
-  cutting and wrapping by cells) and the colour `Mode` (`NO_COLOR`: attributes only;
+  cutting and wrapping by cells, the veil behind a floating card) and the colour `Mode`
+  (`NO_COLOR`: attributes only, where the keys go reversed and bold, accent text bold and
+  underlined, the open worktree between two rules, secondary and veiled text dim;
   `COLORTERM` `truecolor` or `24bit`: truecolor; else the ANSI-256 fallbacks), applied to the whole
   frame at the end.
-- `app/theme.rs`: the design's tokens, each a truecolor value and an ANSI-256 fallback, and the
+- `app/theme.rs`: the design's tokens (VEIL, for what a floating card covers, since #178), each a
+  truecolor value and an ANSI-256 fallback, and the
   glyph and colour of each state and of a pull request's checks.
 
 ### ops
 
-- `ops.rs`: what several commands share: reading the fleet and deriving each worktree's state,
+- `ops.rs`: what several commands share: reading the fleet and deriving each worktree's state
+  (with, while no holder is alive, how its agent ended last, `agent-end.json`, #178; and
+  `read_agent_log`, its `agent.log`, which the application shows),
   agent and holder, finding the worktree a command names, taking a worktree's lock, refusing a
   change under a live holder, writing `worktree.json` (the setup or the agent, keeping the other),
   reading the config files, running a worktree's setup, the registry of running Neovims
@@ -342,7 +383,8 @@ everything else under `app/` is pure and tested without a terminal.
   lock it, copy the copy list, run the setup. With `--agent` (#93), the agent is recorded under the
   lock before the setup runs, so a failed or unapproved setup still leaves it the worktree's agent
   (#119); `start_agent` then starts it through `agent_start::run`, only when the setup did not
-  fail.
+  fail. `run_in` (#178) does it in the repository of a directory given, for the application's
+  side menu.
 - `ops/worktree_setup.rs`: `worktree setup`: find the target, lock it (or fail as `busy`), run
   the setup again.
 - Both run the setup through `ops::set_up`, which, for a script from a committed
@@ -526,7 +568,9 @@ everything else under `app/` is pure and tested without a terminal.
   with changes not committed (`git status --porcelain -z --untracked-files=all`), then the
   message (`domain/pr/create.rs`). Only reads: no gh, no push. `prepare` is what `pr create`
   reuses.
-- `ops/pr_create.rs`: `pr create` (#132): refuse an empty title, then `prepare` as `pr compose`,
+- `ops/pr_create.rs`: `pr create` (#132), and `draft_in` (#178), the application's `^a P`: a draft
+  titled and described as `pr compose` says (`Body::Text`), refused as `pr create` refuses. `pr
+  create`: refuse an empty title, then `prepare` as `pr compose`,
   refuse no commits ahead (`no_commits`), gh not on PATH (`prerequisite`), and, asking gh as
   `pr refresh` asks (`gh pr view <branch>`), an open or draft pull request (`pr_exists`) or gh
   unable to say (`prerequisite`, with its reason); then `git push -u origin <branch>`
@@ -656,8 +700,11 @@ everything else under `app/` is pure and tested without a terminal.
   a second later) so the agent redraws for the new terminal. Since #174 the agent takes the size
   of the client used last (`protocol::ClientSizes`): a client's input first resizes the agent to
   that client's size when another was used since, and a client leaving hands the size back to
-  the one used before it. On the agent's exit every client
-  gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock.
+  the one used before it. On the agent's exit (#178) it writes `agent.log`, the scrollback as a
+  replay would send it, and `agent-end.json` (`AgentEnd`: the exit, whether it failed, when it
+  started and ended; a stop asked for is no failure), best effort; then every client
+  gets `x <exit>`, the socket and `agent.json` go, and the process exits, releasing the lock. A
+  new holder removes the last `agent-end.json` and `agent.log` as it starts.
   Each connection is first checked by `holder/peer.rs`; one it refuses is closed at once. With
   `--events <agent>` it also opens the events pipe before starting the agent, which inherits its
   write end under `ORCA_TERM_EVENTS_FD`, keeps only the read end, starts the events thread once
@@ -991,14 +1038,16 @@ validate"):
   and the person's `seen.json`, and the notes' `notes.json`, `notes.lock` and `notes/` (the
   contents kept for notes on lines), and `snapshot.index`, the throwaway index a snapshot is taken
   through. `worktree_id` is the name of git's admin directory it sits in, which names the chain.
-  Since #87 it also holds `pr.json`, what `pr refresh` last found.
+  Since #87 it also holds `pr.json`, what `pr refresh` last found, and since #178 the holder's
+  `agent-end.json` and `agent.log`, how the agent ended last and its last output.
 - `PrState`, `Checks`, `PullRequest`, `Found`, `PrFacts`, `GhRun`, `PrRead`, `Refreshed`
   (`domain/pr.rs`): a pull request's state and checks, the pull request, what asking gh found and
   when, what running gh did, what reading `pr.json` found, and what `pr refresh` reports.
 - `CommitMessage`, `Message`, `Composed`, `Readiness`, `Body`, `PrCreated`
   (`domain/pr/create.rs`, #132): a commit's subject and body, a new pull request's title and body,
   what `pr compose` reports, whether it is `Ready` or a `Draft` (the `--draft` flag), its body for
-  gh (a `File` or `Empty`), and what `pr create` reports.
+  gh (a `File`, the `Text` `pr compose` made for the application's draft, or `Empty`), and what
+  `pr create` reports.
 - `Method`, `PrMerged` (`domain/pr/merge.rs`, #136): how a pull request is merged (`Squash`,
   `Merge`, `Rebase`) and what `pr merge` reports; `NotOpen` and `Review` (`domain/error.rs`): why
   there is no open pull request to merge (`None`, `Merged`, `Closed`) and which review decision
@@ -1012,7 +1061,10 @@ validate"):
   plain push or one with a lease on an expected commit.
 - `Agent`, `HolderStatus`, `HolderRecord`, `Size` (`domain/agent.rs`): the agent kind, whether a
   holder is alive (`Alive`/`Gone`, from the probe of `agent.lock`), what `agent.json` holds (pid
-  and socket path, volatile), and a terminal size.
+  and socket path, volatile), and a terminal size. `AgentEnd` (#178): what `agent-end.json`
+  holds, the agent's last end (`exit 1`, whether it failed: an error nobody asked for, when it
+  started and ended); the fleet's read gives it as `Worktree::agent_end` while no holder is
+  alive, and no document the core prints carries it.
 - `StartOutcome`, `Started`, `Swapped`, `StopOutcome`, `Stopped`, `AttachEnd` (`domain/agent.rs`):
   what the agent commands did and report (`Started` names the session it `resumed`, if any;
   `Swapped` the agent swapped out and whether it was stopped). `agent_start::Wanted` is what
