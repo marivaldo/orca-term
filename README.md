@@ -196,7 +196,7 @@ open worktree's changed files and pull request.
   against the default branch and the lines added and deleted, each file with its letter (`M`, `A`,
   `D`, `R`), name, directory and counts, and a bar of the lines added against deleted; `pull
   request` with its number, title, state, how many checks fail and run and each check, as
-  `pr refresh` last found it (`○ none yet` without one); `branch` with how far it is ahead of and
+  `pr refresh` last found it (`○ none yet` and `^a P open a draft` without one); `branch` with how far it is ahead of and
   behind the local default branch. `^a f` hides or shows it. Under 150 columns the centre's tab row
   shows the summary `4 files +55 −21` instead, and `^a f` lays the right column over the centre.
   With the focus on it, `j` and `k` move over the files and `enter` opens the file's diff in the
@@ -210,10 +210,29 @@ open worktree's changed files and pull request.
 - **Split and zoom**: `^a |` shows the agent and Neovim (or the shell) side by side, each with its
   own tab row; `^a z` fills the screen with the focused panel and puts everything back as it was,
   the split included.
+- **Picker**: `^a w` floats every worktree over the screen; type to filter by name, branch or
+  project, move with the arrows (or `Ctrl-j`/`Ctrl-k`), `enter` opens, `esc` closes. Under 100
+  columns, where the side menu does not show, it is how you reach the other worktrees.
+- **A failed agent**: when a worktree's agent ends with an error you did not ask for (`agent stop`
+  is not one), its panel shows the end of its last output and, under it, a card:
+  `✗ agent stopped · exit 1 after 41m · 12m ago`, that your changes are kept, and `r` resume the
+  session, `R` restart clean on a new session, `l` show the log (the agent's last output as its
+  holder kept it, which `j`/`k`, `ctrl-u`/`ctrl-d` and `g`/`G` scroll and `esc` closes), `x`
+  dismiss. The holder records the end in `agent-end.json` and the output in `agent.log`, in the
+  worktree's admin directory, so the card shows whenever you open the worktree.
+- **New worktrees and a filter**: in the focused side menu, `n` asks a name and creates the
+  worktree in the project under the cursor, as `orca-term worktree new` does (its setup's output
+  goes to its log; a committed setup script that needs your approval does not run), then opens
+  it; `/` filters the worktrees as you type (`enter` keeps the filter, `esc` clears it).
+- **Draft pull request**: `^a P` opens a draft pull request for the open worktree, as
+  `orca-term pr create --draft` does, titled and described as `orca-term pr compose` says; what
+  went wrong (the primary checkout on the default branch, no commits) shows in the status bar.
+- **Help**: `^a ?` lists the keys; any key closes it.
 - **Status bar**: the open worktree, how many worktrees need you, failed, are running or are
   quiet, and the keys.
 
-Every key goes to the part with the focus, a panel or the side menu. `Ctrl-a` arms
+Every key goes to the part with the focus, a panel, the side menu or the right column (or the
+picker or help while one floats). `Ctrl-a` arms
 the application's own keys for the next key (the status bar lights up for about 1.5 s; `esc`
 cancels):
 
@@ -225,15 +244,23 @@ cancels):
 | `^a \|` | split the agent and Neovim (or the shell) side by side, or back |
 | `^a z` | zoom the focused panel, or restore |
 | `^a f` | hide or show the right column; under 150 columns, lay it over the centre or close it |
+| `^a w` | the picker |
+| `^a P` | open a draft pull request |
+| `^a ?` | help |
 | `^a a` | send a literal `Ctrl-a` to the focused panel |
 | `^a q` | quit; every agent keeps running, the Neovims and shells end |
 | `j`, `k`, arrows, `enter` | in the focused side menu: move, and open the worktree |
+| `n`, `/` | in the focused side menu: a new worktree, and the filter |
 | `j`, `k`, arrows, `enter`, `esc` | in the focused right column: move, open the file's diff in Neovim, and leave |
 | `enter` | in a panel whose agent, Neovim or shell is not running: start it |
+| `r`, `R`, `l`, `x` | on a failed agent's card: resume, restart clean, the log, dismiss |
 
 The application restores your terminal when it quits, when it is ended by a signal (`SIGTERM`,
 `SIGHUP` when its terminal closes) and on a crash. Colours follow `COLORTERM` (`truecolor` or
-`24bit` for 24-bit colour, else 256 colours), and `NO_COLOR` draws without colour.
+`24bit` for 24-bit colour, else 256 colours), and `NO_COLOR` draws without colour: where the keys
+go reversed and bold, titles bold and underlined, the open worktree between two rules, secondary
+text dim. The 16 colours a panel's program uses are drawn with the theme's (red failed, green done,
+yellow waiting, blue and cyan working, magenta the accent).
 
 An agent attached from several places at once (the application, and an `agent attach` in Neovim)
 takes the size of the one you typed in last. A terminal attaching late also gets the agent's
