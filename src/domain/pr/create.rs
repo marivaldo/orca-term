@@ -133,6 +133,8 @@ pub(crate) enum Readiness {
 pub(crate) enum Body {
     /// The text of this file, an absolute path.
     File(PathBuf),
+    /// This text, as `pr compose` makes it: the application's draft (#178).
+    Text(String),
     /// No body: no file was given, or it is missing or empty.
     Empty,
 }
@@ -163,6 +165,10 @@ pub(crate) fn create_args(
         Body::File(path) => {
             args.push("--body-file".to_owned());
             args.push(path.to_string_lossy().into_owned());
+        }
+        Body::Text(text) => {
+            args.push("--body".to_owned());
+            args.push(text.clone());
         }
         Body::Empty => {
             args.push("--body".to_owned());
@@ -430,6 +436,14 @@ mod tests {
             Readiness::Draft,
         );
         assert_eq!(draft[8..], ["--body", "", "--draft"]);
+        let composed = create_args(
+            &Branch::new("main"),
+            &Branch::new("fix"),
+            "Fix it",
+            &Body::Text("- one\n- two".to_owned()),
+            Readiness::Draft,
+        );
+        assert_eq!(composed[8..], ["--body", "- one\n- two", "--draft"]);
     }
 
     #[test]

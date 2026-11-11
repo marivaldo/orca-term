@@ -119,6 +119,51 @@ impl HolderRecord {
     }
 }
 
+/// How a worktree's agent ended last, which its holder writes to `agent-end.json` as it leaves,
+/// beside the agent's last output in `agent.log` (#178): the application shows a failed one as a
+/// card with that output. The next holder removes both as it starts, so it is read only while no
+/// holder is alive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentEnd {
+    /// How it ended, as the holder tells its clients: `exit 1`, `signal 9`.
+    pub(crate) exit: String,
+    /// Whether it failed: it ended with an error and nobody asked it to stop.
+    pub(crate) failed: bool,
+    /// When the holder started it, and when it ended, in Unix milliseconds.
+    pub(crate) started_at: u64,
+    pub(crate) ended_at: u64,
+}
+
+impl AgentEnd {
+    /// The end of an agent that exited with `code`, or was killed by `signal`, after the holder
+    /// was asked to stop it or not (`stopped`). Exit 0, or any end after a stop (`agent stop`
+    /// hangs it up), is not a failure.
+    pub(crate) fn new(
+        code: Option<i32>,
+        signal: Option<i32>,
+        stopped: bool,
+        started_at: u64,
+        ended_at: u64,
+    ) -> Self {
+        Self {
+            exit: crate::domain::protocol::exit_text(code, signal),
+            failed: !stopped && code != Some(0),
+            started_at,
+            ended_at,
+        }
+    }
+
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    /// The end `agent-end.json` holds, or `None` when it is missing or cannot be read: the card is
+    /// a courtesy, never a reason for a read to fail.
+    pub(crate) fn read(bytes: Option<&[u8]>) -> Option<Self> {
+        serde_json::from_slice(bytes?).ok()
+    }
+}
+
 /// A terminal's size in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Size {
@@ -284,6 +329,27 @@ mod tests {
         );
         assert_eq!(HolderRecord::parse(&bytes).unwrap(), record);
         assert!(HolderRecord::parse(b"{").is_err());
+    }
+
+    #[test]
+    fn an_agent_fails_on_an_error_it_was_not_asked_for() {
+        let failed = AgentEnd::new(Some(7), None, false, 1_000, 61_000);
+        assert_eq!(failed.exit, "exit 7");
+        assert!(failed.failed);
+        assert!(AgentEnd::new(None, Some(9), false, 0, 0).failed, "killed");
+        assert!(!AgentEnd::new(Some(0), None, false, 0, 0).failed, "exit 0");
+        assert!(
+            !AgentEnd::new(Some(129), None, true, 0, 0).failed,
+            "hung up by agent stop"
+        );
+        let bytes = failed.to_bytes().unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            r#"{"exit":"exit 7","failed":true,"started_at":1000,"ended_at":61000}"#
+        );
+        assert_eq!(AgentEnd::read(Some(&bytes)), Some(failed));
+        assert_eq!(AgentEnd::read(Some(b"{")), None);
+        assert_eq!(AgentEnd::read(None), None);
     }
 
     #[test]

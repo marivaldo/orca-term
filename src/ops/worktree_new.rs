@@ -31,9 +31,20 @@ pub(crate) fn run(
     approval: &mut Approval<'_>,
     echo: &mut dyn Write,
 ) -> Result<Created> {
-    let cwd = env::current_dir()?;
+    run_in(&env::current_dir()?, name, agent, approval, echo)
+}
+
+/// [`run`], in the repository containing `dir` instead of the current directory's: the
+/// application creates a worktree in the project under the side menu's cursor (#178).
+pub(crate) fn run_in(
+    dir: &Path,
+    name: &WorktreeName,
+    agent: Option<Agent>,
+    approval: &mut Approval<'_>,
+    echo: &mut dyn Write,
+) -> Result<Created> {
     let env = env::config_env();
-    let listed = git::primary_checkout(&cwd)?;
+    let listed = git::primary_checkout(dir)?;
     let primary = PrimaryCheckout {
         path: fs::canonicalize(&listed.path)?,
         branch: listed.branch,

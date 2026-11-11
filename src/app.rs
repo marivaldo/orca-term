@@ -37,6 +37,7 @@ pub(crate) mod state;
 pub(crate) mod theme;
 pub(crate) mod view;
 
+use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -57,9 +58,9 @@ use crate::app::watch::Watched;
 use crate::domain::agent::{Size, StartMode};
 use crate::domain::changes::Changes;
 use crate::domain::project::ProjectFleet;
-use crate::domain::worktree::Target;
+use crate::domain::worktree::{Target, WorktreeName};
 use crate::ops::agent_start::{self, Wanted};
-use crate::ops::{Approval, fleets};
+use crate::ops::{self, Approval, fleets, pr_create, worktree_new};
 
 /// How long the loop waits for a message before it draws again (the spinner, the prefix's
 /// timeout, the ages).
@@ -83,6 +84,10 @@ enum Msg {
     Printed(ProgramId, Printed),
     /// The changes of the worktree at this path, read now, or why they could not be.
     Changes(PathBuf, Result<Changes, String>),
+    /// The core created the worktree named `.1` in the project at `.0`, or could not.
+    Created(PathBuf, String, Result<String, String>),
+    /// The core opened a draft pull request, or could not.
+    Drafted(Result<String, String>),
     /// A signal asked the application to end.
     Quit,
 }
@@ -240,6 +245,14 @@ fn handle(app: &mut App, parts: &mut Parts<'_>, message: Msg) -> Vec<Effect> {
             }
             app.printed(&id, printed)
         }
+        Msg::Created(project, name, result) => {
+            app.created(&project, &name, result, now);
+            Vec::new()
+        }
+        Msg::Drafted(result) => {
+            app.drafted(result, now);
+            Vec::new()
+        }
         Msg::Quit => vec![Effect::Quit],
     }
 }
@@ -259,7 +272,7 @@ fn apply(app: &mut App, parts: &mut Parts<'_>, effect: Effect) -> bool {
             }
             Err(err) => app.attach_failed(&path, format!("{err:#}"), Instant::now()),
         },
-        Effect::Start(path, size) => start_agent(path, size, parts.sender.clone()),
+        Effect::Start(path, size, mode) => start_agent(path, size, mode, parts.sender.clone()),
         Effect::SizeAgent(size) => link.send_size(size),
         Effect::Run(id, size) => {
             if let Err(err) = parts.programs.run(&id, size, parts.sender) {
@@ -273,27 +286,84 @@ fn apply(app: &mut App, parts: &mut Parts<'_>, effect: Effect) -> bool {
             worktree,
             file,
         } => parts.programs.open_diff(primary, worktree, file),
+        Effect::ReadLog(path) => {
+            let read = ops::read_agent_log(&path).map_err(|err| format!("{err:#}"));
+            app.log_read(&path, read, Instant::now());
+        }
+        Effect::NewWorktree { project, name } => {
+            new_worktree(project, name, parts.sender.clone());
+        }
+        Effect::DraftPr(path) => draft_pr(path, parts.sender.clone()),
         Effect::Quit => return false,
     }
     true
 }
 
-/// Starts the agent of the worktree at `path` through the core, on a thread of its own (the core
-/// waits for the agent's first moments), and says how it went. Nobody can be asked to approve
-/// anything here: a start that needs approval fails, saying so.
-fn start_agent(path: PathBuf, size: Size, sender: Sender<Msg>) {
+/// Starts the agent of the worktree at `path` through the core, on the session `mode` says, on a
+/// thread of its own (the core waits for the agent's first moments), and says how it went. Nobody
+/// can be asked to approve anything here: a start that needs approval fails, saying so.
+fn start_agent(path: PathBuf, size: Size, mode: StartMode, sender: Sender<Msg>) {
     thread::spawn(move || {
         let wanted = Wanted {
             agent: None,
             rows: Some(size.rows),
             cols: Some(size.cols),
-            mode: StartMode::Resume,
+            mode,
         };
         let target = Target::Path(path.clone());
         let result = agent_start::run_in(&path, &target, &wanted, &mut Approval::Unavailable)
             .map(|_| ())
             .map_err(|err| format!("{err:#}"));
         let _ = sender.send(Msg::Started(path, result));
+    });
+}
+
+/// Creates the worktree `name` in the project at `project` through the core (`worktree new`), on
+/// a thread of its own since its setup may take a while, and says how it went. The setup's output
+/// goes to its log only, and a committed setup script that needs approval does not run.
+fn new_worktree(project: PathBuf, name: WorktreeName, sender: Sender<Msg>) {
+    thread::spawn(move || {
+        let created = worktree_new::run_in(
+            &project,
+            &name,
+            None,
+            &mut Approval::Unavailable,
+            &mut io::sink(),
+        );
+        let result = match created {
+            Ok(created) if created.setup.outcome.failed() => Ok(format!(
+                "created worktree {name}, but its setup failed: see {}",
+                created
+                    .setup
+                    .log
+                    .as_ref()
+                    .map_or_else(String::new, |log| log.display().to_string())
+            )),
+            Ok(_) => Ok(format!("created worktree {name}")),
+            Err(err) => Err(format!("{err:#}")),
+        };
+        let _ = sender.send(Msg::Created(project, name.to_string(), result));
+    });
+}
+
+/// Opens a draft pull request for the worktree at `path` through the core (`pr create --draft`,
+/// with the message `pr compose` makes), on a thread of its own since it pushes and asks GitHub,
+/// and says how it went.
+fn draft_pr(path: PathBuf, sender: Sender<Msg>) {
+    thread::spawn(move || {
+        let result = match pr_create::draft_in(&path, &Target::Path(path.clone())) {
+            Ok(created) => Ok(created.pr().map_or_else(
+                || format!("opened a draft pull request for {}", created.name),
+                |pr| {
+                    format!(
+                        "opened draft pull request #{} for {}",
+                        pr.number, created.name
+                    )
+                },
+            )),
+            Err(err) => Err(format!("{err:#}")),
+        };
+        let _ = sender.send(Msg::Drafted(result));
     });
 }
 

@@ -92,6 +92,21 @@ fn the_prefix_expires() {
 }
 
 #[test]
+fn capital_p_after_the_prefix_opens_a_draft_pull_request_for_the_open_worktree() {
+    let (mut app, now) = app();
+    app.key(ctrl_a(), now);
+    assert_eq!(
+        app.key(press(KeyCode::Char('P')), now),
+        [Effect::DraftPr(PathBuf::from("/p/api.wt/fix"))]
+    );
+    app.drafted(Err("worktree fix is on the default branch".to_owned()), now);
+    assert_eq!(
+        app.message.as_ref().map(|(text, _)| text.as_str()),
+        Some("worktree fix is on the default branch")
+    );
+}
+
+#[test]
 fn the_previous_worktree_of_the_first_is_the_last() {
     let (mut app, now) = app();
     app.key(ctrl_a(), now);
@@ -128,7 +143,7 @@ fn enter_starts_the_agent_where_none_runs() {
     assert_eq!(app.key(press(KeyCode::Char('x')), now), []);
     let effects = app.key(press(KeyCode::Enter), now);
     assert!(
-        matches!(&effects[..], [Effect::Start(path, _)] if path == Path::new("/p/api.wt/docs")),
+        matches!(&effects[..], [Effect::Start(path, _, StartMode::Resume)] if path == Path::new("/p/api.wt/docs")),
         "{effects:?}"
     );
     assert_eq!(app.key(press(KeyCode::Enter), now), [], "already starting");

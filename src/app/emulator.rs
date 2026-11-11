@@ -74,6 +74,23 @@ impl Emulator {
         }
     }
 
+    /// An empty screen `size` cells large that keeps up to `lines` rows scrolled off its top, to
+    /// read back: the agent's log (#178).
+    pub(crate) fn with_scrollback(size: Rect, lines: usize) -> Self {
+        let (rows, cols) = dimensions(size);
+        Self {
+            parser: vt100::Parser::new_with_callbacks(rows, cols, lines, Answers::default()),
+        }
+    }
+
+    /// Shows the screen `up` rows back into what scrolled off its top, at most as far as it
+    /// kept; 0 is the screen as it is. Returns how far back it shows.
+    pub(crate) fn scroll(&mut self, up: usize) -> usize {
+        let screen = self.parser.screen_mut();
+        screen.set_scrollback(up);
+        screen.scrollback()
+    }
+
     /// Draws the program's `bytes`, and returns the answers to the questions they asked.
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.parser.process(bytes);
@@ -118,9 +135,27 @@ impl Emulator {
     /// Paints the screen into `area` of `buf`, its 16 ANSI colours on the theme's tokens (the
     /// default background BG, the default text TEXT), any other colour as the program gave it.
     pub(crate) fn paint(&self, buf: &mut Buffer, area: Rect) {
+        self.paint_from(buf, area, 0);
+    }
+
+    /// Paints the end of the output into `area`: the rows up to the last one with something on
+    /// it, as many as `area` holds, so a card under them leaves the program's last words in view.
+    pub(crate) fn paint_end(&self, buf: &mut Buffer, area: Rect) {
+        let screen = self.parser.screen();
+        let (rows, cols) = self.size();
+        let written = |row: u16| {
+            (0..cols).any(|col| screen.cell(row, col).is_some_and(vt100::Cell::has_contents))
+        };
+        let last = (0..rows).rev().find(|row| written(*row));
+        let first = last.map_or(0, |last| (last + 1).saturating_sub(area.height));
+        self.paint_from(buf, area, first);
+    }
+
+    /// Paints the screen from its row `first` into `area`.
+    fn paint_from(&self, buf: &mut Buffer, area: Rect, first: u16) {
         let screen = self.parser.screen();
         for position in area.intersection(buf.area).positions() {
-            let (row, col) = (position.y - area.y, position.x - area.x);
+            let (row, col) = (position.y - area.y + first, position.x - area.x);
             // The second cell of a wide character is drawn by the first.
             if let Some(cell) = screen.cell(row, col)
                 && !cell.is_wide_continuation()
@@ -219,6 +254,36 @@ mod tests {
         assert!(!emulator.resize(Rect::new(9, 9, 20, 4)), "the same size");
         assert!(emulator.resize(Rect::new(0, 0, 30, 5)));
         assert_eq!(emulator.size(), (5, 30));
+    }
+
+    #[test]
+    fn a_screen_with_scrollback_shows_the_rows_that_went_off_its_top() {
+        let mut log = Emulator::with_scrollback(Rect::new(0, 0, 10, 2), 100);
+        log.feed(b"one\r\ntwo\r\nthree\r\nfour");
+        let first_row = |log: &Emulator| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+            log.paint(&mut buf, Rect::new(0, 0, 10, 2));
+            (0..5)
+                .map(|x| buf[(x, 0)].symbol().to_owned())
+                .collect::<String>()
+        };
+        assert_eq!(first_row(&log), "three");
+        assert_eq!(log.scroll(1), 1);
+        assert_eq!(first_row(&log), "two  ");
+        assert_eq!(log.scroll(50), 2, "as far as it kept");
+        assert_eq!(first_row(&log), "one  ");
+        assert_eq!(log.scroll(0), 0);
+    }
+
+    #[test]
+    fn the_end_of_the_output_paints_its_last_written_rows() {
+        let mut emulator = Emulator::new(Rect::new(0, 0, 10, 4));
+        emulator.feed(b"one\r\ntwo\r\nthree");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        emulator.paint_end(&mut buf, Rect::new(0, 0, 10, 2));
+        assert_eq!(buf[(0, 0)].symbol(), "t");
+        assert_eq!(buf[(1, 0)].symbol(), "w", "two");
+        assert_eq!(buf[(1, 1)].symbol(), "h", "three");
     }
 
     #[test]

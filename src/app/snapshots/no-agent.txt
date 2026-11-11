@@ -27,7 +27,7 @@
                                                                                                                         
                                                                                                                         
  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ 
- ▐orca▌  ○ api/pagination  agent    ? 1   ✗ 1   ◐ 1   ○ 2     ^a j k  worktree   ^a z  zoom   ^a |  split   ^a q  quit  
+ ▐orca▌  ○ api/pagination  agent    ? 1   ✗ 1   ◐ 1   ○ 2     ^a j k  worktree   ^a z  zoom   ^a |  split   ^a ?  help  
 
 TppppppppppppppppppppppppppppTbbAAAAAAAAAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbT
 TTTttttttttTTTTTTTTTTTTTTTTTTTTTfAAAAAAAfTttttttttTtttttttttTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT

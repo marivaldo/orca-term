@@ -41,6 +41,8 @@ pub(crate) const FOCUS_BG: Tok = tok(0x2a, 0x23, 0x40, 236);
 
 // Decoration, never text.
 pub(crate) const BORDER: Tok = tok(0x34, 0x3a, 0x43, 237);
+/// The text behind a floating card (the picker, help), veiled.
+pub(crate) const VEIL: Tok = tok(0x50, 0x56, 0x5f, 240);
 
 // Text.
 pub(crate) const TEXT: Tok = tok(0xdd, 0xe1, 0xe6, 254);
@@ -53,8 +55,8 @@ pub(crate) const DONE: Tok = tok(0x7f, 0xcf, 0x98, 114);
 pub(crate) const FAILED: Tok = tok(0xf0, 0x7f, 0x7f, 210);
 
 /// Every token, for turning a painted colour back into its fallback.
-pub(crate) const TOKENS: [Tok; 15] = [
-    CANVAS, BG, PANEL, RAISED, SELECTION, FOCUS_SEL, FOCUS_BG, BORDER, TEXT, TEXT_2, ACCENT,
+pub(crate) const TOKENS: [Tok; 16] = [
+    CANVAS, BG, PANEL, RAISED, SELECTION, FOCUS_SEL, FOCUS_BG, BORDER, VEIL, TEXT, TEXT_2, ACCENT,
     WAITING, WORKING, DONE, FAILED,
 ];
 

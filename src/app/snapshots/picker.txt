@@ -1,0 +1,92 @@
+ ▗▄▁▁▁▁▁▁▁▁▁▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖ 
+   ▐1 agent▌  2 nvim   3 shell                                  4 files +55 −21   ^a f    
+                                                                                          
+   fake claude ready                                                                      
+                                                                                          
+   ? Allow edits to src/auth/session.ts?                                                  
+     1. Yes                                                                               
+     2. No   ▗▄▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖             
+               switch worktree                                         ^a w               
+   >                                                                                      
+               › o▏                                                                       
+                                                                                          
+              ▐a▌ app                                                                     
+              ▎  ? fix-login      fix-login          Allow edits to sr… 2m                
+                 ● docs           docs               Updated the READ… 41m                
+                                                                                          
+              ▐a▌ api                                                                     
+                 ○ pagination     pagination         Done               2d                
+                                                                                          
+                ↑↓  move   enter  open   esc  close                                       
+             ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘             
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+ ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ 
+ ▐orca▌  ? app/fix-login  picker    ? 1   ✗ 1   ◐ 1   ○ 2       ^a |  split   ^a ?  help  
+
+vbbAAAAAAAAAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbv
+vvvfvvvvvvvfvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvppAAAAAAAAAAAAAAApppppppppppppppppppppppppppppppppppppppppppppppvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTAAAAAAAAAAAAAAATTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTttttTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTATTATTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTrTrTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTATTWTAAAAAAAAATTTTTTtttttttttTTTTTTTTTTttttttttttttttttttTttTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTDTTTTTTTTTTTTTTTTttttTTTTTTTTTTTTTTTtttttttttttttttttTtttTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTrTrTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTtTTTTTTTTTTTTTTTTttttttttttTTTTTTTTTttttTTTTTTTTTTTTTTTttTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvTTTTTTtttttttTTTTTTTtttttttTTTTTttttttTTTTTTTTTTTTTTTTTTTTTTTTTTvvvvvvvvvvvvv
+vvvvvvvvvvvvvppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+vbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbv
+TsTTTTsTTWTTTTTTTTTTTTTTttttttttTTTTWTTTTTFTTTTTKTTTTTtTTTTTTTTTTTTTTttttttttTTTTTTttttttT
+
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+cbbbfffffffbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbrrrrrrbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbpprpppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbpffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffpbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbpprpppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbpprrrrppppppprrrrrrrppppppprrrrrppppppppppppppppppppppppppppppppbbbbbbbbbbbbc
+cbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ccsssscccccccccccccccccccccccccccccccccccccccccccccccccccccccccrrrrrrccccccccrrrrrrccccccc

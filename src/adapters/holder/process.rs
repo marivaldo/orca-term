@@ -29,6 +29,7 @@ use std::os::fd::AsFd as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Child, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -37,10 +38,11 @@ use anyhow::{Context, Result, bail};
 use pty_process::blocking::Pty;
 use rustix::process::{Pid, Signal};
 
+use crate::adapters::env;
 use crate::adapters::fs::{self, FileLock};
 use crate::adapters::holder::client_queue::{ClientFrames, ClientQueue, client_queue};
 use crate::adapters::holder::{HolderArgs, error_line, events, peer, ready_line};
-use crate::domain::agent::{HolderRecord, Size};
+use crate::domain::agent::{AgentEnd, HolderRecord, Size};
 use crate::domain::hook::EVENTS_FD_VAR;
 use crate::domain::protocol::{self, ClientSizes, Decoder, Frame, SCROLLBACK_CAP, Scrollback};
 use crate::domain::state::{AGENT_SOCKET_FILE, AdminDir};
@@ -110,6 +112,10 @@ struct Holder {
     /// The thread running the hook for each event the agent reports through its pipe, for an
     /// agent that does (opencode).
     events: Mutex<Option<JoinHandle<()>>>,
+    /// When the agent started, in Unix milliseconds, for the record of its end (#178).
+    started_at: u64,
+    /// Set once a client asked to stop the agent (`agent stop`): its end is then no failure.
+    stopped: AtomicBool,
 }
 
 /// What the reader and the client threads share, under one mutex: a client takes its replay and
@@ -136,6 +142,9 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
     std::env::set_current_dir(args.admin.path())
         .with_context(|| format!("could not enter {}", args.admin.path().display()))?;
     fs::remove_if_exists(&args.admin.agent_socket())?;
+    // The previous agent's end is over: a new one runs from here.
+    fs::remove_if_exists(&args.admin.agent_end())?;
+    fs::remove_if_exists(&args.admin.agent_log())?;
     let listener = UnixListener::bind(AGENT_SOCKET_FILE)
         .with_context(|| format!("could not bind {}", args.admin.agent_socket().display()))?;
     let (pty, pts) = pty_process::blocking::open().context("could not open a pty")?;
@@ -158,6 +167,8 @@ fn prepare(args: &HolderArgs) -> Result<(Arc<Holder>, UnixListener, FileLock)> {
         size: Mutex::new(args.size),
         sizes: Mutex::new(ClientSizes::default()),
         events: Mutex::new(None),
+        started_at: env::now_millis(),
+        stopped: AtomicBool::new(false),
     });
     start_reader(&holder);
     if let Some(status) = exited_early(&holder)? {
@@ -294,6 +305,8 @@ fn run(holder: &Arc<Holder>, listener: UnixListener) -> Result<()> {
     if let Some(events) = events {
         join_within(vec![events], EVENTS_DEADLINE);
     }
+    // Recorded before the clients hear of the end, so a client that heard it reads the record.
+    record_end(holder, status);
     let writers = {
         let mut shared = lock_shared(holder);
         let text = protocol::exit_text(status.code(), status.signal());
@@ -310,6 +323,25 @@ fn run(holder: &Arc<Holder>, listener: UnixListener) -> Result<()> {
     fs::remove_if_exists(&holder.admin.agent_socket())?;
     fs::remove_if_exists(&holder.admin.agent_record())?;
     Ok(())
+}
+
+/// Writes how the agent ended to `agent-end.json`, and its last output (the scrollback, as a client
+/// attaching now would be replayed it) to `agent.log` (#178). Best effort: a record that cannot be
+/// written only costs the application its failure card, never the clients their end.
+fn record_end(holder: &Holder, status: ExitStatus) {
+    let stopped = holder.stopped.load(Ordering::SeqCst);
+    let end = AgentEnd::new(
+        status.code(),
+        status.signal(),
+        stopped,
+        holder.started_at,
+        env::now_millis(),
+    );
+    let log = lock_shared(holder).scrollback.snapshot();
+    let _ = fs::write_atomically(&holder.admin.agent_log(), &log);
+    if let Ok(bytes) = end.to_bytes() {
+        let _ = fs::write_atomically(&holder.admin.agent_end(), &bytes);
+    }
 }
 
 /// Joins the writers that end within `deadline`; one still stuck in a write past it is left behind,
@@ -510,6 +542,7 @@ fn pty_size(size: Size) -> pty_process::Size {
 /// Hangs the agent up, as closing its terminal would, and escalates if it stays: terminate, then
 /// kill. The holder ends once the agent is reaped.
 fn stop_agent(holder: &Arc<Holder>) {
+    holder.stopped.store(true, Ordering::SeqCst);
     signal_agent(holder, Signal::HUP);
     let holder = Arc::clone(holder);
     thread::spawn(move || {

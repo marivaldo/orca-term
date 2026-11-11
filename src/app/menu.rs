@@ -19,6 +19,35 @@ pub(crate) fn order(fleets: &[ProjectFleet]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The paths of [`order`] whose worktree matches `query` (see [`matches`]); all of them for an
+/// empty query. The picker and the side menu's filter list these (#178).
+pub(crate) fn order_matching(fleets: &[ProjectFleet], query: &str) -> Vec<PathBuf> {
+    fleets
+        .iter()
+        .filter_map(|project| Some((project, project.fleet.as_ref().ok()?)))
+        .flat_map(|(project, fleet)| {
+            fleet
+                .worktrees
+                .iter()
+                .filter(move |worktree| matches(&project.path, worktree, query))
+        })
+        .map(|worktree| worktree.path.clone())
+        .collect()
+}
+
+/// Whether the worktree of the project at `project` matches what the person typed: its name, its
+/// branch or its project's name holds `query`, whatever the case.
+pub(crate) fn matches(project: &Path, worktree: &Worktree, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    let branch = worktree
+        .branch
+        .as_ref()
+        .map_or("", |branch| branch.as_str());
+    [worktree.name.as_str(), branch, &project_name(project)]
+        .iter()
+        .any(|text| text.to_lowercase().contains(&query))
+}
+
 /// The worktree at `path` and the project it belongs to.
 pub(crate) fn find<'a>(
     fleets: &'a [ProjectFleet],
@@ -135,9 +164,53 @@ pub(crate) fn age(then_ms: u64, now_ms: u64) -> String {
     }
 }
 
+/// How long `ms` milliseconds lasted, short: `12s` under a minute, then as [`age`] says it.
+pub(crate) fn span(ms: u64) -> String {
+    if ms < 60_000 {
+        return format!("{}s", ms / 1000);
+    }
+    age(0, ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::fixture;
+
+    #[test]
+    fn a_query_matches_a_name_a_branch_or_a_project_whatever_the_case() {
+        let fleets = vec![
+            fixture::project(
+                "/code/app",
+                vec![
+                    fixture::worktree("/code/app.wt/fix-login", State::Idle),
+                    fixture::worktree("/code/app.wt/docs", State::Idle),
+                ],
+            ),
+            fixture::project(
+                "/code/api",
+                vec![fixture::worktree("/code/api.wt/pagination", State::Idle)],
+            ),
+            fixture::gone("/code/old"),
+        ];
+        let paths = |query: &str| -> Vec<String> {
+            order_matching(&fleets, query)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        };
+        assert_eq!(paths("").len(), 3, "everything");
+        assert_eq!(paths("LOG"), ["/code/app.wt/fix-login"]);
+        assert_eq!(paths("api"), ["/code/api.wt/pagination"], "by project");
+        assert!(paths("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_span_reads_in_seconds_under_a_minute() {
+        assert_eq!(span(12_400), "12s");
+        assert_eq!(span(41 * 60_000), "41m");
+        assert_eq!(span(3 * 3_600_000), "3h");
+    }
 
     #[test]
     fn an_age_reads_in_the_largest_unit() {

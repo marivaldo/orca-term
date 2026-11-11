@@ -13,7 +13,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 
 use crate::adapters::fs;
 use crate::adapters::holder::client::Heard;
@@ -24,7 +24,7 @@ use crate::app::paint::Mode;
 use crate::app::program::{Kind, ProgramId};
 use crate::app::state::App;
 use crate::app::theme::{self, Tok};
-use crate::domain::agent::HolderStatus;
+use crate::domain::agent::{AgentEnd, HolderStatus};
 use crate::domain::branch::Branch;
 use crate::domain::changes::{Change, ChangedFile, Changes, Lines};
 use crate::domain::detail::Drift;
@@ -37,7 +37,8 @@ use crate::domain::state::State;
 const NOW: u64 = 10 * 86_400_000;
 
 /// Each token's letter in a snapshot's colour grids; any other colour is `?`.
-const LETTERS: [(Tok, char); 15] = [
+const LETTERS: [(Tok, char); 16] = [
+    (theme::VEIL, 'v'),
     (theme::CANVAS, 'c'),
     (theme::BG, 'b'),
     (theme::PANEL, 'p'),
@@ -170,32 +171,59 @@ fn letter(colour: Color) -> char {
         .map_or('?', |(_, letter)| *letter)
 }
 
-/// The screen as a snapshot: its text, its text colours and its background colours.
-fn snapshot(buf: &Buffer) -> String {
+/// A cell's attributes as one character, for the `NO_COLOR` snapshots: the sum of bold 1, dim 2,
+/// italic 4, underlined 8 and reversed 16, written in base 32 (`0`-`9`, then `a`-`v`).
+fn attributes(modifier: Modifier) -> char {
+    let bits = [
+        Modifier::BOLD,
+        Modifier::DIM,
+        Modifier::ITALIC,
+        Modifier::UNDERLINED,
+        Modifier::REVERSED,
+    ]
+    .iter()
+    .enumerate()
+    .filter(|(_, bit)| modifier.contains(**bit))
+    .fold(0, |sum, (at, _)| sum | (1 << at));
+    char::from_digit(bits, 32).unwrap_or('?')
+}
+
+/// The screen as a snapshot: its text, its text colours and its background colours; in `NO_COLOR`
+/// (`Mode::Mono`), its text and each cell's attributes instead.
+fn snapshot(buf: &Buffer, mode: Mode) -> String {
     let area = buf.area;
     let mut grids = [String::new(), String::new(), String::new()];
     for y in 0..area.height {
         for x in 0..area.width {
             let cell = &buf[(x, y)];
             grids[0].push_str(cell.symbol());
-            grids[1].push(letter(cell.fg));
-            grids[2].push(letter(cell.bg));
+            if mode == Mode::Mono {
+                grids[1].push(attributes(cell.modifier));
+            } else {
+                grids[1].push(letter(cell.fg));
+                grids[2].push(letter(cell.bg));
+            }
         }
         for grid in &mut grids {
             grid.push('\n');
         }
     }
+    if mode == Mode::Mono {
+        return grids[..2].join("\n");
+    }
     grids.join("\n")
 }
 
 fn draw(app: &App) -> String {
+    draw_in(app, Mode::Truecolor)
+}
+
+fn draw_in(app: &App, mode: Mode) -> String {
     let area = app.layout.status;
     let height = area.y + 1;
     let mut terminal = Terminal::new(TestBackend::new(area.width, height)).unwrap();
-    terminal
-        .draw(|f| frame(f, app, NOW, Mode::Truecolor))
-        .unwrap();
-    snapshot(terminal.backend().buffer())
+    terminal.draw(|f| frame(f, app, NOW, mode)).unwrap();
+    snapshot(terminal.backend().buffer(), mode)
 }
 
 fn snapshot_path(name: &str) -> PathBuf {
@@ -206,7 +234,12 @@ fn snapshot_path(name: &str) -> PathBuf {
 
 /// Draws `app` and compares the screen with the snapshot `name`.
 fn check(name: &str, app: &App) {
-    let drawn = draw(app);
+    check_in(name, app, Mode::Truecolor);
+}
+
+/// Draws `app` for a terminal in `mode` and compares the screen with the snapshot `name`.
+fn check_in(name: &str, app: &App, mode: Mode) {
+    let drawn = draw_in(app, mode);
     let path = snapshot_path(&format!("{name}.txt"));
     let kept = fs::read_optional(&path).unwrap().map(String::from_utf8);
     if kept
@@ -432,4 +465,103 @@ fn under_150_columns_f_lays_the_right_column_over_the_centre() {
     prefixed(&mut app, KeyCode::Char('f'));
     press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     check("overlay", &app);
+}
+
+/// What the failed agent left in its log: its work, then the error it died of.
+const FAILED_LOG: &[u8] = b"\x1b[1mclaude\x1b[0m  \xc2\xb7  app/fix-login\r\n\r\n> Make the login retry with backoff.\r\n\r\n\x1b[32m\xe2\x97\x8f\x1b[0m \x1b[1mRead\x1b[0m src/auth/session.ts\r\n\r\n\x1b[31merror:\x1b[0m stream closed: connection reset by peer\r\nclaude exited with code 1\r\n";
+
+/// The application whose open `fix-login` agent failed 12 minutes ago, after 41 minutes, its log
+/// read.
+fn failed_app(width: u16, height: u16) -> App {
+    let mut fleets = fleets();
+    if let Ok(fleet) = fleets[0].fleet.as_mut() {
+        let fix = &mut fleet.worktrees[0];
+        fix.holder = HolderStatus::Gone;
+        fix.state = State::Failed;
+        fix.changed_files = Some(2);
+        fix.agent_end = Some(AgentEnd::new(
+            Some(1),
+            None,
+            false,
+            minutes_ago(53),
+            minutes_ago(12),
+        ));
+    }
+    let mut app = App::new(Rect::new(0, 0, width, height), None);
+    app.set_fleets(fleets);
+    app.changes_read(PathBuf::from("/code/app.wt/fix-login"), Ok(changes()));
+    app.log_read(
+        Path::new("/code/app.wt/fix-login"),
+        Ok(FAILED_LOG.to_vec()),
+        Instant::now(),
+    );
+    app
+}
+
+#[test]
+fn a_failed_agent_shows_its_last_output_and_the_card_under_it() {
+    check("failed", &failed_app(150, 44));
+}
+
+#[test]
+fn l_shows_the_failed_agents_log() {
+    let mut app = failed_app(150, 44);
+    press(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    check("log", &app);
+}
+
+#[test]
+fn the_picker_floats_over_a_narrow_screen_filtered_by_what_is_typed() {
+    let mut app = app(90, 30, fleets());
+    prefixed(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('o'), KeyModifiers::NONE);
+    check("picker", &app);
+}
+
+#[test]
+fn help_lists_the_keys() {
+    let mut app = app(120, 36, fleets());
+    prefixed(&mut app, KeyCode::Char('?'));
+    check("help", &app);
+}
+
+#[test]
+fn the_side_menu_filters_as_it_is_typed() {
+    let mut app = app(120, 36, fleets());
+    prefixed(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "doc".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    check("filter", &app);
+}
+
+#[test]
+fn n_asks_the_new_worktrees_name_under_its_project() {
+    let mut app = app(150, 44, fleets());
+    prefixed(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+    for c in "retry-jobs".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    check("new-worktree", &app);
+}
+
+/// The design's 4f: `NO_COLOR` at 180 by 48, the split with Neovim focused and the prefix armed.
+#[test]
+fn no_color_keeps_attributes_only() {
+    let mut app = app(180, 48, fleets());
+    prefixed(&mut app, KeyCode::Char('|'));
+    prefixed(&mut app, KeyCode::Char('l'));
+    nvim_draws(&mut app);
+    press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    check_in("no-color", &app, Mode::Mono);
+}
+
+/// The design's 4g: `NO_COLOR` at 120 by 36, the side menu focused, its items compact.
+#[test]
+fn no_color_at_120_by_36_with_the_side_menu_focused() {
+    let mut app = app(120, 36, fleets());
+    prefixed(&mut app, KeyCode::Char('h'));
+    check_in("no-color-120x36", &app, Mode::Mono);
 }

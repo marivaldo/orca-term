@@ -416,6 +416,81 @@ fn enter_starts_the_agent_of_a_worktree_with_none() {
 }
 
 #[test]
+fn a_failed_agent_shows_its_card_its_log_and_r_resumes_it() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("no agent running");
+    app.type_in(b"\r");
+    app.wait_for("fake claude ready");
+    app.type_in(b"exit 3\r");
+    app.wait_for("agent stopped");
+    app.wait_for("exit 3 after");
+    app.wait_for("resume session");
+
+    app.type_in(b"l");
+    app.wait_for("agent log");
+    app.wait_for("bye");
+    app.type_in(b"\x1b");
+    app.wait_for("resume session");
+
+    app.type_in(b"r");
+    wait_until("the card going once the agent runs again", || {
+        !app.shown().contains("agent stopped")
+    });
+    app.wait_for("fake claude ready");
+    app.type_in(b"again\r");
+    app.wait_for("you said: again");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn the_picker_opens_a_worktree_by_name_and_n_creates_one() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01w");
+    app.wait_for("switch worktree");
+    app.type_in(b"fi\r");
+    app.wait_for("repo/fix");
+
+    app.type_in(b"\x01h");
+    app.type_in(b"n");
+    app.wait_for("new worktree in repo");
+    app.type_in(b"made-here\r");
+    app.wait_for("repo/made-here");
+    assert!(
+        fx.repo
+            .home
+            .join("orca-term/worktrees/repo/made-here")
+            .is_dir()
+    );
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn a_draft_pull_request_of_the_primary_checkout_on_the_default_branch_is_refused() {
+    let fx = AgentRepo::new();
+    fx.ok(&["project", "add"]);
+
+    let mut app = Running::start(&fx);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01P");
+    app.wait_for("the repository's default branch");
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
 fn started_in_the_primary_checkout_it_opens_it_tagged_and_enter_starts_its_agent() {
     let fx = AgentRepo::new();
     fx.new_worktree("fix");

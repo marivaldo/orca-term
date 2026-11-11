@@ -56,7 +56,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::adapters::fs::{self, FileLock, WorktreeLock};
 use crate::adapters::nvim::Sent;
 use crate::adapters::{self, env, git, program, script};
-use crate::domain::agent::{Agent, HolderStatus};
+use crate::domain::agent::{Agent, AgentEnd, HolderStatus};
 use crate::domain::branch::StartPoint;
 use crate::domain::config::{self, Env, Layer};
 use crate::domain::error::{BusyReason, TypedError};
@@ -99,6 +99,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
         worktree.operation = derived.operation;
         worktree.pr = derived.pr;
         worktree.last_activity = derived.last_activity;
+        worktree.agent_end = derived.agent_end;
     }
     Ok(fleet)
 }
@@ -158,6 +159,8 @@ pub(crate) struct Derived {
     pub(crate) pr: Option<PrFacts>,
     /// When its current session was last active (`domain/session.rs`).
     pub(crate) last_activity: Option<u64>,
+    /// How its agent ended last, while no holder is alive (`domain/agent.rs`, #178).
+    pub(crate) agent_end: Option<AgentEnd>,
 }
 
 impl Derived {
@@ -173,6 +176,7 @@ impl Derived {
             operation: None,
             pr: None,
             last_activity: None,
+            agent_end: None,
         }
     }
 }
@@ -205,7 +209,25 @@ pub(crate) fn derive_state(admin: &AdminDir) -> Result<Derived> {
     derived.operation = read_operation(admin);
     derived.pr = read_pr(admin).usable();
     derived.last_activity = read_last_activity(admin);
+    if !derived.holder.is_alive() {
+        derived.agent_end = read_agent_end(admin);
+    }
     Ok(derived)
+}
+
+/// How the agent of the worktree whose admin directory is `admin` ended last, from the record its
+/// holder left (`agent-end.json`, #178). Only reads, and never fails: a record that cannot be read
+/// says nothing.
+fn read_agent_end(admin: &AdminDir) -> Option<AgentEnd> {
+    let bytes = fs::read_optional(&admin.agent_end()).ok().flatten();
+    AgentEnd::read(bytes.as_deref())
+}
+
+/// The agent's last output in the worktree at `worktree`, as its holder kept it when the agent
+/// ended (`agent.log`, #178): empty when it left none. The application shows it as the log.
+pub(crate) fn read_agent_log(worktree: &Path) -> Result<Vec<u8>> {
+    let admin = git::admin_dir(worktree)?;
+    Ok(fs::read_optional(&admin.agent_log())?.unwrap_or_default())
 }
 
 /// When the current session of the worktree whose admin directory is `admin` was last active, from
@@ -302,6 +324,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
                 operation: None,
                 pr: None,
                 last_activity: None,
+                agent_end: None,
             });
         }
         // The lock is free, but the setup may have ended between the read and the probe: it
@@ -336,6 +359,7 @@ fn derive_agent_state(admin: &AdminDir) -> Result<Derived> {
         operation: None,
         pr: None,
         last_activity: None,
+        agent_end: None,
     })
 }
 
