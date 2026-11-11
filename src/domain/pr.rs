@@ -133,6 +133,29 @@ pub(crate) struct PullRequest {
     /// written now carries it, which an older orca-term ignores. So it needs no new schema.
     #[serde(default)]
     pub(crate) head: Option<String>,
+    /// Each check, in the order gh lists them (#177), for the application's right column. A
+    /// `pr.json` written before has none and reads as empty; one written now carries them, which an
+    /// older orca-term ignores, as with `head`.
+    #[serde(default)]
+    pub(crate) runs: Vec<CheckRun>,
+}
+
+/// One check of a pull request: a check run's name, or a commit status's context, and how it
+/// reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CheckRun {
+    pub(crate) name: String,
+    pub(crate) result: CheckResult,
+}
+
+/// How one check reads, in the buckets gh's own `gh pr checks` sorts them into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CheckResult {
+    Pass,
+    Fail,
+    Pending,
+    Skip,
 }
 
 /// The number of the pull request in `found` when it proves a branch whose tip is the commit
@@ -235,10 +258,14 @@ struct GhView {
     head_ref_oid: Option<String>,
 }
 
-/// One entry of `statusCheckRollup`: a check run (`status` and, once completed, `conclusion`) or
-/// a commit status (`state`).
+/// One entry of `statusCheckRollup`: a check run (`name`, `status` and, once completed,
+/// `conclusion`) or a commit status (`context` and `state`).
 #[derive(Debug, Default, Deserialize)]
 struct RollupItem {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
@@ -257,52 +284,58 @@ fn parse_view(stdout: &[u8]) -> Result<PullRequest> {
         ("CLOSED", _) => PrState::Closed,
         (other, _) => bail!("unknown pull request state `{other}`"),
     };
+    let rollup = view.status_check_rollup.as_deref().unwrap_or_default();
     Ok(PullRequest {
         number: view.number,
         title: view.title,
         state,
         url: view.url,
-        checks: checks_of(view.status_check_rollup.as_deref().unwrap_or_default()),
+        checks: checks_of(rollup),
         head: view.head_ref_oid.filter(|head| !head.is_empty()),
+        runs: rollup.iter().map(run_of).collect(),
     })
 }
 
-/// How one check reads, in the buckets gh's own `gh pr checks` sorts them into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bucket {
-    Pass,
-    Fail,
-    Pending,
-    Skip,
+/// One entry of `statusCheckRollup` as a check: its name or context (`check` when it has
+/// neither), and its bucket.
+fn run_of(item: &RollupItem) -> CheckRun {
+    let name = item.name.as_deref().or(item.context.as_deref());
+    CheckRun {
+        name: name
+            .filter(|name| !name.is_empty())
+            .unwrap_or("check")
+            .to_owned(),
+        result: bucket(item),
+    }
 }
 
 /// The bucket of one entry of `statusCheckRollup`: its commit status, else its conclusion once
 /// completed, else its status. Anything not passed, failed or skipped is still pending.
-fn bucket(item: &RollupItem) -> Bucket {
+fn bucket(item: &RollupItem) -> CheckResult {
     let word = match (&item.state, item.status.as_deref()) {
         (Some(state), _) if !state.is_empty() => state.as_str(),
         (_, Some("COMPLETED")) => item.conclusion.as_deref().unwrap_or_default(),
         (_, status) => status.unwrap_or_default(),
     };
     match word {
-        "SUCCESS" => Bucket::Pass,
-        "SKIPPED" | "NEUTRAL" => Bucket::Skip,
+        "SUCCESS" => CheckResult::Pass,
+        "SKIPPED" | "NEUTRAL" => CheckResult::Skip,
         "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
-            Bucket::Fail
+            CheckResult::Fail
         }
-        _ => Bucket::Pending,
+        _ => CheckResult::Pending,
     }
 }
 
 /// The checks in one word: any failure is `failing`, else anything pending is `pending`, else
 /// any success is `passing`, else `none`.
 fn checks_of(rollup: &[RollupItem]) -> Checks {
-    let buckets: Vec<Bucket> = rollup.iter().map(bucket).collect();
-    if buckets.contains(&Bucket::Fail) {
+    let buckets: Vec<CheckResult> = rollup.iter().map(bucket).collect();
+    if buckets.contains(&CheckResult::Fail) {
         Checks::Failing
-    } else if buckets.contains(&Bucket::Pending) {
+    } else if buckets.contains(&CheckResult::Pending) {
         Checks::Pending
-    } else if buckets.contains(&Bucket::Pass) {
+    } else if buckets.contains(&CheckResult::Pass) {
         Checks::Passing
     } else {
         Checks::None
@@ -521,6 +554,7 @@ mod tests {
             url: "u".to_owned(),
             checks: Checks::None,
             head: head.map(str::to_owned),
+            runs: Vec::new(),
         })
     }
 
@@ -553,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_written_before_the_head_was_kept_reads_with_no_head() {
+    fn a_file_written_before_the_head_and_the_checks_were_kept_reads_with_neither() {
         let old = br#"{"schema":1,"fetched_at":3,"pr":{"number":12,"title":"t","state":"merged","url":"u","checks":"none"},"unavailable":null}"#;
         assert_eq!(
             read(Some(old)).usable(),
@@ -561,6 +595,35 @@ mod tests {
                 fetched_at: 3,
                 found: pr_with(PrState::Merged, None),
             })
+        );
+    }
+
+    #[test]
+    fn each_check_is_kept_with_its_name_and_its_result() {
+        let rollup = r#"[{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"},{"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","conclusion":""},{"__typename":"StatusContext","context":"ci/deploy","state":"PENDING"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]"#;
+        let pr = pr_of(&exited(true, &view("OPEN", true, rollup), ""));
+        let run = |name: &str, result| CheckRun {
+            name: name.to_owned(),
+            result,
+        };
+        assert_eq!(
+            pr.runs,
+            [
+                run("test", CheckResult::Pass),
+                run("lint", CheckResult::Fail),
+                run("build", CheckResult::Pending),
+                run("ci/deploy", CheckResult::Pending),
+                run("check", CheckResult::Skip),
+            ]
+        );
+        let facts = PrFacts {
+            fetched_at: 1,
+            found: Found::Pr(pr),
+        };
+        assert_eq!(
+            read(Some(&to_bytes(&facts).unwrap())).usable(),
+            Some(facts),
+            "pr.json keeps them"
         );
     }
 
@@ -658,6 +721,7 @@ mod tests {
             url: "u".to_owned(),
             checks: Checks::Pending,
             head: Some(HEAD.to_owned()),
+            runs: Vec::new(),
         };
         for found in [
             Found::Pr(pr),

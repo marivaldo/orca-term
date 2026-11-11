@@ -35,6 +35,7 @@ pub(crate) mod session_resume;
 pub(crate) mod turn_blame;
 pub(crate) mod turn_diff;
 pub(crate) mod turn_ls;
+pub(crate) mod worktree_changes;
 pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;

@@ -1,8 +1,9 @@
 //! App: one frame of the application, drawn from its state in the "Quiet v2" look (ADR 0012,
-//! `prototype/terminal-application/design/`): the side menu, the centre with the agent's panel,
-//! and the status bar.
+//! `prototype/terminal-application/design/`): the side menu, the centre with the open worktree's
+//! panels, the right column (over the centre when it is an overlay), and the status bar.
 
 pub(crate) mod centre;
+pub(crate) mod right_column;
 pub(crate) mod side_menu;
 pub(crate) mod status;
 
@@ -28,6 +29,9 @@ pub(crate) fn frame(frame: &mut Frame<'_>, app: &App, now_ms: u64, mode: Mode) {
                 side_menu::draw(&mut p, app, card, now_ms);
             }
             centre::draw(&mut p, app);
+            if let Some(right) = app.layout.right {
+                right_column::draw(&mut p, app, right.area);
+            }
             status::draw(&mut p, app);
         }
         paint::finish(p.buf, mode);

@@ -6,10 +6,15 @@
 //! socket is there, so the core tells it when a worktree changes; registering earlier would not
 //! do, since the core forgets an address with nothing behind it. When the Neovim ends, or the
 //! application quits, its address leaves the registry and a socket file left behind is removed.
+//!
+//! A diff to open (#177) goes to every Neovim registered in the repository (`ops::nvim_diff`), on
+//! a thread of its own. When the worktree's own Neovim was just started and is not registered yet,
+//! the diff waits for it, and goes once it is.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -21,7 +26,7 @@ use crate::app::program::{self, Kind, ProgramId};
 use crate::domain::agent::Size;
 use crate::domain::nvim::Address;
 use crate::domain::open::Program as NvimProgram;
-use crate::ops::{nvim_register, nvim_unregister};
+use crate::ops::{nvim_diff, nvim_register, nvim_unregister};
 
 /// How long the programs have to end on quit, once hung up, before they are killed.
 const END_WITHIN: Duration = Duration::from_secs(1);
@@ -40,6 +45,26 @@ pub(crate) struct Running {
 struct Socket {
     path: PathBuf,
     registered: Registered,
+    /// A diff to ask for once it is registered.
+    diff: Option<Diff>,
+}
+
+/// A diff to open: the primary checkout, the worktree and the file.
+#[derive(Debug, Clone)]
+struct Diff {
+    primary: PathBuf,
+    worktree: PathBuf,
+    file: String,
+}
+
+impl Diff {
+    /// Asks the repository's Neovims for it, on a thread of its own: sending waits for their
+    /// answers, up to a bound.
+    fn send(self) {
+        thread::spawn(move || {
+            let _ = nvim_diff::run_in(&self.primary, &self.worktree, &self.file);
+        });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +93,7 @@ impl Running {
                     Socket {
                         path: socket,
                         registered: Registered::Waiting,
+                        diff: None,
                     },
                 );
                 argv
@@ -113,7 +139,27 @@ impl Running {
         }
     }
 
-    /// Registers each Neovim whose socket has appeared since the last look.
+    /// Asks the Neovims of the repository whose primary checkout is `primary` to open the diff of
+    /// `file` in the worktree at `worktree`: now, or once the worktree's own Neovim, just started,
+    /// is registered.
+    pub(crate) fn open_diff(&mut self, primary: PathBuf, worktree: PathBuf, file: String) {
+        let id = ProgramId {
+            worktree: worktree.clone(),
+            kind: Kind::Nvim,
+        };
+        let diff = Diff {
+            primary,
+            worktree,
+            file,
+        };
+        match self.sockets.get_mut(&id) {
+            Some(socket) if socket.registered == Registered::Waiting => socket.diff = Some(diff),
+            _ => diff.send(),
+        }
+    }
+
+    /// Registers each Neovim whose socket has appeared since the last look, and asks it for the
+    /// diff waiting for it.
     pub(crate) fn register_listening(&mut self) {
         for (id, socket) in &mut self.sockets {
             if socket.registered != Registered::Waiting || !fs::is_socket(&socket.path) {
@@ -126,6 +172,9 @@ impl Running {
             } else {
                 Registered::Failed
             };
+            if let Some(diff) = socket.diff.take() {
+                diff.send();
+            }
         }
     }
 

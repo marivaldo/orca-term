@@ -1438,6 +1438,7 @@ mod tests {
                 url: "https://github.com/o/r/pull/12".to_owned(),
                 checks,
                 head: None,
+                runs: Vec::new(),
             })
         };
         let all = Refreshed {
@@ -1494,6 +1495,7 @@ mod tests {
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::None,
                     head: None,
+                    runs: Vec::new(),
                 }),
             },
             uncommitted,
@@ -1530,6 +1532,7 @@ mod tests {
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::Passing,
                     head: None,
+                    runs: Vec::new(),
                 }),
             },
             method,

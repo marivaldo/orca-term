@@ -88,7 +88,7 @@ fn read_setup(admin: &AdminDir, state: &State) -> Result<Option<SetupDetail>> {
 /// branch: `git merge-base`, then `git rev-list --left-right --count`. `None` when there is no
 /// local default branch (`origin/` is never used: nothing is fetched, and the local branch is the
 /// one the person merges into) or when the histories share no commit.
-fn read_drift(primary: &PrimaryCheckout, worktree: &Path) -> Result<Option<Drift>> {
+pub(crate) fn read_drift(primary: &PrimaryCheckout, worktree: &Path) -> Result<Option<Drift>> {
     let Some(branch) = git::local_default_branch(primary)? else {
         return Ok(None);
     };

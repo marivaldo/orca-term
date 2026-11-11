@@ -1,5 +1,5 @@
 //! App: the application's screens, drawn on ratatui's `TestBackend` and compared with the
-//! snapshots in `src/app/snapshots/` (#174). A snapshot is the screen's text, then the colour of
+//! snapshots in `src/app/snapshots/` (#174, #176, #177). A snapshot is the screen's text, then the colour of
 //! each cell's text, then of its background, one letter per theme token (see [`LETTERS`]).
 //!
 //! When a screen changes, the test writes what it drew beside the snapshot as `<name>.new.txt`
@@ -25,8 +25,11 @@ use crate::app::program::{Kind, ProgramId};
 use crate::app::state::App;
 use crate::app::theme::{self, Tok};
 use crate::domain::agent::HolderStatus;
+use crate::domain::branch::Branch;
+use crate::domain::changes::{Change, ChangedFile, Changes, Lines};
+use crate::domain::detail::Drift;
 use crate::domain::fleet::Worktree;
-use crate::domain::pr::{Checks, Found, PrFacts, PrState, PullRequest};
+use crate::domain::pr::{CheckResult, CheckRun, Checks, Found, PrFacts, PrState, PullRequest};
 use crate::domain::project::ProjectFleet;
 use crate::domain::state::State;
 
@@ -66,6 +69,7 @@ fn with_pr(mut worktree: Worktree, number: u64, checks: Checks) -> Worktree {
             url: String::new(),
             checks,
             head: None,
+            runs: Vec::new(),
         }),
     });
     worktree
@@ -119,11 +123,37 @@ fn fleets() -> Vec<ProjectFleet> {
     ]
 }
 
-/// The application on a screen `width` by `height`, its fleets read and the open worktree's agent
-/// showing a prompt.
+/// `fix-login`'s changes, as the design shows them: two files modified, one added, one deleted,
+/// two commits ahead of `main`.
+fn changes() -> Changes {
+    let file = |path: &str, change, added, deleted| ChangedFile {
+        path: path.to_owned(),
+        change,
+        lines: Some(Lines { added, deleted }),
+    };
+    Changes {
+        files: vec![
+            file("app/templates/password.html", Change::Deleted, 0, 10),
+            file("src/auth/flag.rs", Change::Added, 31, 0),
+            file("src/auth/login.rs", Change::Modified, 18, 9),
+            file("src/auth/session.rs", Change::Modified, 6, 2),
+        ],
+        drift: Some(Drift {
+            against: Branch::new("main"),
+            ahead: 2,
+            behind: 0,
+        }),
+    }
+}
+
+/// The application on a screen `width` by `height`, its fleets read, the open worktree's agent
+/// showing a prompt and its changes read.
 fn app(width: u16, height: u16, fleets: Vec<ProjectFleet>) -> App {
     let mut app = App::new(Rect::new(0, 0, width, height), None);
     app.set_fleets(fleets);
+    if let Some(open) = app.open.clone() {
+        app.changes_read(open, Ok(changes()));
+    }
     if let Some(panel) = app.panel.as_mut() {
         panel.heard(Heard::Output(
             b"\x1b[1mfake claude\x1b[0m ready\r\n\r\n\x1b[33m? Allow edits to src/auth/session.ts?\x1b[0m\r\n  1. Yes\r\n  2. No\r\n\r\n> "
@@ -346,4 +376,60 @@ fn a_worktree_with_no_agent_says_how_to_start_one() {
     press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
     press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
     check("no-agent", &app);
+}
+
+/// `fix-login`'s pull request as a draft with three checks: one passed, one failed, one running.
+fn draft_with_checks() -> Vec<ProjectFleet> {
+    let mut fleets = fleets();
+    if let Ok(fleet) = fleets[0].fleet.as_mut()
+        && let Some(PrFacts {
+            found: Found::Pr(pr),
+            ..
+        }) = fleet.worktrees[0].pr.as_mut()
+    {
+        pr.state = PrState::Draft;
+        let run = |name: &str, result| CheckRun {
+            name: name.to_owned(),
+            result,
+        };
+        pr.runs = vec![
+            run("test", CheckResult::Pass),
+            run("lint", CheckResult::Fail),
+            run("build", CheckResult::Pending),
+        ];
+    }
+    fleets
+}
+
+#[test]
+fn the_right_column_with_a_pull_request() {
+    check("right-column", &app(180, 48, draft_with_checks()));
+}
+
+#[test]
+fn the_right_column_without_a_pull_request_focused() {
+    let mut fleets = fleets();
+    if let Ok(fleet) = fleets[0].fleet.as_mut() {
+        fleet.worktrees[0].pr = Some(PrFacts {
+            fetched_at: NOW,
+            found: Found::NoPr,
+        });
+    }
+    let mut app = app(180, 48, fleets);
+    prefixed(&mut app, KeyCode::Char('l'));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    check("right-column-no-pr", &app);
+}
+
+#[test]
+fn under_150_columns_the_summary_shows_in_the_centres_header() {
+    check("summary", &app(120, 36, fleets()));
+}
+
+#[test]
+fn under_150_columns_f_lays_the_right_column_over_the_centre() {
+    let mut app = app(120, 36, draft_with_checks());
+    prefixed(&mut app, KeyCode::Char('f'));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    check("overlay", &app);
 }

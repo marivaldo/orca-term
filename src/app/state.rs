@@ -1,15 +1,17 @@
-//! App: the application's state and what each key does to it (#174, #176). Nothing here touches
-//! the terminal, the holder or a process: a key gives back the effects the run loop carries out
-//! (bytes for the agent or a program, a holder to attach to, an agent or a program to start, a
-//! size to tell, quitting), so every key is tested on its own.
+//! App: the application's state and what each key does to it (#174, #176, #177). Nothing here
+//! touches the terminal, the holder or a process: a key gives back the effects the run loop carries
+//! out (bytes for the agent or a program, a holder to attach to, an agent or a program to start, a
+//! size to tell, a diff to open in Neovim, quitting), so every key is tested on its own.
 //!
-//! Every key goes to the focused part, the side menu or the focused panel, except the prefix,
-//! `Ctrl-a`, which arms the application's own keys for one keystroke (ADR 0012): `h` and `l` move
-//! the focus (between the split's halves too), `j` and `k` open the next or previous worktree,
-//! `1`, `2` and `3` show the agent, Neovim or the shell, `|` splits, `z` zooms, `a` sends a literal
-//! `Ctrl-a`, `q` quits, and `esc` (or waiting 1.5 s) disarms it.
+//! Every key goes to the focused part, the side menu, the focused panel or the right column,
+//! except the prefix, `Ctrl-a`, which arms the application's own keys for one keystroke (ADR
+//! 0012): `h` and `l` move the focus (between the split's halves and to the right column too), `j`
+//! and `k` open the next or previous worktree, `1`, `2` and `3` show the agent, Neovim or the
+//! shell, `|` splits, `z` zooms, `f` shows or hides the right column, `a` sends a literal `Ctrl-a`,
+//! `q` quits, and `esc` (or waiting 1.5 s) disarms it.
 
 mod programs;
+mod right_column;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,8 @@ use crate::app::{keys, menu};
 use crate::domain::agent::Size;
 use crate::domain::project::ProjectFleet;
 
+pub(crate) use right_column::ChangesRead;
+
 /// How long the prefix waits for its key.
 pub(crate) const PREFIX_FOR: Duration = Duration::from_millis(1500);
 
@@ -41,6 +45,8 @@ pub(crate) enum Focus {
     SideMenu,
     /// The centre's focused panel, the view's tab.
     Centre,
+    /// The right column, whose cursor moves over the changed files.
+    RightColumn,
 }
 
 /// What the run loop must do after a key or a change.
@@ -60,6 +66,13 @@ pub(crate) enum Effect {
     TypeInto(ProgramId, Vec<u8>),
     /// Tell this Neovim or shell its panel is now this size.
     Resize(ProgramId, Size),
+    /// Ask the Neovims working in the worktree at `worktree`, of the repository whose primary
+    /// checkout is `primary`, to open the diff of `file` (relative to the worktree).
+    OpenDiff {
+        primary: PathBuf,
+        worktree: PathBuf,
+        file: String,
+    },
     /// Quit the application. The agents keep running; the Neovims and shells end.
     Quit,
 }
@@ -82,6 +95,10 @@ pub(crate) struct App {
     pub(crate) panel: Option<Panel>,
     /// Every worktree's Neovim and shell started so far, kept while the application runs.
     pub(crate) programs: BTreeMap<ProgramId, Program>,
+    /// The open worktree's changes, as last read off the run loop's thread.
+    pub(crate) changes: Option<ChangesRead>,
+    /// The right column's cursor: the index of a changed file.
+    pub(crate) file_cursor: usize,
     /// A word for the person in the status bar, and since when.
     pub(crate) message: Option<(String, Instant)>,
     /// Where everything went in the last frame.
@@ -108,6 +125,8 @@ impl App {
             prefix: None,
             panel: None,
             programs: BTreeMap::new(),
+            changes: None,
+            file_cursor: 0,
             message: None,
             layout: layout::layout(area, view),
             frame: 0,
@@ -143,7 +162,12 @@ impl App {
     /// Lays the screen out again for the view, and keeps the focus where it can be.
     fn relayout(&mut self) {
         self.layout = layout::layout(self.area, self.view);
-        if self.layout.side_menu.is_none() && self.focus == Focus::SideMenu {
+        let gone = match self.focus {
+            Focus::SideMenu => self.layout.side_menu.is_none(),
+            Focus::RightColumn => self.layout.right.is_none(),
+            Focus::Centre => false,
+        };
+        if gone {
             self.focus = Focus::Centre;
         }
     }
@@ -204,6 +228,9 @@ impl App {
             return Vec::new();
         }
         let alive = self.holder_alive(&path);
+        if self.open.as_ref() != Some(&path) {
+            self.file_cursor = 0;
+        }
         self.open = Some(path.clone());
         self.cursor = Some(path.clone());
         let status = if alive {
@@ -243,6 +270,7 @@ impl App {
         match self.focus {
             Focus::SideMenu => self.side_menu_key(key),
             Focus::Centre => self.centre_key(key),
+            Focus::RightColumn => self.right_column_key(key),
         }
     }
 
@@ -259,8 +287,10 @@ impl App {
             KeyCode::Char('|' | '\\') => self.view.toggle_split(),
             KeyCode::Char('z') => {
                 self.view.toggle_zoom();
+                self.view.files.overlay = false;
                 self.focus = Focus::Centre;
             }
+            KeyCode::Char('f') => self.toggle_files(),
             KeyCode::Char(PREFIX) => {
                 let ctrl_a = KeyEvent::new(KeyCode::Char(PREFIX), KeyModifiers::CONTROL);
                 return self.type_focused(ctrl_a);
@@ -271,8 +301,13 @@ impl App {
         Vec::new()
     }
 
-    /// `^a h`: from the split's right half to the agent, else to the side menu when it shows.
+    /// `^a h`: from the right column to the centre, from the split's right half to the agent, else
+    /// to the side menu when it shows.
     fn focus_left(&mut self) {
+        if self.focus == Focus::RightColumn {
+            self.leave_right_column();
+            return;
+        }
         if self.focus == Focus::Centre && self.view.left() {
             return;
         }
@@ -282,17 +317,24 @@ impl App {
         }
     }
 
-    /// `^a l`: from the side menu to the centre, else from the agent to the split's right half.
+    /// `^a l`: from the side menu to the centre, from the agent to the split's right half, else to
+    /// the right column when it shows.
     fn focus_right(&mut self) {
         match self.focus {
             Focus::SideMenu => self.focus = Focus::Centre,
-            Focus::Centre => self.view.right(),
+            Focus::Centre => {
+                if !self.view.right() && self.layout.right.is_some() {
+                    self.focus = Focus::RightColumn;
+                }
+            }
+            Focus::RightColumn => {}
         }
     }
 
     /// `^a 1`, `2`, `3`: shows `tab`, with the focus.
     fn show(&mut self, tab: Tab) {
         self.view.show(tab);
+        self.view.files.overlay = false;
         self.focus = Focus::Centre;
     }
 

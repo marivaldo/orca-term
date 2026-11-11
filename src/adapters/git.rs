@@ -473,10 +473,31 @@ pub(crate) fn has_changes(worktree: &Path) -> Result<bool> {
 /// names only its new path. Untracked files are not in it ([`untracked_files`]). `None` when
 /// `start` and `HEAD` share no commit (unrelated histories). Writes nothing.
 pub(crate) fn changed_paths(worktree: &Path, start: &StartPoint) -> Result<Option<Vec<u8>>> {
+    merge_base_diff(worktree, start, "--name-only")
+}
+
+/// Each changed file of the worktree at `worktree` with its letter, as [`changed_paths`] finds
+/// them: `git diff --name-status -z --find-renames --merge-base <start> --` (`domain/changes.rs`
+/// reads it). `None` when `start` and `HEAD` share no commit. Writes nothing.
+pub(crate) fn diff_name_status(worktree: &Path, start: &StartPoint) -> Result<Option<Vec<u8>>> {
+    merge_base_diff(worktree, start, "--name-status")
+}
+
+/// The lines each changed file of the worktree at `worktree` added and deleted, as
+/// [`changed_paths`] finds them: `git diff --numstat -z --find-renames --merge-base <start> --`
+/// (`domain/changes.rs` reads it). `None` when `start` and `HEAD` share no commit. Writes nothing.
+pub(crate) fn diff_numstat(worktree: &Path, start: &StartPoint) -> Result<Option<Vec<u8>>> {
+    merge_base_diff(worktree, start, "--numstat")
+}
+
+/// `git diff <format> -z --no-ext-diff --find-renames --merge-base <start> --` in the worktree at
+/// `worktree`: what differs between the merge base of `start` and `HEAD` and its files on disk.
+/// `None` when they share no commit.
+fn merge_base_diff(worktree: &Path, start: &StartPoint, format: &str) -> Result<Option<Vec<u8>>> {
     let start = start.to_string();
     let args = [
         "diff",
-        "--name-only",
+        format,
         "-z",
         "--no-ext-diff",
         "--find-renames",

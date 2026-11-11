@@ -1,7 +1,9 @@
 //! App: which of the open worktree's panels the centre shows (#176): one of the three tabs
 //! (`1 agent  2 nvim  3 shell`), the split of the agent beside Neovim (or the shell), and the zoom
-//! that fills the screen with the focused panel. The view is the same whichever worktree is open,
-//! so switching worktree keeps the tab, the split and the zoom.
+//! that fills the screen with the focused panel; and whether the right column shows (#177): as a
+//! column, wanted from 150 columns, or as an overlay on the centre, asked for under that. The view
+//! is the same whichever worktree is open, so switching worktree keeps the tab, the split, the zoom
+//! and the right column.
 
 /// One of a worktree's three panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -43,6 +45,17 @@ pub(crate) struct View {
     pub(crate) side: Tab,
     pub(crate) split: bool,
     pub(crate) zoom: bool,
+    /// How the right column shows.
+    pub(crate) files: Files,
+}
+
+/// How the right column (#177) shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Files {
+    /// Whether it shows as a column where the screen is wide enough: on until `^a f` hides it.
+    pub(crate) column: bool,
+    /// Whether it shows over the centre, where it cannot be a column.
+    pub(crate) overlay: bool,
 }
 
 impl Default for View {
@@ -52,6 +65,10 @@ impl Default for View {
             side: Tab::Nvim,
             split: false,
             zoom: false,
+            files: Files {
+                column: true,
+                overlay: false,
+            },
         }
     }
 }
@@ -86,11 +103,14 @@ impl View {
         self.zoom
     }
 
-    /// `^a l` in the centre: in the split, from the agent to the right half.
-    pub(crate) fn right(&mut self) {
+    /// `^a l` in the centre: in the split, from the agent to the right half. Returns whether the
+    /// focus moved; when not, it may go on to the right column.
+    pub(crate) fn right(&mut self) -> bool {
         if self.split && self.tab == Tab::Agent {
             self.tab = self.side;
+            return true;
         }
+        false
     }
 
     /// `^a |`: the split on or off. Turned on from the agent, the focus stays on the agent;
@@ -132,10 +152,10 @@ mod tests {
     fn h_and_l_move_between_the_splits_halves() {
         let mut view = View::default();
         view.toggle_split();
-        view.right();
+        assert!(view.right());
         assert_eq!(view.tab, Tab::Nvim);
-        view.right();
-        assert_eq!(view.tab, Tab::Nvim, "nothing right of Neovim");
+        assert!(!view.right(), "nothing right of Neovim in the centre");
+        assert_eq!(view.tab, Tab::Nvim);
         assert!(view.left());
         assert_eq!(view.tab, Tab::Agent);
         assert!(!view.left(), "left of the agent is the side menu");
@@ -145,13 +165,13 @@ mod tests {
     fn the_zoom_shows_the_focused_panel_and_keeps_the_split() {
         let mut view = View::default();
         view.toggle_split();
-        view.right();
+        assert!(view.right());
         view.toggle_zoom();
         assert_eq!(view.shown(), [Tab::Nvim]);
         assert!(view.left(), "zoomed, the focus stays in the centre");
         assert_eq!(view.shown(), [Tab::Agent], "and the zoom switches panel");
         assert!(view.left());
-        view.right();
+        assert!(view.right());
         assert_eq!(view.shown(), [Tab::Nvim]);
         view.toggle_zoom();
         assert_eq!(view.shown(), [Tab::Agent, Tab::Nvim], "the split is back");

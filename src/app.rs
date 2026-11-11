@@ -1,12 +1,14 @@
 //! App: `orca-term app`, the terminal application (ADR 0012): the side menu with every project's
 //! worktrees and, in the centre, the open worktree's panels: its agent's terminal attached to its
-//! holder (#174), its Neovim and its shell (#176). It is a client of the core: it reads the fleets
+//! holder (#174), its Neovim and its shell (#176); on the right, its changed files, its pull
+//! request and its branch (#177). It is a client of the core: it reads the fleets and the changes
 //! and starts agents through the operations, and talks to each agent's holder as `agent attach`
 //! does. Quitting stops no agent; it ends the Neovims and shells the application started.
 //!
 //! This file is the run loop. Everything that happens arrives as one message on one channel: a key
 //! or a paste (from the terminal's reader), the fleets read again, what the open agent's holder
-//! sent, an agent started, what a Neovim or a shell printed, a signal to quit. Each message
+//! sent, an agent started, what a Neovim or a shell printed, the open worktree's changes read
+//! (`watch.rs`), a signal to quit. Each message
 //! changes the state (`state.rs`), which answers with effects the loop carries out, and the loop
 //! draws the next frame.
 //!
@@ -19,6 +21,7 @@
 //! spinner.
 
 mod running;
+mod watch;
 
 pub(crate) mod draw;
 pub(crate) mod emulator;
@@ -50,7 +53,9 @@ use crate::app::paint::Mode;
 use crate::app::program::ProgramId;
 use crate::app::running::Running;
 use crate::app::state::{App, Effect};
+use crate::app::watch::Watched;
 use crate::domain::agent::{Size, StartMode};
+use crate::domain::changes::Changes;
 use crate::domain::project::ProjectFleet;
 use crate::domain::worktree::Target;
 use crate::ops::agent_start::{self, Wanted};
@@ -76,6 +81,8 @@ enum Msg {
     Started(PathBuf, Result<(), String>),
     /// What a worktree's Neovim or shell printed, or its end.
     Printed(ProgramId, Printed),
+    /// The changes of the worktree at this path, read now, or why they could not be.
+    Changes(PathBuf, Result<Changes, String>),
     /// A signal asked the application to end.
     Quit,
 }
@@ -98,6 +105,8 @@ pub(crate) fn run() -> Result<()> {
             link: Link::default(),
             programs: &mut programs,
             sender: &sender,
+            watch: watch::start(sender.clone()),
+            watched: None,
         };
         serve(&mut screen, &mut app, &mut parts, &messages, mode)
     });
@@ -110,6 +119,30 @@ struct Parts<'a> {
     link: Link,
     programs: &'a mut Running,
     sender: &'a Sender<Msg>,
+    /// Where to tell the reader of the open worktree's changes which worktree is open.
+    watch: Sender<Watched>,
+    /// What it was told last.
+    watched: Option<Watched>,
+}
+
+impl Parts<'_> {
+    /// Tells the reader of the changes which worktree is open, when that or its entry in the
+    /// fleets changed.
+    fn watch_open(&mut self, app: &App) {
+        let open = app.open.as_deref().and_then(|open| {
+            let (project, worktree) = menu::find(&app.fleets, open)?;
+            Some(Watched {
+                primary: project.fleet.as_ref().ok()?.primary.clone(),
+                worktree: worktree.clone(),
+            })
+        });
+        if open.is_some() && open != self.watched {
+            self.watched.clone_from(&open);
+            if let Some(watched) = open {
+                let _ = self.watch.send(watched);
+            }
+        }
+    }
 }
 
 /// Draws, waits for messages and carries out their effects, until the application quits.
@@ -138,6 +171,7 @@ fn serve(
             }
         }
         parts.link.follow(app);
+        parts.watch_open(app);
         parts.programs.register_listening();
         app.tick(Instant::now());
     }
@@ -196,6 +230,10 @@ fn handle(app: &mut App, parts: &mut Parts<'_>, message: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Started(path, result) => app.started(&path, result, now),
+        Msg::Changes(path, read) => {
+            app.changes_read(path, read);
+            Vec::new()
+        }
         Msg::Printed(id, printed) => {
             if matches!(printed, Printed::Ended(_)) {
                 parts.programs.ended(&id);
@@ -230,6 +268,11 @@ fn apply(app: &mut App, parts: &mut Parts<'_>, effect: Effect) -> bool {
         }
         Effect::TypeInto(id, bytes) => parts.programs.type_into(&id, bytes),
         Effect::Resize(id, size) => parts.programs.resize(&id, size),
+        Effect::OpenDiff {
+            primary,
+            worktree,
+            file,
+        } => parts.programs.open_diff(primary, worktree, file),
         Effect::Quit => return false,
     }
     true

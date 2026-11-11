@@ -1,5 +1,6 @@
-//! App: the status bar (#174, #176): the `orca` pill (`^A`, lit, while the prefix waits), the
-//! open worktree and where the keys go (`worktrees`, `agent`, `nvim`, `shell`, then `zoom`), the
+//! App: the status bar (#174, #176, #177): the `orca` pill (`^A`, lit, while the prefix waits), the
+//! open worktree and where the keys go (`worktrees`, `agent`, `nvim`, `shell`, `files`, then
+//! `zoom`), the
 //! counts of every project's worktrees (needs you, failed,
 //! running, quiet), and on the right the keys, or a message for a while. While the prefix waits the
 //! whole bar is lit and lists the keys it arms.
@@ -27,6 +28,7 @@ const ARMED_KEYS: &[(&str, &str)] = &[
     ("1 2 3", "panel"),
     ("z", "zoom"),
     ("|", "split"),
+    ("f", "files"),
     ("a", "send ^A"),
     ("q", "quit"),
     ("esc", "cancel"),
@@ -90,6 +92,7 @@ fn where_keys_go(app: &App, bar: Tok) -> Vec<Seg> {
     let focus = match app.focus {
         Focus::SideMenu => "worktrees",
         Focus::Centre => app.view.tab.name(),
+        Focus::RightColumn => "files",
     };
     let mut segs = vec![
         seg(glyph.to_string(), bold(tok)),
