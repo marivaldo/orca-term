@@ -356,16 +356,10 @@ fn the_right_column_lists_the_changed_files_and_enter_opens_a_diff_in_the_worktr
     let fx = AgentRepo::new();
     let worktree = fx.new_worktree("fix");
     fs::write(worktree.join("login.rs"), "one\ntwo\nthree\n").unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(&worktree)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-    };
-    git(&["add", "login.rs"]);
-    git(&["commit", "--quiet", "-m", "login"]);
+    // Through the fixture's git config, which gives the commit an author on any machine.
+    let at = worktree.to_str().unwrap();
+    fx.repo.git(&["-C", at, "add", "login.rs"]);
+    fx.repo.git(&["-C", at, "commit", "--quiet", "-m", "login"]);
     fs::write(worktree.join("notes.txt"), "a\nb\n").unwrap();
     fx.ok(&["project", "add"]);
     fx.write_tool("nvim", FAKE_NVIM);
