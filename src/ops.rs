@@ -676,8 +676,12 @@ pub(crate) fn change_projects<T>(change: impl FnOnce(&mut Projects) -> Result<T>
 /// The registry of running Neovims of the repository containing the current directory, in its
 /// git common dir: the same from the primary checkout and from every worktree.
 pub(crate) fn nvim_registry() -> Result<PathBuf> {
-    let cwd = env::current_dir()?;
-    let primary = git::primary_checkout(&cwd)?;
+    nvim_registry_of(&env::current_dir()?)
+}
+
+/// The registry of running Neovims of the repository containing `dir`.
+pub(crate) fn nvim_registry_of(dir: &Path) -> Result<PathBuf> {
+    let primary = git::primary_checkout(dir)?;
     Ok(nvim::registry_dir(&git::common_dir(&primary)?))
 }
 

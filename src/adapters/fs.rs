@@ -100,6 +100,31 @@ pub(crate) fn create_dir_all(path: &Path) -> Result<()> {
     fs::create_dir_all(path).with_context(|| format!("could not create {}", path.display()))
 }
 
+/// Creates the directory `path` for this user alone (mode 0700), or checks that the one already
+/// there is such a directory: not a symlink, owned by this user, closed to everyone else. A
+/// directory under `/tmp` that someone else made first is refused, so nobody else can reach what
+/// goes in it (#176). Its parent must exist.
+pub(crate) fn create_private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("could not create {}", path.display()));
+        }
+    }
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("could not inspect {}", path.display()))?;
+    let mine = meta.uid() == rustix::process::getuid().as_raw();
+    if !meta.is_dir() || !mine || meta.mode() & 0o077 != 0 {
+        anyhow::bail!(
+            "{} is not a directory of this user's alone; remove it and try again",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Removes the file at `path`; nothing to do when it does not exist.
 pub(crate) fn remove_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
@@ -396,6 +421,27 @@ mod tests {
         assert_eq!(read_optional(&path).unwrap().as_deref(), Some(&b"{}"[..]));
         let leftovers: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "the temp file is renamed away");
+    }
+
+    #[test]
+    fn a_private_dir_is_made_closed_and_one_open_to_others_or_a_link_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("orca-term");
+        create_private_dir(&dir).unwrap();
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        create_private_dir(&dir).unwrap();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_private_dir(&dir).is_err(), "open to others");
+
+        let link = tmp.path().join("link");
+        let target = tmp.path().join("target");
+        create_private_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(create_private_dir(&link).is_err(), "a symlink");
     }
 
     // That a lock is free again once released is checked by the black-box tests in

@@ -1,12 +1,17 @@
-//! App: the application's state and what each key does to it (#174). Nothing here touches the
-//! terminal or the holder: a key gives back the effects the run loop carries out (bytes for the
-//! agent, a holder to attach to, an agent to start, quitting), so every key is tested on its own.
+//! App: the application's state and what each key does to it (#174, #176). Nothing here touches
+//! the terminal, the holder or a process: a key gives back the effects the run loop carries out
+//! (bytes for the agent or a program, a holder to attach to, an agent or a program to start, a
+//! size to tell, quitting), so every key is tested on its own.
 //!
-//! Every key goes to the focused part, the side menu or the agent's panel, except the prefix,
+//! Every key goes to the focused part, the side menu or the focused panel, except the prefix,
 //! `Ctrl-a`, which arms the application's own keys for one keystroke (ADR 0012): `h` and `l` move
-//! the focus, `j` and `k` open the next or previous worktree, `a` sends a literal `Ctrl-a`, `q`
-//! quits, and `esc` (or waiting 1.5 s) disarms it.
+//! the focus (between the split's halves too), `j` and `k` open the next or previous worktree,
+//! `1`, `2` and `3` show the agent, Neovim or the shell, `|` splits, `z` zooms, `a` sends a literal
+//! `Ctrl-a`, `q` quits, and `esc` (or waiting 1.5 s) disarms it.
 
+mod programs;
+
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -15,6 +20,8 @@ use ratatui::layout::Rect;
 
 use crate::app::layout::{self, Layout};
 use crate::app::panel::{Panel, Status};
+use crate::app::program::{Kind, Program, ProgramId};
+use crate::app::view::{Tab, View};
 use crate::app::{keys, menu};
 use crate::domain::agent::Size;
 use crate::domain::project::ProjectFleet;
@@ -32,6 +39,7 @@ const PREFIX: char = 'a';
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
     SideMenu,
+    /// The centre's focused panel, the view's tab.
     Centre,
 }
 
@@ -44,7 +52,15 @@ pub(crate) enum Effect {
     Attach(PathBuf),
     /// Start the agent of the worktree at this path through the core, at this size.
     Start(PathBuf, Size),
-    /// Quit the application. The agents keep running.
+    /// Tell the agent's holder the panel is now this size.
+    SizeAgent(Size),
+    /// Start this worktree's Neovim or shell, at this size.
+    Run(ProgramId, Size),
+    /// Type these bytes into this Neovim or shell.
+    TypeInto(ProgramId, Vec<u8>),
+    /// Tell this Neovim or shell its panel is now this size.
+    Resize(ProgramId, Size),
+    /// Quit the application. The agents keep running; the Neovims and shells end.
     Quit,
 }
 
@@ -53,21 +69,27 @@ pub(crate) enum Effect {
 pub(crate) struct App {
     /// Every project's fleet, as the core last read it.
     pub(crate) fleets: Vec<ProjectFleet>,
-    /// The worktree whose agent the centre shows.
+    /// The worktree whose panels the centre shows.
     pub(crate) open: Option<PathBuf>,
     /// The side menu's cursor, while it has the focus.
     pub(crate) cursor: Option<PathBuf>,
     pub(crate) focus: Focus,
+    /// Which panels the centre shows, and which has the focus.
+    pub(crate) view: View,
     /// When the prefix was armed, while it waits for its key.
     pub(crate) prefix: Option<Instant>,
     /// The open worktree's agent terminal.
     pub(crate) panel: Option<Panel>,
+    /// Every worktree's Neovim and shell started so far, kept while the application runs.
+    pub(crate) programs: BTreeMap<ProgramId, Program>,
     /// A word for the person in the status bar, and since when.
     pub(crate) message: Option<(String, Instant)>,
     /// Where everything went in the last frame.
     pub(crate) layout: Layout,
     /// The working glyph's frame.
     pub(crate) frame: usize,
+    /// The screen's size, which the layout is made for.
+    area: Rect,
     /// The worktree to open first, when the fleets come: the one the application was started in.
     start_in: Option<PathBuf>,
 }
@@ -76,35 +98,65 @@ impl App {
     /// The application on a screen of `area`, before the fleets are read; it opens the worktree
     /// containing `start_in` first when there is one.
     pub(crate) fn new(area: Rect, start_in: Option<PathBuf>) -> Self {
+        let view = View::default();
         Self {
             fleets: Vec::new(),
             open: None,
             cursor: None,
             focus: Focus::Centre,
+            view,
             prefix: None,
             panel: None,
+            programs: BTreeMap::new(),
             message: None,
-            layout: layout::layout(area),
+            layout: layout::layout(area, view),
             frame: 0,
+            area,
             start_in,
         }
     }
 
-    /// The screen is now `area` large. Returns the agent's new size when the panel changed size,
-    /// for its holder.
-    pub(crate) fn fit(&mut self, area: Rect) -> Option<Size> {
-        self.layout = layout::layout(area);
+    /// The screen is now `area` large. Returns the sizes to tell the panels on screen whose size
+    /// changed: the agent's holder, a Neovim, a shell.
+    pub(crate) fn fit(&mut self, area: Rect) -> Vec<Effect> {
+        self.area = area;
+        self.relayout();
+        let cards = self.layout.cards.clone();
+        cards
+            .into_iter()
+            .filter_map(|card| match Kind::of(card.tab) {
+                None => self.resize_agent(card.body),
+                Some(kind) => self.resize_program(kind, card.body),
+            })
+            .collect()
+    }
+
+    /// Makes the agent's panel `body` large, telling its holder when that changed.
+    fn resize_agent(&mut self, body: Rect) -> Option<Effect> {
+        let panel = self.panel.as_mut()?;
+        panel
+            .screen
+            .resize(body)
+            .then(|| Effect::SizeAgent(size_of(body)))
+    }
+
+    /// Lays the screen out again for the view, and keeps the focus where it can be.
+    fn relayout(&mut self) {
+        self.layout = layout::layout(self.area, self.view);
         if self.layout.side_menu.is_none() && self.focus == Focus::SideMenu {
             self.focus = Focus::Centre;
         }
-        let body = self.layout.body;
-        let panel = self.panel.as_mut()?;
-        panel.resize(body).then(|| size_of(panel))
     }
 
     /// The fleets the core read now. Opens a worktree when none is open (or the open one is gone),
     /// and attaches to the open one's agent when it started meanwhile.
     pub(crate) fn set_fleets(&mut self, fleets: Vec<ProjectFleet>) -> Vec<Effect> {
+        let mut effects = self.read_fleets(fleets);
+        effects.extend(self.start_shown());
+        effects
+    }
+
+    fn read_fleets(&mut self, fleets: Vec<ProjectFleet>) -> Vec<Effect> {
         self.fleets = fleets;
         let still_there = self
             .open
@@ -159,7 +211,8 @@ impl App {
         } else {
             Status::NoAgent
         };
-        self.panel = Some(Panel::new(path.clone(), status, self.layout.body));
+        let body = self.layout.body_of(Tab::Agent);
+        self.panel = Some(Panel::new(path.clone(), status, body));
         if alive {
             vec![Effect::Attach(path)]
         } else {
@@ -169,6 +222,13 @@ impl App {
 
     /// A key the person pressed at `now`.
     pub(crate) fn key(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
+        let mut effects = self.press(key, now);
+        self.relayout();
+        effects.extend(self.start_shown());
+        effects
+    }
+
+    fn press(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
         let armed = self
             .prefix
             .take()
@@ -189,28 +249,51 @@ impl App {
     /// The key after the prefix.
     fn command(&mut self, key: KeyEvent) -> Vec<Effect> {
         match key.code {
-            KeyCode::Char('h') | KeyCode::Left => {
-                if self.layout.side_menu.is_some() {
-                    self.focus = Focus::SideMenu;
-                    self.cursor.clone_from(&self.open);
-                }
-                Vec::new()
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Char('h') | KeyCode::Left => self.focus_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.focus_right(),
+            KeyCode::Char('j') | KeyCode::Down => return self.open_step(1),
+            KeyCode::Char('k') | KeyCode::Up => return self.open_step(-1),
+            KeyCode::Char('1') => self.show(Tab::Agent),
+            KeyCode::Char('2') => self.show(Tab::Nvim),
+            KeyCode::Char('3') => self.show(Tab::Shell),
+            KeyCode::Char('|' | '\\') => self.view.toggle_split(),
+            KeyCode::Char('z') => {
+                self.view.toggle_zoom();
                 self.focus = Focus::Centre;
-                Vec::new()
             }
-            KeyCode::Char('j') | KeyCode::Down => self.open_step(1),
-            KeyCode::Char('k') | KeyCode::Up => self.open_step(-1),
-            KeyCode::Char(PREFIX) if self.typing() => {
-                vec![Effect::Type(keys::encode(
-                    KeyEvent::new(KeyCode::Char(PREFIX), KeyModifiers::CONTROL),
-                    false,
-                ))]
+            KeyCode::Char(PREFIX) => {
+                let ctrl_a = KeyEvent::new(KeyCode::Char(PREFIX), KeyModifiers::CONTROL);
+                return self.type_focused(ctrl_a);
             }
-            KeyCode::Char('q') => vec![Effect::Quit],
-            _ => Vec::new(),
+            KeyCode::Char('q') => return vec![Effect::Quit],
+            _ => {}
         }
+        Vec::new()
+    }
+
+    /// `^a h`: from the split's right half to the agent, else to the side menu when it shows.
+    fn focus_left(&mut self) {
+        if self.focus == Focus::Centre && self.view.left() {
+            return;
+        }
+        if self.layout.side_menu.is_some() {
+            self.focus = Focus::SideMenu;
+            self.cursor.clone_from(&self.open);
+        }
+    }
+
+    /// `^a l`: from the side menu to the centre, else from the agent to the split's right half.
+    fn focus_right(&mut self) {
+        match self.focus {
+            Focus::SideMenu => self.focus = Focus::Centre,
+            Focus::Centre => self.view.right(),
+        }
+    }
+
+    /// `^a 1`, `2`, `3`: shows `tab`, with the focus.
+    fn show(&mut self, tab: Tab) {
+        self.view.show(tab);
+        self.focus = Focus::Centre;
     }
 
     /// Opens the worktree `by` steps after (or before) the open one in the side menu's order.
@@ -244,40 +327,70 @@ impl App {
         }
     }
 
+    /// A key for the focused panel: the agent's, or a Neovim's or a shell's.
+    fn centre_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match Kind::of(self.view.tab) {
+            None => self.agent_key(key),
+            Some(kind) => self.program_key(kind, key),
+        }
+    }
+
     /// A key for the agent's panel: every key goes to a running agent; where none runs, `enter`
     /// starts it.
-    fn centre_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let size = self.panel.as_ref().map(size_of);
+    fn agent_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let body = self.layout.body_of(Tab::Agent);
         let Some(panel) = self.panel.as_mut() else {
             return Vec::new();
         };
         match &panel.status {
-            Status::Attached => vec![Effect::Type(keys::encode(key, panel.application_cursor()))],
+            Status::Attached => vec![Effect::Type(keys::encode(
+                key,
+                panel.screen.application_cursor(),
+            ))],
             Status::NoAgent | Status::Ended(_) if key.code == KeyCode::Enter => {
                 panel.status = Status::Starting;
-                let size = size.unwrap_or(Size::DEFAULT);
-                vec![Effect::Start(panel.worktree.clone(), size)]
+                vec![Effect::Start(panel.worktree.clone(), size_of(body))]
             }
             Status::NoAgent | Status::Ended(_) | Status::Starting => Vec::new(),
         }
     }
 
-    /// Whether keys go to a running agent right now.
-    fn typing(&self) -> bool {
-        self.focus == Focus::Centre
-            && self
-                .panel
-                .as_ref()
-                .is_some_and(|panel| panel.status == Status::Attached)
+    /// `key` typed into the focused panel, when something runs there to read it.
+    fn type_focused(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if self.focus != Focus::Centre {
+            return Vec::new();
+        }
+        match Kind::of(self.view.tab) {
+            None => match &self.panel {
+                Some(panel) if panel.status == Status::Attached => vec![Effect::Type(
+                    keys::encode(key, panel.screen.application_cursor()),
+                )],
+                _ => Vec::new(),
+            },
+            Some(kind) => self.type_into(kind, |program| {
+                keys::encode(key, program.screen.application_cursor())
+            }),
+        }
     }
 
-    /// Text the person pasted: the agent's, when keys go to it.
+    /// Text the person pasted: the focused panel's, when something runs there.
     pub(crate) fn paste(&mut self, text: &str) -> Vec<Effect> {
-        match &self.panel {
-            Some(panel) if self.typing() => {
-                vec![Effect::Type(keys::paste(text, panel.bracketed_paste()))]
-            }
-            _ => Vec::new(),
+        if self.focus != Focus::Centre {
+            return Vec::new();
+        }
+        match Kind::of(self.view.tab) {
+            None => match &self.panel {
+                Some(panel) if panel.status == Status::Attached => {
+                    vec![Effect::Type(keys::paste(
+                        text,
+                        panel.screen.bracketed_paste(),
+                    ))]
+                }
+                _ => Vec::new(),
+            },
+            Some(kind) => self.type_into(kind, |program| {
+                keys::paste(text, program.screen.bracketed_paste())
+            }),
         }
     }
 
@@ -329,8 +442,9 @@ impl App {
     /// The panel of the worktree at `path` is now attached to its holder, which replays its
     /// screen from the start, on a fresh screen.
     pub(crate) fn attached(&mut self, path: &Path) {
+        let body = self.layout.body_of(Tab::Agent);
         if let Some(panel) = self.panel.as_mut().filter(|panel| panel.worktree == path) {
-            *panel = Panel::new(path.to_owned(), Status::Attached, self.layout.body);
+            *panel = Panel::new(path.to_owned(), Status::Attached, body);
         }
     }
 
@@ -343,250 +457,13 @@ impl App {
     }
 }
 
-/// The agent's size: its panel's.
-fn size_of(panel: &Panel) -> Size {
-    let (rows, cols) = panel.size();
-    Size { rows, cols }
+/// A terminal's size: its area's.
+fn size_of(area: Rect) -> Size {
+    Size {
+        rows: area.height.max(1),
+        cols: area.width.max(1),
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::fixture;
-    use crate::domain::agent::HolderStatus;
-    use crate::domain::state::State;
-
-    const SCREEN: Rect = Rect::new(0, 0, 120, 36);
-
-    fn press(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn ctrl_a() -> KeyEvent {
-        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)
-    }
-
-    /// The application on two projects: `api` with `fix` (its agent running) and `docs` (none),
-    /// and `web` with `ui`.
-    fn app() -> (App, Instant) {
-        let mut fix = fixture::worktree("/p/api.wt/fix", State::Working);
-        fix.holder = HolderStatus::Alive;
-        let fleets = vec![
-            fixture::project(
-                "/p/api",
-                vec![fix, fixture::worktree("/p/api.wt/docs", State::Idle)],
-            ),
-            fixture::project(
-                "/p/web",
-                vec![fixture::worktree("/p/web.wt/ui", State::NoAgent)],
-            ),
-        ];
-        let mut app = App::new(SCREEN, None);
-        let effects = app.set_fleets(fleets);
-        assert_eq!(effects, [Effect::Attach(PathBuf::from("/p/api.wt/fix"))]);
-        (app, Instant::now())
-    }
-
-    fn open(app: &App) -> &str {
-        app.open
-            .as_deref()
-            .and_then(Path::to_str)
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn keys_go_to_the_agent_until_the_prefix_is_armed() {
-        let (mut app, now) = app();
-        assert_eq!(
-            app.key(press(KeyCode::Char('j')), now),
-            [Effect::Type(b"j".to_vec())]
-        );
-        assert_eq!(app.key(ctrl_a(), now), []);
-        assert!(app.prefix.is_some());
-        assert_eq!(app.key(press(KeyCode::Char('j')), now), []);
-        assert_eq!(open(&app), "/p/api.wt/docs", "^a j opens the next worktree");
-        assert!(app.prefix.is_none(), "the prefix lasts one key");
-    }
-
-    #[test]
-    fn the_prefix_sends_a_literal_ctrl_a_quits_and_cancels() {
-        let (mut app, now) = app();
-        app.key(ctrl_a(), now);
-        assert_eq!(
-            app.key(press(KeyCode::Char('a')), now),
-            [Effect::Type(vec![0x01])]
-        );
-        app.key(ctrl_a(), now);
-        assert_eq!(app.key(press(KeyCode::Esc), now), []);
-        assert_eq!(
-            app.key(press(KeyCode::Char('q')), now),
-            [Effect::Type(b"q".to_vec())]
-        );
-        app.key(ctrl_a(), now);
-        assert_eq!(app.key(press(KeyCode::Char('q')), now), [Effect::Quit]);
-    }
-
-    #[test]
-    fn the_prefix_expires() {
-        let (mut app, now) = app();
-        app.key(ctrl_a(), now);
-        app.tick(now + PREFIX_FOR);
-        assert!(app.prefix.is_none());
-        app.key(ctrl_a(), now);
-        let later = now + PREFIX_FOR + Duration::from_millis(1);
-        assert_eq!(
-            app.key(press(KeyCode::Char('q')), later),
-            [Effect::Type(b"q".to_vec())]
-        );
-    }
-
-    #[test]
-    fn the_previous_worktree_of_the_first_is_the_last() {
-        let (mut app, now) = app();
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('k')), now);
-        assert_eq!(open(&app), "/p/web.wt/ui");
-    }
-
-    #[test]
-    fn the_side_menu_moves_its_cursor_and_opens_with_enter() {
-        let (mut app, now) = app();
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('h')), now);
-        assert_eq!(app.focus, Focus::SideMenu);
-        assert_eq!(app.key(press(KeyCode::Char('j')), now), []);
-        assert_eq!(app.key(press(KeyCode::Down), now), []);
-        assert_eq!(app.cursor, Some(PathBuf::from("/p/web.wt/ui")));
-        assert_eq!(
-            open(&app),
-            "/p/api.wt/fix",
-            "moving the cursor opens nothing"
-        );
-        assert_eq!(app.key(press(KeyCode::Enter), now), []);
-        assert_eq!(open(&app), "/p/web.wt/ui");
-        assert_eq!(app.focus, Focus::Centre);
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('l')), now);
-        assert_eq!(app.focus, Focus::Centre);
-    }
-
-    #[test]
-    fn enter_starts_the_agent_where_none_runs() {
-        let (mut app, now) = app();
-        app.open(PathBuf::from("/p/api.wt/docs"));
-        assert_eq!(app.key(press(KeyCode::Char('x')), now), []);
-        let effects = app.key(press(KeyCode::Enter), now);
-        assert!(
-            matches!(&effects[..], [Effect::Start(path, _)] if path == Path::new("/p/api.wt/docs")),
-            "{effects:?}"
-        );
-        assert_eq!(app.key(press(KeyCode::Enter), now), [], "already starting");
-        let path = Path::new("/p/api.wt/docs");
-        assert_eq!(
-            app.started(path, Ok(()), now),
-            [Effect::Attach(path.to_owned())]
-        );
-        app.attached(path);
-        assert_eq!(
-            app.key(press(KeyCode::Char('x')), now),
-            [Effect::Type(b"x".to_vec())]
-        );
-    }
-
-    #[test]
-    fn a_failed_start_says_why() {
-        let (mut app, now) = app();
-        let path = PathBuf::from("/p/api.wt/docs");
-        app.open(path.clone());
-        app.key(press(KeyCode::Enter), now);
-        app.started(&path, Err("claude is not installed".to_owned()), now);
-        assert_eq!(
-            app.panel.as_ref().map(|panel| &panel.status),
-            Some(&Status::NoAgent)
-        );
-        assert_eq!(
-            app.message.as_ref().map(|(text, _)| text.as_str()),
-            Some("claude is not installed")
-        );
-    }
-
-    #[test]
-    fn an_agent_started_elsewhere_is_attached_on_the_next_read() {
-        let (mut app, _) = app();
-        app.open(PathBuf::from("/p/api.wt/docs"));
-        let mut fleets = std::mem::take(&mut app.fleets);
-        if let Ok(fleet) = fleets[0].fleet.as_mut() {
-            fleet.worktrees[1].holder = HolderStatus::Alive;
-        }
-        assert_eq!(
-            app.set_fleets(fleets),
-            [Effect::Attach(PathBuf::from("/p/api.wt/docs"))]
-        );
-    }
-
-    #[test]
-    fn under_100_columns_the_focus_stays_in_the_centre() {
-        let (mut app, now) = app();
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('h')), now);
-        assert_eq!(app.focus, Focus::SideMenu);
-        app.fit(Rect::new(0, 0, 90, 30));
-        assert_eq!(app.focus, Focus::Centre);
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('h')), now);
-        assert_eq!(app.focus, Focus::Centre);
-    }
-
-    #[test]
-    fn a_paste_reaches_the_agent_bracketed_when_it_asked() {
-        let (mut app, now) = app();
-        assert_eq!(app.paste("a\nb"), [Effect::Type(b"a\rb".to_vec())]);
-        app.key(ctrl_a(), now);
-        app.key(press(KeyCode::Char('h')), now);
-        assert_eq!(app.paste("a"), [], "the side menu takes no paste");
-    }
-
-    #[test]
-    fn the_panel_follows_the_screens_size() {
-        let (mut app, _) = app();
-        assert_eq!(app.fit(SCREEN), None);
-        assert_eq!(
-            app.fit(Rect::new(0, 0, 160, 40)),
-            Some(Size {
-                rows: 35,
-                cols: 119
-            })
-        );
-    }
-
-    #[test]
-    fn the_application_opens_the_worktree_it_was_started_in() {
-        let (app, _) = app();
-        let mut started = App::new(SCREEN, Some(PathBuf::from("/p/web.wt/ui/src")));
-        started.set_fleets(std::mem::take(&mut { app }.fleets));
-        assert_eq!(open(&started), "/p/web.wt/ui");
-    }
-
-    #[test]
-    fn started_in_a_worktree_inside_the_primary_checkout_it_opens_that_worktree() {
-        let fleets = || {
-            vec![fixture::project(
-                "/p/api",
-                vec![
-                    fixture::primary("/p/api", State::Idle),
-                    fixture::worktree("/p/api/.worktrees/fix", State::NoAgent),
-                ],
-            )]
-        };
-        let mut inside = App::new(SCREEN, Some(PathBuf::from("/p/api/.worktrees/fix/src")));
-        inside.set_fleets(fleets());
-        assert_eq!(open(&inside), "/p/api/.worktrees/fix");
-        let mut primary = App::new(SCREEN, Some(PathBuf::from("/p/api/src")));
-        primary.set_fleets(fleets());
-        assert_eq!(
-            open(&primary),
-            "/p/api",
-            "the primary checkout opens like any"
-        );
-    }
-}
+mod tests;
