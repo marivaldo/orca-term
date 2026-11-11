@@ -18,6 +18,11 @@
 //! commits while it stops moves the branch past that tip, and git then refuses the deletion
 //! atomically, so the branch is kept with its new commits. `--force` deletes whatever the tip.
 //!
+//! While git deletes the worktree, the removal holds git's `gitdir` file of the worktree locked
+//! alone, once the writes into its admin directory made outside its lock (`pr refresh`, `worktree
+//! seen`, the notes) end: none may write there meanwhile, as git would then fail to delete the
+//! directory ("Directory not empty") or a write would bring it back (`ops::lock_for_removal`).
+//!
 //! Once the worktree is removed, its chain of snapshots (`refs/orca-term/worktrees/<id>`,
 //! `domain/snapshot.rs`) is deleted too: that ref does not die with the admin directory.
 
@@ -37,7 +42,7 @@ use crate::domain::worktree::{
     self, BranchFate, BranchOutcome, KeptReason, Removal, Removed, Target,
 };
 use crate::ops::agent_stop::stop_holder;
-use crate::ops::{Changed, find_target, lock_worktree, read_fleet, read_pr};
+use crate::ops::{Changed, find_target, lock_for_removal, lock_worktree, read_fleet, read_pr};
 
 /// Removes the worktree `target` names or locates in the repository containing the current
 /// directory, stopping its agent first when one runs, then tells the running Neovims it is gone.
@@ -74,6 +79,9 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
         check_clean(worktree, removal, true)?;
     }
 
+    // Held while git deletes the worktree, so no other command writes into its admin directory
+    // meanwhile, which would keep git from deleting it.
+    let removing = lock_for_removal(&worktree.name, lock.admin())?;
     git::worktree_remove(primary, &worktree.path, removal).with_context(|| {
         let hint = match removal {
             Removal::Safe => "; pass --force to remove it anyway, discarding its changes",
@@ -84,6 +92,7 @@ pub(crate) fn run(target: &Target, removal: Removal) -> Result<Removed> {
             worktree.path.display()
         )
     })?;
+    drop(removing);
     if let Some(chain) = &chain {
         // The worktree is gone whatever happens here; a chain left behind is an orphan that
         // `worktree prune` deletes.

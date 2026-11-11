@@ -16,7 +16,10 @@
 )]
 mod support;
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use predicates::prelude::*;
 use serde_json::Value;
@@ -411,4 +414,90 @@ fn a_branch_checked_out_in_another_worktree_is_kept() {
     assert!(!one.exists());
     assert!(two.exists());
     assert!(has_branch(&repo, "shared"));
+}
+
+/// git's `gitdir` file of the worktree at `path`, in git's admin directory of that worktree
+/// (`.git/worktrees/<id>/gitdir`): a removal locks it, exclusively, while git deletes the
+/// worktree, and a write into the worktree's admin directory locks it, shared, while it writes.
+fn gitdir_file(repo: &Repo, path: &Path) -> PathBuf {
+    let git_dir = git_in(
+        repo,
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    );
+    PathBuf::from(git_dir.trim()).join("gitdir")
+}
+
+/// How long a test lets a command run before checking that it is still waiting: well past the
+/// time the command takes when nothing holds it up, and well within the time it waits.
+const STILL_WAITING: Duration = Duration::from_secs(1);
+
+#[test]
+fn a_write_into_the_admin_dir_waits_while_the_worktree_is_being_removed() {
+    let repo = Repo::new();
+    let fix = worktree(&repo, "worktrees/fix", "fix");
+    let gitdir = gitdir_file(&repo, &fix);
+    let seen = gitdir.with_file_name("orca-term").join("seen.json");
+    // As `worktree rm` holds it while git deletes the worktree.
+    let removing = File::open(&gitdir).unwrap();
+    removing.lock().unwrap();
+
+    let mut unseen =
+        repo.spawn_orca_term(&repo.root, &["worktree", "unseen", fix.to_str().unwrap()]);
+    thread::sleep(STILL_WAITING);
+    assert!(
+        unseen.try_wait().unwrap().is_none(),
+        "it waits for the removal"
+    );
+    assert!(
+        !seen.exists(),
+        "nothing is written while git deletes the worktree"
+    );
+
+    drop(removing);
+    assert!(unseen.wait().unwrap().success());
+    assert!(seen.exists());
+}
+
+#[test]
+fn a_removal_waits_for_a_write_into_the_admin_dir_in_flight() {
+    let repo = Repo::new();
+    let fix = worktree(&repo, "worktrees/fix", "fix");
+    let gitdir = gitdir_file(&repo, &fix);
+    // As a write into the worktree's admin directory holds it.
+    let writing = File::open(&gitdir).unwrap();
+    writing.lock_shared().unwrap();
+
+    let mut removal = repo.spawn_orca_term(&repo.root, &["worktree", "rm", fix.to_str().unwrap()]);
+    thread::sleep(STILL_WAITING);
+    assert!(
+        removal.try_wait().unwrap().is_none(),
+        "it waits for the write"
+    );
+    assert!(
+        fix.exists() && gitdir.exists(),
+        "nothing is removed meanwhile"
+    );
+
+    drop(writing);
+    assert!(removal.wait().unwrap().success());
+    assert!(!fix.exists());
+    assert!(!gitdir.exists());
+}
+
+#[test]
+fn a_removal_that_a_write_keeps_waiting_removes_nothing() {
+    let repo = Repo::new();
+    let fix = worktree(&repo, "worktrees/fix", "fix");
+    let gitdir = gitdir_file(&repo, &fix);
+    let writing = File::open(&gitdir).unwrap();
+    writing.lock_shared().unwrap();
+
+    rm(&repo, &["fix"])
+        .failure()
+        .stderr(predicate::str::contains(
+            "another orca-term command is writing to worktree fix",
+        ));
+    assert!(registered(&repo, &fix));
+    assert!(has_branch(&repo, "fix"));
 }
