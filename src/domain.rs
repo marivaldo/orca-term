@@ -31,6 +31,7 @@ pub(crate) mod session;
 pub(crate) mod setup;
 pub(crate) mod snapshot;
 pub(crate) mod state;
+pub(crate) mod terminal_modes;
 pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod worktree;

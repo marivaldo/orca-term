@@ -1,5 +1,6 @@
-//! Layers lint: the core's modules sit in five layers (ADR 0010, `ARCHITECTURE.md`), and code may
-//! use only its own layer and the layers below it.
+//! Layers lint: the core's modules sit in five layers (ADR 0010, `ARCHITECTURE.md`), with the
+//! terminal application a sixth between the operations and the edge (ADR 0012, #174), and code
+//! may use only its own layer and the layers below it.
 //!
 //! For every `.rs` file under `src/` it checks that:
 //! - the file's top-level module is in [`MODULES`], the table mapping modules to layers;
@@ -20,6 +21,7 @@ enum Layer {
     Domain,
     Adapters,
     Ops,
+    App,
     Edge,
     Main,
 }
@@ -30,6 +32,7 @@ impl Layer {
             Self::Domain => "domain",
             Self::Adapters => "adapters",
             Self::Ops => "ops",
+            Self::App => "app",
             Self::Edge => "edge",
             Self::Main => "main",
         }
@@ -41,6 +44,7 @@ impl Layer {
             Self::Domain => "//! Domain: ",
             Self::Adapters => "//! Adapter: ",
             Self::Ops => "//! Ops: ",
+            Self::App => "//! App: ",
             Self::Edge => "//! Edge: ",
             Self::Main => "//! Main: ",
         }
@@ -56,6 +60,7 @@ const MODULES: &[(&str, Layer)] = &[
     ("cli", Layer::Edge),
     ("output", Layer::Edge),
     ("ops", Layer::Ops),
+    ("app", Layer::App),
     ("adapters", Layer::Adapters),
     ("domain", Layer::Domain),
 ];
@@ -250,6 +255,21 @@ mod tests {
                 "src/adapters/git.rs:6: adapters code uses `crate::output`, from the higher edge layer",
             ]
         );
+    }
+
+    #[test]
+    fn the_application_sits_above_the_operations_and_below_the_edge() {
+        let text = "//! App: x.\nuse crate::ops::fleets;\nuse crate::adapters::holder;\n\
+                    use crate::cli::run;\n";
+        assert_eq!(
+            check_file("src/app/state.rs", text),
+            ["src/app/state.rs:4: app code uses `crate::cli`, from the higher edge layer"]
+        );
+        assert_eq!(
+            check_file("src/ops/fleets.rs", "//! Ops: x.\nuse crate::app::menu;\n"),
+            ["src/ops/fleets.rs:2: ops code uses `crate::app`, from the higher app layer"]
+        );
+        assert!(check_file("src/cli.rs", "//! Edge: x.\nuse crate::app;\n").is_empty());
     }
 
     #[test]

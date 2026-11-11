@@ -1,25 +1,39 @@
 //! Ops: `fleets`, which reads the fleet of every project at once (#149), for the sidebar that
-//! groups worktrees by project. Never writes.
+//! groups worktrees by project, and the quicker read the application's side menu repeats (#174).
+//! Never writes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 
 use crate::adapters::fs;
+use crate::domain::fleet::Fleet;
 use crate::domain::project::ProjectFleet;
-use crate::ops::read_projects;
 use crate::ops::worktree_ls::read_listed;
+use crate::ops::{read_fleet, read_projects};
 
 /// Every project's fleet, as `worktree ls` reads it, in the list's order. A project whose
 /// directory is gone, or whose fleet cannot be read, carries why instead, and the others are
-/// still read. Each project is read on a thread of its own, all at once.
+/// still read.
 pub(crate) fn run() -> Result<Vec<ProjectFleet>> {
+    read_every(read_listed)
+}
+
+/// Every project's fleet as [`run`] reads it, without counting each worktree's changed files or
+/// looking for the remote base: one listing of the worktrees by git per project, and their small
+/// state files. What the application reads again every second for its side menu (#174).
+pub(crate) fn run_quick() -> Result<Vec<ProjectFleet>> {
+    read_every(read_fleet)
+}
+
+/// Every project's fleet, each read by `read` on a thread of its own, all at once.
+fn read_every(read: fn(&Path) -> Result<Fleet>) -> Result<Vec<ProjectFleet>> {
     let projects = read_projects()?;
     let paths: Vec<PathBuf> = projects.paths().map(PathBuf::from).collect();
     std::thread::scope(|scope| {
         let readers: Vec<_> = paths
             .into_iter()
-            .map(|path| scope.spawn(move || read_project(path)))
+            .map(|path| scope.spawn(move || read_project(path, read)))
             .collect();
         readers
             .into_iter()
@@ -32,8 +46,9 @@ pub(crate) fn run() -> Result<Vec<ProjectFleet>> {
     })
 }
 
-/// The fleet of the project whose primary checkout is `path`, or why it cannot be read.
-fn read_project(path: PathBuf) -> ProjectFleet {
+/// The fleet of the project whose primary checkout is `path`, read by `read`, or why it cannot be
+/// read.
+fn read_project(path: PathBuf, read: fn(&Path) -> Result<Fleet>) -> ProjectFleet {
     if !fs::is_dir(&path) {
         let fleet = Err(anyhow!(
             "the project's directory {} is gone; take it off the list with `orca-term project \
@@ -47,7 +62,7 @@ fn read_project(path: PathBuf) -> ProjectFleet {
             fleet,
         };
     }
-    let fleet = read_listed(&path);
+    let fleet = read(&path);
     ProjectFleet {
         path,
         gone: false,

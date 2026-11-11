@@ -11,6 +11,7 @@ use clap::{CommandFactory as _, Parser, Subcommand};
 use crate::adapters::holder::HolderArgs;
 use crate::adapters::stdin;
 use crate::adapters::terminal::{self, DetachKey};
+use crate::app;
 use crate::domain::agent::{Agent, Size, StartMode};
 use crate::domain::branch::Branch;
 use crate::domain::note::{Anchor, LineRange};
@@ -80,6 +81,9 @@ enum Command {
         #[command(subcommand)]
         command: PrCommand,
     },
+    /// Open the terminal application in this terminal: every project's worktrees in the side menu,
+    /// the open worktree's agent in the centre. `Ctrl-a q` quits, and the agents keep running.
+    App,
     /// Open Neovim in the current directory with the orca-term sidebar showing, as `orca-term`
     /// with no arguments does at a terminal. Works without a terminal too; refused inside Neovim.
     Open,
@@ -673,7 +677,7 @@ impl Cli {
                 | ProjectCommand::Rm { json, .. } => *json,
             },
             Command::Fleets { json } | Command::Doctor { json } => *json,
-            Command::Hook { .. } | Command::Open => false,
+            Command::Hook { .. } | Command::Open | Command::App => false,
             Command::Nvim { command } => match command {
                 NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
             },
@@ -694,6 +698,7 @@ impl Cli {
             Some(Command::Project { command }) => matches!(command, ProjectCommand::Add { .. }),
             Some(
                 Command::Fleets { .. }
+                | Command::App
                 | Command::Worktree { .. }
                 | Command::Note { .. }
                 | Command::Turn { .. }
@@ -719,6 +724,10 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
     };
     match command {
         Command::Open => match open::run()? {},
+        Command::App => {
+            app::run()?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Doctor { .. } => Ok(output::doctor(&doctor::run(), cli.format())?),
         Command::Worktree { command } => run_worktree(command, cli.format()),
         Command::Agent { command } => run_agent(command, cli.format()),

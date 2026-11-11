@@ -60,9 +60,19 @@ pub(crate) fn run(
     wanted: &Wanted,
     approval: &mut Approval<'_>,
 ) -> Result<Started> {
-    let cwd = env::current_dir()?;
-    let fleet = read_fleet(&cwd)?;
-    let (worktree, admin) = find_target_admin(&fleet, &cwd, target)?;
+    run_in(&env::current_dir()?, target, wanted, approval)
+}
+
+/// [`run`], from the directory `dir` instead of the current one: the application starts the agent
+/// of the worktree it shows, wherever it was started (#174).
+pub(crate) fn run_in(
+    dir: &Path,
+    target: &Target,
+    wanted: &Wanted,
+    approval: &mut Approval<'_>,
+) -> Result<Started> {
+    let fleet = read_fleet(dir)?;
+    let (worktree, admin) = find_target_admin(&fleet, dir, target)?;
     worktree::check_can_run_agent(worktree)?;
     let lock = lock_worktree(&worktree.name, &worktree.path)?;
     start(&fleet, worktree, &admin, &lock, wanted, approval)

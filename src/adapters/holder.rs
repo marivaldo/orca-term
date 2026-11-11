@@ -11,6 +11,7 @@
     reason = "this adapter is the one place that starts the holder process"
 )]
 
+pub(crate) mod client;
 pub(crate) mod client_queue;
 pub(crate) mod events;
 pub(crate) mod peer;

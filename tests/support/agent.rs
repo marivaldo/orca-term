@@ -36,6 +36,11 @@ const SANDBOX_TOOLS: &[&str] = &["sandbox-exec", "bwrap", "socat"];
 /// variable names (never values), runs a test's prelude, echoes every line typed, prints 4 MiB on
 /// `flood`, exits with the code typed after `exit`, and ends on `SIGHUP` as claude does (unless
 /// the prelude says otherwise). The idle timeout ends a leaked one on its own.
+///
+/// The lines are read by a subshell that traps no signal, while the script itself only waits for
+/// it, reports each size and ends with its exit code: macOS's `/bin/bash` (3.2) can drop the last
+/// character of the line `read` is reading when a trapped signal arrives, and the holder resizes
+/// the terminal (a `WINCH`) right before it types a client's input.
 const FAKE_CLAUDE: &str = r#"#!/bin/bash
 if [ "$1" = "--version" ]; then echo "VERSION"; exit 0; fi
 log="$ORCA_TERM_FAKE_CLAUDE_LOG"
@@ -47,15 +52,21 @@ trap 'echo "size=$(/bin/stty size)"' WINCH
 trap 'echo "got HUP"; exit 129' HUP
 PRELUDE
 echo "fake claude ready"
-while IFS= read -r -t 120 line; do
-  case "$line" in
-    exit*)  echo "bye"; exit "${line#exit }" ;;
-    flood*) x=x; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do x="$x$x"; done
-            for i in $(eval echo {1..1024}); do echo "$x"; done; echo "flooded" ;;
-    *)      echo "you said: $line" ;;
-  esac
-done
-exit 0
+(
+  trap - WINCH
+  while IFS= read -r -t 120 line; do
+    case "$line" in
+      exit*)  echo "bye"; exit "${line#exit }" ;;
+      flood*) x=x; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do x="$x$x"; done
+              for i in $(eval echo {1..1024}); do echo "$x"; done; echo "flooded" ;;
+      *)      echo "you said: $line" ;;
+    esac
+  done
+  exit 0
+) <&0 &
+reader=$!
+while kill -0 "$reader" 2>/dev/null; do wait "$reader"; done
+wait "$reader"
 "#;
 
 /// A repository, the isolated PATH and the fake claude's log files.
@@ -466,6 +477,123 @@ fn collect(
         }
     });
     buffer
+}
+
+/// A client of a holder that speaks the protocol itself, as the application does (#174), rather
+/// than through `agent attach`: it sends its own sizes. What the holder sends is collected as it
+/// comes: the output frames' bytes, one after the other.
+#[derive(Debug)]
+pub(crate) struct RawClient {
+    stream: std::os::unix::net::UnixStream,
+    output: Arc<Mutex<Vec<u8>>>,
+    /// The first output frame, the replay, once it came.
+    replay: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl RawClient {
+    /// Connects to the holder whose admin directory is `admin`, through a link with a short path
+    /// at `link` (a unix socket's path holds about 100 bytes, and admin directories are longer).
+    pub(crate) fn connect(admin: &Path, link: &Path) -> Self {
+        if link.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(admin.join("agent.sock"), link).unwrap();
+        }
+        let stream = std::os::unix::net::UnixStream::connect(link).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let replay = Arc::new(Mutex::new(None));
+        let reader = stream.try_clone().unwrap();
+        let (sink, first) = (Arc::clone(&output), Arc::clone(&replay));
+        thread::spawn(move || read_frames(reader, &sink, &first));
+        Self {
+            stream,
+            output,
+            replay,
+        }
+    }
+
+    /// Sends this client's terminal size.
+    pub(crate) fn resize(&mut self, rows: u16, cols: u16) {
+        let mut payload = rows.to_be_bytes().to_vec();
+        payload.extend_from_slice(&cols.to_be_bytes());
+        self.send_frame(b'r', &payload);
+    }
+
+    /// Types `text` into the agent.
+    pub(crate) fn send(&mut self, text: &str) {
+        self.send_frame(b'i', text.as_bytes());
+    }
+
+    fn send_frame(&mut self, tag: u8, payload: &[u8]) {
+        let mut frame = vec![tag];
+        frame.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).unwrap();
+    }
+
+    /// How many bytes of output came so far: where [`Self::wait_for_since`] starts looking.
+    pub(crate) fn mark(&self) -> usize {
+        self.output.lock().unwrap().len()
+    }
+
+    /// Waits until `marker` was printed after the first `from` bytes of output, failing the test
+    /// with everything printed after them otherwise.
+    pub(crate) fn wait_for_since(&self, from: usize, marker: &str) {
+        let start = Instant::now();
+        while !self.printed_since(from, marker) {
+            assert!(
+                start.elapsed() < WAIT,
+                "`{marker}` after byte {from} never happened; the agent printed after it:\n{}",
+                self.output_since(from)
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn printed_since(&self, from: usize, marker: &str) -> bool {
+        let out = self.output.lock().unwrap();
+        out[from.min(out.len())..]
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    }
+
+    fn output_since(&self, from: usize) -> String {
+        let out = self.output.lock().unwrap();
+        String::from_utf8_lossy(&out[from.min(out.len())..]).into_owned()
+    }
+
+    /// The replay, the holder's first output frame, waiting for it.
+    pub(crate) fn replay(&self) -> Vec<u8> {
+        wait_until("the replay", || self.replay.lock().unwrap().is_some());
+        self.replay.lock().unwrap().clone().unwrap()
+    }
+}
+
+/// Dropping the client closes its connection, which detaches it: the reader's copy of the socket
+/// would keep it open otherwise.
+impl Drop for RawClient {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Reads the holder's frames from `reader` until it closes: every output frame's bytes go to
+/// `sink`, and the first one is kept in `first` too.
+fn read_frames(
+    mut reader: impl std::io::Read,
+    sink: &Mutex<Vec<u8>>,
+    first: &Mutex<Option<Vec<u8>>>,
+) {
+    let mut header = [0u8; 5];
+    while reader.read_exact(&mut header).is_ok() {
+        let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+        let mut payload = vec![0u8; usize::try_from(len).unwrap()];
+        if reader.read_exact(&mut payload).is_err() {
+            return;
+        }
+        if header[0] == b'o' {
+            first.lock().unwrap().get_or_insert_with(|| payload.clone());
+            sink.lock().unwrap().extend_from_slice(&payload);
+        }
+    }
 }
 
 /// Whether a holder is alive for the worktree whose admin directory is `admin`: the read-only

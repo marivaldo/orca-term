@@ -25,7 +25,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Output, Stdio};
 use std::time::Instant;
 
-use fixture::{AgentRepo, holder_alive, holder_pid, lock_held, state_file, wait_until};
+use fixture::{AgentRepo, RawClient, holder_alive, holder_pid, lock_held, state_file, wait_until};
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
 
@@ -284,6 +284,66 @@ fn a_client_that_reads_slowly_still_gets_everything_the_agent_printed() {
     assert_eq!(ended.stderr, "[agent ended: exit 7]\n");
     let flood_line = "x".repeat(4096);
     assert_eq!(ended.stdout.matches(&flood_line).count(), 1024);
+}
+
+#[test]
+fn the_agent_takes_the_size_of_the_client_typed_in_last() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+    let link = fx.repo.tmp.path().join("sock");
+
+    let mut wide = RawClient::connect(&admin, &link);
+    wide.resize(30, 100);
+    wide.wait_for_since(0, "size=30 100");
+    let mut narrow = RawClient::connect(&admin, &link);
+    let mark = wide.mark();
+    narrow.resize(20, 60);
+    wide.wait_for_since(mark, "size=20 60");
+
+    let mark = wide.mark();
+    wide.send("hello\n");
+    wide.wait_for_since(mark, "size=30 100");
+    wide.wait_for_since(mark, "you said: hello");
+
+    let mark = wide.mark();
+    narrow.send("again\n");
+    wide.wait_for_since(mark, "size=20 60");
+
+    let mark = wide.mark();
+    drop(narrow);
+    wide.wait_for_since(mark, "size=30 100");
+}
+
+#[test]
+fn a_replay_starts_with_the_modes_switched_on_before_the_bytes_it_keeps() {
+    let fx = AgentRepo::new();
+    fx.write_claude("2.1.296 (Claude Code)", r"printf '\e[?2004h\e[?1000h'");
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+    let link = fx.repo.tmp.path().join("sock");
+
+    let mut client = RawClient::connect(&admin, &link);
+    client.wait_for_since(0, "fake claude ready");
+    for _ in 0..2 {
+        let mark = client.mark();
+        client.send("flood\n");
+        client.wait_for_since(mark, "flooded");
+    }
+
+    let late = RawClient::connect(&admin, &link);
+    let replay = late.replay();
+    assert!(
+        replay.starts_with(b"\x1b[?1000h\x1b[?2004h"),
+        "{:?}",
+        String::from_utf8_lossy(&replay[..40])
+    );
+    assert!(
+        !replay.windows(17).any(|w| w == b"fake claude ready"),
+        "the start was dropped"
+    );
 }
 
 #[test]

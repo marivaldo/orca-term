@@ -15,6 +15,9 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 pty-process = "0.5.3"
+# The application's screen (ADR 0012). crossterm comes re-exported from it, so the two versions
+# always line up.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 rustix = { version = "1.1.5", features = ["termios", "process", "stdio", "net"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.151"
@@ -22,6 +25,12 @@ serde_norway = "0.9.42"
 sha2 = "0.11.1"
 signal-hook = "0.4.5"
 thiserror = "2.0.21"
+# How many cells a text takes on screen, for the application's side menu (#174).
+unicode-width = "0.2.3"
+# The screen of a panel in the application: the agent's output turned into cells (#174).
+vt100 = "0.18.1"
+# A terminal parser, the one vt100 is built on: the holder reads the agent's modes with it (#174).
+vte = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
