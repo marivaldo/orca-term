@@ -23,8 +23,8 @@ add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and 
 agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
 turns, show what one turn changed and say which turn wrote each line of a file. `orca-term doctor`
 checks what orca-term needs on the machine. `orca-term app` opens the terminal application:
-every project's worktrees in a side menu, and the open worktree's agent beside it
-([Application](#application)).
+every project's worktrees in a side menu, and the open worktree's agent, Neovim and shell beside
+it ([Application](#application)).
 The primary checkout, the repository you work in, is a worktree of its fleet too, as in Orca (ADR
 0013): `worktree ls` lists it first, tagged `repo (primary)` (`"primary": true` in `--json`, `false`
 for the others), and an agent can run there, with its turns, notes and unseen mark like any
@@ -165,8 +165,8 @@ either when Neovim is not opened: the usage, the refusal inside Neovim, a missin
 ## Application
 
 `orca-term app` opens the terminal application in the terminal you run it in (ADR 0012). It is
-being built in slices; this first one shows the side menu and the agent's terminal. `orca-term`
-with no arguments still opens Neovim.
+being built in slices; it shows the side menu and each worktree's agent, Neovim and shell.
+`orca-term` with no arguments still opens Neovim.
 
 - **Side menu**, on the left at 100 columns and more: every project on your
   [project list](#projects), each with its worktrees, its primary checkout first with the
@@ -177,26 +177,41 @@ with no arguments still opens Neovim.
   two lines. A project with no worktrees says `no worktrees yet`, and one whose directory is gone
   shows why, muted. The side menu reads every project again each second, so it follows what
   happens anywhere else.
-- **Centre**: the agent's terminal of the open worktree, attached to its holder as
+- **Centre**: the open worktree's panels, under the tabs `1 agent  2 nvim  3 shell`. The
+  agent's terminal is attached to its holder as
   `orca-term agent attach` is: its screen is replayed, every key goes to it, and it takes the
   panel's size. A worktree with no agent running says so, and `enter` starts it, as
   `orca-term agent start` does (a start that needs your approval fails, saying why: run
   `orca-term agent start` in a shell then). The application opens the worktree you start it in
   (the deepest, when one sits inside the primary checkout), else the first one.
+- **Neovim and shell**: each worktree has its own Neovim (`nvim` on your PATH with your own
+  config, or the program `ORCA_TERM_NVIM` names) and its own shell (`$SHELL`), both started in
+  the worktree the first time their tab shows, and kept while the application runs. Neovim
+  listens on a socket of its own, under `$XDG_RUNTIME_DIR/orca-term/` or `/tmp/orca-term-<uid>/`,
+  and is registered as `orca-term nvim register` does, so it hears when a worktree changes.
+  Quitting the application ends its Neovims (unsaved buffers are kept in Neovim's swap files) and
+  its shells; agents keep running in their holders.
+- **Split and zoom**: `^a |` shows the agent and Neovim (or the shell) side by side, each with its
+  own tab row; `^a z` fills the screen with the focused panel and puts everything back as it was,
+  the split included.
 - **Status bar**: the open worktree, how many worktrees need you, failed, are running or are
   quiet, and the keys.
 
-Every key goes to the part with the focus, the agent's terminal or the side menu. `Ctrl-a` arms
+Every key goes to the part with the focus, a panel or the side menu. `Ctrl-a` arms
 the application's own keys for the next key (the status bar lights up for about 1.5 s; `esc`
 cancels):
 
 | Key | What it does |
 |---|---|
-| `^a h`, `^a l` | focus the side menu, or the agent's terminal |
+| `^a h`, `^a l` | move the focus: the side menu, the centre, and between the split's halves (zoomed, between the split's halves only, staying zoomed) |
 | `^a j`, `^a k` | open the next, or the previous, worktree |
-| `^a a` | send a literal `Ctrl-a` to the agent |
-| `^a q` | quit; every agent keeps running |
+| `^a 1`, `^a 2`, `^a 3` | show the agent, Neovim or the shell |
+| `^a \|` | split the agent and Neovim (or the shell) side by side, or back |
+| `^a z` | zoom the focused panel, or restore |
+| `^a a` | send a literal `Ctrl-a` to the focused panel |
+| `^a q` | quit; every agent keeps running, the Neovims and shells end |
 | `j`, `k`, arrows, `enter` | in the focused side menu: move, and open the worktree |
+| `enter` | in a panel whose agent, Neovim or shell is not running: start it |
 
 The application restores your terminal when it quits, when it is ended by a signal (`SIGTERM`,
 `SIGHUP` when its terminal closes) and on a crash. Colours follow `COLORTERM` (`truecolor` or

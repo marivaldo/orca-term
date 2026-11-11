@@ -184,47 +184,83 @@ the adapters, and returns a domain value that `output` prints.
 
 ### app
 
-The terminal application (#174, ADR 0012), drawn in the "Quiet v2" look of the design on the
+The terminal application (#174, #176, ADR 0012), drawn in the "Quiet v2" look of the design on the
 branch `prototype/terminal-application` (`prototype/terminal-application/design/`). It sits above
 the operations: it reads the fleets and starts agents through them, and talks to each agent's
-holder through the holder adapter, as `agent attach` does. Only `app.rs` and the adapters it calls
-touch the outside world; everything under `app/` is pure and tested without a terminal.
+holder through the holder adapter, as `agent attach` does. Each worktree's Neovim and shell are
+not held: the application runs them on PTYs of its own and ends them on quit. Only `app.rs`,
+`app/running.rs` and the adapters they call touch the outside world; everything else under `app/`
+is pure and tested without a terminal.
 
 - `app.rs`: the run loop. One channel carries everything that happens: the terminal's keys,
   pastes and resizes (`adapters/screen.rs`), every project's fleet read again each second on a
   thread of its own (`ops::fleets::run_quick`), what the open agent's holder sends
   (`adapters/holder/client.rs`, tagged with the connection's number so a closed one is ignored),
   the end of an agent start (run on a thread, `ops::agent_start::run_in` with no approval
-  possible), and SIGTERM, SIGHUP or SIGINT. Each batch of messages becomes effects from the state,
-  which the loop carries out (`Link` keeps the one connection to the open worktree's holder), and
-  the loop draws the next frame. Live updates poll rather than listen: the core pushes changes
-  only to registered Neovims, in Neovim's own protocol, and the read costs a listing of the
-  worktrees by git per project and a few small files a second.
+  possible), what a Neovim or a shell printed or that it ended (`adapters/pty.rs`), and SIGTERM,
+  SIGHUP or SIGINT. Each batch of messages becomes effects from the state, which the loop carries
+  out (`Link` keeps the one connection to the open worktree's holder, `Running` the Neovims and
+  shells), and the loop draws the next frame. Once the loop ends and the terminal is restored,
+  every Neovim and shell is hung up, given 1 s, then killed. Live updates poll rather than
+  listen: the core pushes changes only to registered Neovims, in Neovim's own protocol, and the
+  read costs a listing of the worktrees by git per project and a few small files a second.
+- `app/running.rs` (#176): the run loop's side of the Neovims and shells: their processes, and
+  each Neovim's socket, a fresh path per Neovim (`program::socket_path`) in a directory of this
+  user's alone (`fs::create_private_dir`). A Neovim is registered (`ops::nvim_register::run_in`,
+  the registry of the worktree's repository) once its socket appears, looked for after each batch
+  of messages, since the core forgets an address with nothing behind it; when it ends, or on quit,
+  it is unregistered and a socket left behind is removed. A failed registration is not retried.
 - `app/state.rs`: `App`, everything shown and remembered (the fleets, the open worktree, the
-  side menu's cursor, the focus, the prefix's arming time, the agent's panel, a message, the
-  layout, the spinner's frame), and what each key does to it, as `Effect`s: `Type` bytes into the
-  agent, `Attach` to a holder, `Start` an agent at a size, `Quit`. `Ctrl-a` arms the prefix for
-  one key within 1.5 s: `h`/`l` move the focus (`h` only while the side menu shows), `j`/`k` open
-  the next or previous worktree in the side menu's order (after the last comes the first), `a` types `Ctrl-a`, `q`
-  quits, anything else (`esc`) disarms it. The focused side menu moves its cursor with `j`/`k`
-  and the arrows and opens with `enter`, giving the centre the focus. The centre types every key
-  into a running agent, encoded again (`keys.rs`); where none runs `enter` starts it. A fleet read
+  side menu's cursor, the focus, the view, the prefix's arming time, the agent's panel, every
+  worktree's Neovim and shell started so far, a message, the layout, the spinner's frame), and
+  what each key does to it, as `Effect`s: `Type` bytes into the agent, `Attach` to a holder,
+  `Start` an agent at a size, `SizeAgent`, `Run` a Neovim or a shell at a size, `TypeInto` it,
+  `Resize` it, `Quit`. `Ctrl-a` arms the prefix for one key within 1.5 s: `h`/`l` move the focus
+  (between the split's halves, else to the side menu while it shows), `j`/`k` open the next or
+  previous worktree in the side menu's order (after the last comes the first), `1`/`2`/`3` show
+  the agent, Neovim or the shell, `|` (or `\`) splits, `z` zooms (taking the focus to the
+  centre), `a` types `Ctrl-a` into the focused panel, `q` quits, anything else (`esc`) disarms it.
+  The focused side menu moves its cursor with `j`/`k` and the arrows and opens with `enter`,
+  giving the centre the focus. The centre types every key into the focused panel's running agent,
+  Neovim or shell, encoded again (`keys.rs`); where none runs `enter` starts it. After every key
+  and every read of the fleets, each Neovim or shell shown for the open worktree that has not
+  started yet is started (`state/programs.rs`), at its panel's size, and kept from then on. A fleet read
   opens the worktree containing the directory the application started in (the deepest such one,
   since a worktree may sit inside the primary checkout, #175), else the first, when
   none is open or the open one is gone, and attaches to the open one's agent once its holder is
   alive.
-- `app/panel.rs`: the agent's panel: a `vt100` screen fed with the replay and then the agent's
-  output, its `Status` (`NoAgent`, `Starting`, `Attached`, `Ended(how)`), what the keys need of it
-  (the cursor keys mode, bracketed paste) and its painting with the 16 ANSI colours on the
-  theme. `vt100` rather than `alacritty_terminal`: the research measured both drawing claude's and
-  opencode's screens the same, and `vt100` is 6 crates instead of 56, read cell by cell, with no
-  event loop to drive.
+- `app/state/programs.rs` (#176): what the state does with the Neovims and shells: starting the
+  ones shown, their keys and pastes, their output (whose answers go back as `TypeInto`), their
+  end, a failed start, and `enter` starting one again.
+- `app/emulator.rs`: every panel's screen (#174, #176): a `vt100` screen fed with a program's
+  output, what the keys need of it (the cursor keys mode, bracketed paste), its painting with the
+  16 ANSI colours on the theme, and the answers to the questions a program waits for (the cursor's
+  position, DSR 5, DA1, DA2), which Neovim and fish ask as they start. `vt100` rather than
+  `alacritty_terminal`: the research measured both drawing claude's and opencode's screens the
+  same, and `vt100` is 6 crates instead of 56, read cell by cell, with no event loop to drive.
+- `app/panel.rs`: the agent's panel: its screen, fed with the replay and then the agent's output,
+  and its `Status` (`NoAgent`, `Starting`, `Attached`, `Ended(how)`). Its screen's answers are not
+  sent: every client of a holder would answer.
+- `app/program.rs` (#176): a worktree's Neovim or shell as the state knows it (`Kind`,
+  `ProgramId`, its `Status`: `Running`, `Ended(how)`, `Failed(why)`, and its screen), what runs
+  (`nvim --listen <socket>`, the program `ORCA_TERM_NVIM` names in place of `nvim`; `$SHELL`, else
+  `/bin/sh`), and where Neovim listens: `$XDG_RUNTIME_DIR/orca-term/` when it is absolute and leaves
+  room for the longest name, else `/tmp/orca-term-<uid>/`, each socket `nvim-<pid>-<n>`, so every
+  path fits macOS's 103 bytes for a socket's path.
+- `app/view.rs` (#176): the `View`: the focused `Tab` (agent, nvim, shell), the split's right half
+  (Neovim or the shell, whichever was shown last), the split and the zoom, the same whichever
+  worktree is open; which panels are shown, and how `h`/`l` move between the split's halves
+  (zoomed, they switch panel and stay zoomed).
 - `app/keys.rs`: a crossterm key back into the bytes xterm sends for it (control codes, `ESC`
   before an alt key, the arrows in normal or application mode, modifiers as `1;<m>`), and a paste
   inside the bracketed-paste marks when the agent asked for them.
-- `app/layout.rs`: where each part goes: the side menu 34 columns wide from 150 columns, 28 from
-  100, none under 100; the centre beside it; the agent's terminal inside the centre's card; the
-  status bar on the last row; a word that the screen is too small under 40 by 10.
+- `app/layout.rs`: where each part goes, by the size and the view: the side menu 34 columns wide
+  from 150 columns, 28 from 100, none under 100 or while zoomed; the centre beside it (the whole
+  width zoomed), one `Card` per panel shown, the split's two halving the centre with a column of
+  canvas between; each panel's terminal inside its card, two columns in (Neovim one, none in the
+  split, its sign column at the card's edge as the design draws it); the size a panel not on
+  screen keeps; the status bar on the last row; a word that the screen is too small under 40 by
+  10.
 - `app/menu.rs`: what the side menu says of the fleets: the worktrees' order, finding one by its
   path, stepping through the order and wrapping at its ends, a project's name, the status bar's counts (needs you, failed,
   running, quiet: everything else), the pull request's number and checks, `claude` for
@@ -236,9 +272,13 @@ touch the outside world; everything under `app/` is pure and tested without a te
   and unseen mark (#175), the open one in
   a half-line card, the cursor's in the accent with the focus; `no worktrees yet`; a project that
   cannot be read shows its error, wrapped to three lines and muted; the list scrolls to the open or
-  cursor's worktree, and to its end from the last one), the centre (`centre.rs`: the `1 agent`
-  tab, the open worktree and its agent, the agent's screen or how to start one) and the status
-  bar (`status.rs`). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
+  cursor's worktree, and to its end from the last one), the centre (`centre.rs`: each card's tab
+  row, alone `1 agent  2 nvim  3 shell` with the open worktree and its agent on the right, in the
+  split `1 agent` with the agent's name and `2 nvim  3 shell`, zoomed the panel's own tab with
+  `split  agent | nvim`, the `zoom` pill and `^a z restore`; the active tab a pill, in the accent
+  under the accent's stroke when focused; then the panel's screen, how to start an agent, or that
+  a Neovim or shell ended or could not start) and the status bar (`status.rs`, which names the
+  focused panel and adds the `zoom` pill). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
   with `app/snapshots/*.txt`: the text, then each cell's text colour and background as one letter
   per token; a changed screen is written beside its snapshot as `<name>.new.txt`.
 - `app/paint.rs`: the painter (text at a column, cards with half-line edges, pills, keycaps,
@@ -414,9 +454,11 @@ touch the outside world; everything under `app/` is pure and tested without a te
   `status.json` records, mapped through the turn log. No tip, a tip git no longer has, or a file
   the tip does not hold: every line changed since the latest snapshot. Only reads.
 - `ops/nvim_register.rs`: the hidden `nvim register <address>`: write the address's file in the
-  registry (idempotent; creating the file is the only write, so no lock).
+  registry (idempotent; creating the file is the only write, so no lock). `run_in` does the same
+  for the repository of a given directory: the application registers each Neovim it starts so
+  (#176).
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
-  one not recorded is not an error.
+  one not recorded is not an error. `run_in` does it for a given directory's repository (#176).
 - `ops/open.rs`: `open` and `orca-term` with no arguments (#148): find the Neovim to open
   (`ORCA_TERM_NVIM`, a path as it is or a name on PATH, else `nvim` on PATH; missing is the typed
   `prerequisite`) and replace the process with it running `-c 'OrcaTerm sidebar'`. With no
@@ -534,7 +576,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
   missing), resolving paths through symlinks, reading a symlink's text (`link_text`, Linux only,
   for the holder's peer check), finding an executable in the PATH directories, whether a path is a
   unix socket (`is_socket`) or a file this process can open (`is_readable_file`, opened and closed,
-  nothing read, #105), and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
+  nothing read, #105), a directory for this user alone (`create_private_dir`, #176: made 0700, or
+  refused when the one there is a symlink, someone else's, or open to others), and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
   `agent.lock`, and the read-only probes `ls` uses for both.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
@@ -545,7 +588,9 @@ touch the outside world; everything under `app/` is pure and tested without a te
   (`ssh_auth_sock`: `SSH_AUTH_SOCK`, `None` when unset or empty, never printed, #105).
   `inside_nvim` says whether `NVIM` is set and not empty, and `nvim_override` reads
   `ORCA_TERM_NVIM` (#148). `colour_env` (#174) says whether `NO_COLOR` is set and not empty, and
-  reads `COLORTERM`, for the application's colours.
+  reads `COLORTERM`, for the application's colours. For the application's Neovims and shells
+  (#176), `shell` reads `SHELL`, `runtime_dir` reads `XDG_RUNTIME_DIR` (both `None` when unset or
+  empty), and `uid` and `pid` give this process's user and id.
 - `adapters/program.rs`: running a program for its `--version`, and opencode for its list of
   sessions or gpgconf for gpg-agent's socket (`listed_by`, #41, #105), with an empty stdin; both
   only read. `run_within` (#87) runs a
@@ -585,6 +630,13 @@ touch the outside world; everything under `app/` is pure and tested without a te
   `send_size` write frames, waiting 1 s at most; dropping it detaches. It connects by the socket's
   absolute path, leaving the current directory alone, and only for a path too long for a socket
   address enters the admin directory for the connect and comes back at once.
+- `adapters/pty.rs` (#176): a program the application runs on a PTY of its own, a worktree's
+  Neovim or shell: `Process::start` runs it in its directory with `TERM=xterm-256color` and hands
+  what it prints (`Printed::Output`, then `Ended` with its exit) to a callback from a reader
+  thread; `type_bytes` hands bytes to a writer thread, so a program that stops reading never
+  holds the application up; `resize` sizes its PTY; `hang_up` sends SIGHUP to its process group
+  and `end_by` waits until a deadline, then kills it. Signals reach it only while it runs, under
+  the mutex that reaps it.
 - `adapters/screen.rs` (#174): the application's terminal, through ratatui and crossterm: raw
   mode, the alternate screen and bracketed paste on entering, all put back (and the cursor shown)
   when the `Screen` is dropped and, through a panic hook installed once, before a panic's message
@@ -998,7 +1050,8 @@ validate"):
   program for its version (or opencode for its list of sessions, gpgconf for gpg-agent's socket)
   and replaces orca-term with Neovim (#148), only `adapters/fs.rs` reads or writes files, and only
   `adapters/env.rs` reads the environment. The application (#174) takes the terminal only through
-  `adapters/screen.rs` and talks to a holder only through `adapters/holder/client.rs`.
+  `adapters/screen.rs`, talks to a holder only through `adapters/holder/client.rs`, and runs its
+  Neovims and shells only through `adapters/pty.rs` (#176).
 - **Only `output` prints**, and only `output/json.rs` knows the JSON shape of the contract.
   Domain types never derive `Serialize` for output. A setup's live echo is a writer `output`
   makes and `cli` hands down, so ops and adapters never name stdout or stderr. Two adapters move
@@ -1527,14 +1580,19 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   that send known hooks and lines through the real orca-term, and a fake cargo (`CARGO`).
 - **Unit tests** sit next to the pure code they test, in a `#[cfg(test)] mod tests` at the end of
   each domain and edge module. Adapters keep the few tests that need a real directory.
-- **The application** (#174): its keys are tested through `app/state.rs`'s `App` alone, and its
-  screens are drawn on ratatui's `TestBackend` and compared with the snapshots in
-  `src/app/snapshots/` (`app/draw/tests.rs`), on projects and worktrees made up by
-  `app/fixture.rs`. `tests/app.rs` runs `orca-term app` for real in a PTY, with the fake claude
-  of `tests/support/agent.rs` as the agent, reading the screen back through `vt100`: the side
-  menu, `^a k`, typing into the agent, `^a q` leaving the agent running and the alternate screen,
-  SIGTERM and SIGHUP restoring the terminal, `enter` starting an agent, and an agent started from
-  the command line showing up on its own. The holder's side is in `tests/agent.rs`, through a
+- **The application** (#174, #176): its keys are tested through `app/state.rs`'s `App` alone
+  (`app/state/tests.rs`), and its screens are drawn on ratatui's `TestBackend` and compared with
+  the snapshots in `src/app/snapshots/` (`app/draw/tests.rs`), on projects and worktrees made up
+  by `app/fixture.rs`, a Neovim's screen fed in as its output. `tests/app.rs` runs `orca-term app`
+  for real in a PTY, with the fake claude of `tests/support/agent.rs` as the agent, reading the
+  screen back through `vt100`: the side menu, `^a k`, typing into the agent, `^a q` leaving the
+  agent running and the alternate screen, SIGTERM and SIGHUP restoring the terminal, `enter`
+  starting an agent, and an agent started from the command line showing up on its own; and, with
+  a stand-in `nvim` on the isolated PATH and a stand-in `$SHELL` (never a real Neovim), `^a 2`
+  running Neovim in the worktree with `--listen` on a short socket, typing into it, its
+  registration once the test listens on that socket for it, `^a 3` running the shell, and `^a q`
+  ending both and taking Neovim off the registry. `adapters/pty.rs` runs `/bin/sh` scripts on a
+  PTY for its own unit tests. The holder's side is in `tests/agent.rs`, through a
   client that speaks the protocol itself (`RawClient`): the size of the client typed in last, and
   a replay starting with the modes switched on before the bytes it keeps.
 - **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
