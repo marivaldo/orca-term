@@ -22,9 +22,9 @@ a detached process that any terminal can attach to. `orca-term note
 add|ls|edit|rm|send <worktree>` attach notes to a worktree's lines or files and paste them into its
 agent as one prompt, in Orca's format. `orca-term turn ls|diff|blame <worktree>` list a worktree's
 turns, show what one turn changed and say which turn wrote each line of a file. `orca-term doctor`
-checks what orca-term needs on the machine. `orca-term app` opens the terminal application:
-every project's worktrees in a side menu, and the open worktree's agent, Neovim and shell beside
-it ([Application](#application)).
+checks what orca-term needs on the machine. `orca-term` with no arguments, or `orca-term app`,
+opens the terminal application: every project's worktrees in a side menu, and the open
+worktree's agent, Neovim and shell beside it ([Application](#application)).
 The primary checkout, the repository you work in, is a worktree of its fleet too, as in Orca (ADR
 0013): `worktree ls` lists it first, tagged `repo (primary)` (`"primary": true` in `--json`, `false`
 for the others), and an agent can run there, with its turns, notes and unseen mark like any
@@ -87,7 +87,7 @@ The agent's terminal is not restored. Without `terminal` in `'sessionoptions'` (
 persistence.nvim leaves it out), its window is not saved, and the first `<CR>` on the worktree
 opens the agent's terminal in the restored tab. With `terminal` (Neovim's default), the session
 brings back a `term://` buffer that runs `orca-term` with no arguments: inside Neovim it prints
-the usage and ends, so it opens no second Neovim (see [Start](#start)) and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
+the usage and ends, so it opens no application inside Neovim (see [Start](#start)) and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
 scrollback replayed; the ended buffer goes with `:bwipeout`.
 
 With `blank` in `'sessionoptions'` (Neovim's default), a session saved while the sidebar is open
@@ -139,36 +139,33 @@ not a symlink.
 
 ## Start
 
-Run `orca-term` with no arguments in a repository, from a terminal, and it replaces itself with
-your own Neovim, opened in that directory with the sidebar showing:
-`nvim -c 'OrcaTerm sidebar'`. It uses your Neovim config, which must have the plugin installed
-(see [Install](#install)); without it, Neovim says
-`E492: Not an editor command: OrcaTerm sidebar`. `$EDITOR` is not used. To open another Neovim,
-set `ORCA_TERM_NVIM` to its path (a name without a `/` is looked up on `PATH`).
+Run `orca-term` with no arguments in a repository, from a terminal, and it opens the terminal
+application there, as `orca-term app` does (see [Application](#application)). Like
+`orca-term app`, it needs git, and refuses with the error `prerequisite` (exit code 9) without
+it.
 
 `orca-term` with no arguments prints the usage instead, as before, when it runs inside Neovim
 (`$NVIM` is set, as in a Neovim terminal) or when its stdin or stdout is not a terminal (a pipe,
-a script). `orca-term open` opens Neovim the same way even without a terminal, for scripts and
-terminal launchers; inside Neovim it refuses with
-`orca-term: already inside Neovim; run :OrcaTerm sidebar` and exits 1. When `nvim` (or the
-program `ORCA_TERM_NVIM` names) is not there, both fail with the error `prerequisite` (exit code
-9). `orca-term doctor` does not check Neovim or its config, only whether the Neovims registered
-in the repository have claudecode.nvim loaded (see [Claude and Neovim](#claude-and-neovim)).
+a script).
 
-Just before they open Neovim, `orca-term` with no arguments and `orca-term open` add the
-repository you are in to your [project list](#projects), by its primary checkout, as
-`orca-term project add` does, and say nothing. A repository already on the list is left as it
-is, and outside a repository nothing is added. A project list that cannot be changed (a broken
-`projects.json`, one written by a newer orca-term, another command still changing it after 2
-seconds, git missing) never stops Neovim from opening: nothing is added then. Nothing is added
-either when Neovim is not opened: the usage, the refusal inside Neovim, a missing Neovim.
+As it opens, the application adds the repository you are in to your
+[project list](#projects), by its primary checkout, as `orca-term project add` does, and says
+nothing, whether you opened it with no arguments or with `orca-term app`. A repository already on
+the list is left as it is, and outside a repository nothing is added. A project list that cannot
+be changed (a broken `projects.json`, one written by a newer orca-term, another command still
+changing it after 2 seconds) never stops the application from opening: nothing is added then, and
+the application shows the problem. Nothing is added either when the application does not open:
+the usage, `orca-term app` without a terminal, git missing.
+
+`orca-term open`, which opened your own Neovim with `:OrcaTerm sidebar`, is gone, and
+`orca-term` with no arguments no longer opens Neovim: the application runs your Neovim beside
+each worktree instead. Inside Neovim, `:OrcaTerm sidebar` still opens the sidebar.
 
 ## Application
 
-`orca-term app` opens the terminal application in the terminal you run it in (ADR 0012). It is
-being built in slices; it shows the side menu, each worktree's agent, Neovim and shell, and the
-open worktree's changed files and pull request.
-`orca-term` with no arguments still opens Neovim.
+`orca-term app`, or `orca-term` with no arguments, opens the terminal application in the
+terminal you run it in (ADR 0012). It is being built in slices; it shows the side menu, each
+worktree's agent, Neovim and shell, and the open worktree's changed files and pull request.
 
 - **Side menu**, on the left at 100 columns and more: every project on your
   [project list](#projects), each with its worktrees, its primary checkout first with the
@@ -911,8 +908,8 @@ keeps the order projects were added in, and lives outside every repository, in
   project already on the list changes nothing and says `project app at /home/me/src/app is already
   on the list`. A directory outside every git repository is refused (`not_a_repository`, exit code
   22). With `--json` it prints the project's `name` and `path` and whether it was `added`.
-  `orca-term` with no arguments and `orca-term open` add the repository of the current directory
-  the same way, silently, just before they open Neovim (see [Start](#start)), so a repository
+  The application (`orca-term` with no arguments, or `orca-term app`) adds the repository of the
+  current directory the same way, silently, as it opens (see [Start](#start)), so a repository
   you start orca-term in is listed without `project add`.
 - `orca-term project ls [--json]` lists the projects in order. A project whose directory is gone
   stays on the list, marked `gone` (`"gone": true` with `--json`).

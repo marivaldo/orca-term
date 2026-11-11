@@ -53,13 +53,14 @@ the adapters, and returns a domain value that `output` prints.
   holder runs for every line opencode's plugin writes), and the hidden
   `nvim register|unregister <address>`, which a running Neovim runs), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
-  `open`, and no command at all, open Neovim with the sidebar (#148), or print the usage (clap's
-  help on stderr, exit 2) when no command runs inside Neovim or without a terminal.
-  `doctor [--json]` needs no repository; every other command but `open`, the hidden `hook` and
+  No command at all opens the application, as `app` does (#148, #193), or prints the usage
+  (clap's help on stderr, exit 2) when it runs inside Neovim or without a terminal
+  (`domain::open::opens_with_no_arguments`); `orca-term open`, which opened Neovim with the
+  sidebar, is gone (#193).
+  `doctor [--json]` needs no repository; every other command but the hidden `hook` and
   `agent holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
-  git as the typed `prerequisite` before anything else runs. `open` and no command run git only
-  to add the repository to the project list (#152), and open Neovim without it, so they do not
-  check it. `pr refresh [<worktree>...]` (#87)
+  git as the typed `prerequisite` before anything else runs. No command checks git only once it
+  is to open the application, since the usage needs none. `pr refresh [<worktree>...]` (#87)
   asks the GitHub CLI about each worktree's pull request. `pr compose <worktree>` (#132) prints
   the message a new pull request starts from, and `pr create <worktree> --title <t> [--body-file
   <f>] [--base <b>] [--draft]` pushes the branch and creates it. `pr merge <worktree>
@@ -193,7 +194,10 @@ not held: the application runs them on PTYs of its own and ends them on quit. On
 `app/running.rs`, `app/watch.rs` and the operations and adapters they call touch the outside world;
 everything else under `app/` is pure and tested without a terminal.
 
-- `app.rs`: the run loop. One channel carries everything that happens: the terminal's keys,
+- `app.rs`: the run loop, which `orca-term app` and `orca-term` with no arguments at a terminal
+  both open (#193). Before it starts, once it has a terminal, it adds the repository of the
+  current directory to the project list (`ops::project_add::add_current_repository`, #152),
+  silently, and never fails for it. One channel carries everything that happens: the terminal's keys,
   pastes and resizes (`adapters/screen.rs`), every project's fleet read again each second on a
   thread of its own (`ops::fleets::run_quick`), what the open agent's holder sends
   (`adapters/holder/client.rs`, tagged with the connection's number so a closed one is ignored),
@@ -547,17 +551,6 @@ everything else under `app/` is pure and tested without a terminal.
   `lua/orca-term/actions.lua`). `run_in` is what the application does on enter on a changed file.
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
   one not recorded is not an error. `run_in` does it for a given directory's repository (#176).
-- `ops/open.rs`: `open` and `orca-term` with no arguments (#148): find the Neovim to open
-  (`ORCA_TERM_NVIM`, a path as it is or a name on PATH, else `nvim` on PATH; missing is the typed
-  `prerequisite`) and replace the process with it running `-c 'OrcaTerm sidebar'`. With no
-  arguments it opens only at a terminal outside Neovim, and otherwise returns for `cli` to print
-  the usage; `open` opens without a terminal too, and refuses inside Neovim. Once the Neovim is
-  found and just before the process is replaced, both add the repository of the current
-  directory to the project list (#152) through `project_add::add_repository_of`, saying nothing.
-  `add_current_repository` ignores its result: a list that cannot be changed (a broken
-  `projects.json`, a newer schema, `projects.lock` held, git missing, no state directory) adds
-  nothing and never stops the launch. Nothing is added when Neovim is not opened: the usage, the
-  refusal inside Neovim, a missing Neovim.
 - `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
   none is named, the primary checkout included; a named one whose directory is gone or an unknown
   one is refused), find gh on PATH, run `gh pr view <branch> --json
@@ -629,9 +622,11 @@ everything else under `app/` is pure and tested without a terminal.
   to the write (2 s at most), writes only when the list changed and never when the change failed.
   `ops/project_add.rs`: `project add`: refuse a path that is not a directory, then
   `add_repository_of`, which finds the primary checkout with `git::repository_of` and adds it;
-  `None` outside every repository, which `run` turns into the typed `not_a_repository`. The
-  launcher (`ops/open.rs`) calls `add_repository_of` with the current directory before it opens
-  Neovim (#152).
+  `None` outside every repository, which `run` turns into the typed `not_a_repository`.
+  `add_current_repository` (#152, #193) is what the application does as it opens: the same with
+  the current directory, its result ignored, so a list that cannot be changed (a broken
+  `projects.json`, a newer schema, `projects.lock` held, git missing, no state directory) adds
+  nothing and never stops the application.
   `ops/project_ls.rs`: `project ls`: the list, each project marked gone when its directory is not
   one; runs no git. `ops/project_rm.rs`: `project rm`: under the lock, a name through
   `Projects::find_by_name` (`ambiguous_project` when several match), a path matched with
@@ -681,7 +676,7 @@ everything else under `app/` is pure and tested without a terminal.
   `ORCA_TERM_RECORD`, `None` when unset or empty, #44); and the ssh agent's socket
   (`ssh_auth_sock`: `SSH_AUTH_SOCK`, `None` when unset or empty, never printed, #105).
   `inside_nvim` says whether `NVIM` is set and not empty, and `nvim_override` reads
-  `ORCA_TERM_NVIM` (#148). `colour_env` (#174) says whether `NO_COLOR` is set and not empty, and
+  `ORCA_TERM_NVIM` for the application's Neovim (#148, #176). `colour_env` (#174) says whether `NO_COLOR` is set and not empty, and
   reads `COLORTERM`, for the application's colours. For the application's Neovims and shells
   (#176), `shell` reads `SHELL`, `runtime_dir` reads `XDG_RUNTIME_DIR` (both `None` when unset or
   empty), and `uid` and `pid` give this process's user and id.
@@ -690,8 +685,6 @@ everything else under `app/` is pure and tested without a terminal.
   only read. `run_within` (#87) runs a
   program with an empty stdin and a time limit, reading its stdout and stderr on threads of their
   own, and kills it past the limit (`Finished::TimedOut`); `pr refresh` runs gh through it.
-  `replace_with` (#148) replaces orca-term with a program (`exec`), keeping the terminal, the
-  directory and the environment; `orca-term open` and no arguments open Neovim through it.
 - `adapters/stdin.rs`: the process's standard input, read whole: a hook's payload; or one line:
   the person's answer to `run this setup script? [y/N]`.
 - `adapters/holder.rs`: starting a holder as a detached child with a pipe for its first word
@@ -764,7 +757,7 @@ everything else under `app/` is pure and tested without a terminal.
   the holder's output written to stdout. Without a terminal it only moves bytes, and the end of
   its input detaches. `is_interactive` says whether stdin and stderr are both terminals, so a
   setup script can be approved at a prompt. `stdin_and_stdout_are_terminals` says whether a
-  person typed `orca-term` at a terminal, so no arguments may open Neovim (#148).
+  person typed `orca-term` at a terminal, so no arguments may open the application (#148, #193).
 - Since #149: `git::repository_of` gives the primary checkout of the repository containing a
   directory, or `None` when git says it is not inside one, and `env::config_env` also reads
   `XDG_STATE_HOME`.
@@ -797,11 +790,10 @@ everything else under `app/` is pure and tested without a terminal.
   `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`; a rebase wins), and a rebase's step from the
   texts of `msgnum`/`end` (or `next`/`last`). `ops::derive_state` checks the markers in the
   admin dir's parent, with no git run; `worktree detail` reads the step. Never a state.
-- `domain/open.rs`: opening the person's Neovim with the sidebar (#148): when `orca-term` with no
-  arguments opens it (`opens_with_no_arguments`: at a terminal and outside Neovim), the program
-  `ORCA_TERM_NVIM` names (`Program`: a path when it holds a `/`, else a name on PATH, `nvim` when
-  unset), the arguments `-c 'OrcaTerm sidebar'`, the `prerequisite` for a missing Neovim and the
-  refusal of `open` inside Neovim.
+- `domain/open.rs`: when `orca-term` with no arguments opens the application
+  (`opens_with_no_arguments`: at a terminal and outside Neovim, #148, #193), and the Neovim the
+  application runs (#176): the program `ORCA_TERM_NVIM` names (`Program`: a path when it holds a
+  `/`, else a name on PATH, `nvim` when unset).
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
@@ -1803,14 +1795,16 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   at once (all kept, under the lock), and outside a repository; a gone project; removing by path, by name and with an ambiguous name,
   checking nothing on disk changed; and `fleets` with two repositories, a broken one (its `.git`
   removed) and a gone one, the readable fleet compared with `worktree ls --json`.
-- **The launcher adding the repository, seam 1** (#152): `tests/open.rs` runs `orca-term` with no
-  arguments (on a pseudo-terminal) and `orca-term open` with the fake `nvim`, the real `git`
-  linked onto the isolated PATH and `XDG_STATE_HOME` inside the sandbox, in a throwaway
-  repository, in one of its linked worktrees and outside every repository, and reads
-  `projects.json` itself: the primary checkout added, nothing changed for one already listed,
-  nothing added by the usage, the refusal inside Neovim or a missing Neovim, and Neovim still
-  opened, with nothing said, over a broken file, a newer schema, a held `projects.lock` and a PATH
-  with no git.
+- **No arguments and the application adding the repository, seam 1** (#152, #193):
+  `tests/app.rs` runs `orca-term` with no arguments and `orca-term app` in a PTY with the fake
+  claude, in a throwaway repository, in one of its linked worktrees and outside every
+  repository, and reads `projects.json` itself: the primary checkout added, nothing changed for
+  one already listed or outside a repository, nothing added by `app` without a terminal, and the
+  application still opened over a broken file and a newer schema. `tests/no_arguments.rs` runs
+  `orca-term` with no arguments on a pseudo-terminal with a cleared environment, the real `git`
+  linked onto the isolated PATH and `XDG_STATE_HOME` inside the sandbox: the usage inside Neovim
+  and without a terminal, the `prerequisite` without git, nothing added by any of them, and
+  `open` no longer a command.
 
 ## Neovim client
 

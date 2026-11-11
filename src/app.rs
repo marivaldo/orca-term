@@ -1,7 +1,8 @@
-//! App: `orca-term app`, the terminal application (ADR 0012): the side menu with every project's
-//! worktrees and, in the centre, the open worktree's panels: its agent's terminal attached to its
-//! holder (#174), its Neovim and its shell (#176); on the right, its changed files, its pull
-//! request and its branch (#177). It is a client of the core: it reads the fleets and the changes
+//! App: `orca-term app`, the terminal application (ADR 0012), which `orca-term` with no arguments
+//! opens too at a terminal (#193): the side menu with every project's worktrees and, in the
+//! centre, the open worktree's panels: its agent's terminal attached to its holder (#174), its
+//! Neovim and its shell (#176); on the right, its changed files, its pull request and its branch
+//! (#177). It is a client of the core: it reads the fleets and the changes
 //! and starts agents through the operations, and talks to each agent's holder as `agent attach`
 //! does. Quitting stops no agent; it ends the Neovims and shells the application started.
 //!
@@ -60,7 +61,7 @@ use crate::domain::changes::Changes;
 use crate::domain::project::ProjectFleet;
 use crate::domain::worktree::{Target, WorktreeName};
 use crate::ops::agent_start::{self, Wanted};
-use crate::ops::{self, Approval, fleets, pr_create, worktree_new};
+use crate::ops::{self, Approval, fleets, pr_create, project_add, worktree_new};
 
 /// How long the loop waits for a message before it draws again (the spinner, the prefix's
 /// timeout, the ages).
@@ -93,11 +94,14 @@ enum Msg {
 }
 
 /// Runs the application in this terminal until the person quits or a signal ends it. The
-/// terminal is restored in every case, then the Neovims and shells it started are ended.
+/// repository of the current directory joins the project list first, unless it is refused for
+/// want of a terminal. The terminal is restored in every case, then the Neovims and shells it
+/// started are ended.
 pub(crate) fn run() -> Result<()> {
     if !terminal::stdin_and_stdout_are_terminals() {
         bail!("`orca-term app` draws on a terminal: run it in one");
     }
+    project_add::add_current_repository();
     let start_in = env::current_dir().ok();
     let (no_color, colorterm) = env::colour_env();
     let mode = Mode::detect(no_color, colorterm.as_deref());

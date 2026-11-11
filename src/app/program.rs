@@ -4,8 +4,8 @@
 //! runs, and ends it on quit. This module is what the state knows of one (its screen and whether
 //! it runs), what runs, and where Neovim listens.
 //!
-//! Neovim is the person's own: `nvim` on PATH, or what `ORCA_TERM_NVIM` names, as `orca-term open`
-//! finds it (#148), started in the worktree with `--listen <socket>` so its address is known
+//! Neovim is the person's own: `nvim` on PATH, or what `ORCA_TERM_NVIM` names (`domain/open.rs`),
+//! started in the worktree with `--listen <socket>` so its address is known
 //! without the registry (#172). Its socket goes in a short directory of its own, because macOS
 //! takes at most 104 bytes for a unix socket's path, the ending NUL included: under
 //! `$XDG_RUNTIME_DIR` when that leaves room, else under `/tmp`. The shell is `$SHELL`.
