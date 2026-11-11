@@ -885,6 +885,11 @@ It refuses, pushing nothing, a worktree on no branch (detached, or in the middle
 a repository with no `origin` remote. `worktree ls --json` says whether there is one in
 `has_origin`.
 
+orca-term never pushes the repository's default branch: `worktree push` of the primary checkout
+on `main` fails as `default_branch` (exit code 25), as `pr create` does there, and pushes
+nothing, with or without `--force-with-lease`. On any other branch the primary checkout pushes
+like any worktree. `worktree rebase` still updates the local default branch onto `origin/main`.
+
 In the sidebar, `.` on a worktree offers `Push` when the worktree is on a branch and the
 repository has `origin`. When git rejects the push because the branch diverged, it asks
 `Push rejected: demo diverged from origin/demo (after a rebase?)` with `Force push (with lease)`

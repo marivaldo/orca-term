@@ -317,3 +317,40 @@ fn a_repository_with_no_origin_is_refused() {
     assert_eq!(repo.json_of(&["worktree", "ls"])["has_origin"], false);
     assert_eq!(repo.on_origin("demo"), "");
 }
+
+#[test]
+fn the_primary_checkout_on_the_default_branch_is_refused_and_nothing_is_pushed() {
+    let repo = PushRepo::new();
+    let root = repo.fixture.repo.root.clone();
+    // A commit ahead of origin/main: only the branch stops the push.
+    repo.commit_in(&root, "local.txt", "local\n", "Local change");
+    let before = repo.on_origin("main");
+
+    let out = repo.run(&["worktree", "push", "repo"]);
+    assert_eq!(out.status.code(), Some(25), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "orca-term: worktree repo is on main, the repository's default branch, which orca-term \
+         never pushes and which has no pull request; commit on a branch of its own (nothing was \
+         pushed)\n"
+    );
+    let error = repo.error_of(&["worktree", "push", "repo"], 25);
+    assert_eq!(error["kind"], "default_branch");
+    let error = repo.error_of(&["worktree", "push", "repo", "--force-with-lease"], 25);
+    assert_eq!(error["kind"], "default_branch");
+
+    assert_eq!(repo.on_origin("main"), before, "nothing was pushed");
+}
+
+#[test]
+fn the_primary_checkout_on_another_branch_pushes_like_any_worktree() {
+    let repo = PushRepo::new();
+    let root = repo.fixture.repo.root.clone();
+    repo.git_in(&root, &["switch", "--quiet", "-c", "topic"]);
+    repo.commit_in(&root, "topic.txt", "topic\n", "Topic change");
+
+    let text = repo.ok(&["worktree", "push", "repo"]);
+
+    assert_eq!(text, "repo: pushed to origin/topic\n");
+    assert_eq!(repo.on_origin("topic"), repo.head(&root));
+}

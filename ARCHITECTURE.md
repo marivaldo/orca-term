@@ -577,7 +577,7 @@ everything else under `app/` is pure and tested without a terminal.
   refuse no commits ahead (`no_commits`), gh not on PATH (`prerequisite`), and, asking gh as
   `pr refresh` asks (`gh pr view <branch>`), an open or draft pull request (`pr_exists`) or gh
   unable to say (`prerequisite`, with its reason); then `git push -u origin <branch>`
-  (`git::push_branch`, never forced; a failure is `push_failed` with git's words), then `gh pr
+  (`worktree_push::send_to_origin`, never forced; a failure is `push_failed` with git's words), then `gh pr
   create --base --head --title --body-file <file>|--body "" [--draft]` (60 s at most), then ask gh
   again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`, notifying);
   when gh does not show the new pull request yet, the record is made from the address `gh pr
@@ -607,7 +607,10 @@ everything else under `app/` is pure and tested without a terminal.
 - `ops/worktree_push.rs`: `worktree push` (#146): find the target, then refuse a worktree whose
   directory is gone, one in the middle of a rebase or on no branch, and a repository with no
   `origin` (`git::has_origin`); count the files with changes not committed, which are left out
-  (`create::count_uncommitted`); then `git::push_branch` with `PushMode::Plain`, or with
+  (`create::count_uncommitted`); then `send_to_origin`, the one road every push takes (`pr
+  create`'s too), which refuses the repository's default branch as the typed `default_branch`
+  (`create::check_not_default_branch`, #195: orca-term never pushes it, so the primary checkout
+  on it is never pushed) before `git::push_branch`, with `PushMode::Plain`, or with
   `PushMode::WithLease` on what `refs/remotes/origin/<branch>` holds (`git::read_ref`; none
   expects no branch on `origin`). A plain push git rejects as a non-fast-forward is
   `push_diverged`; any other failure, the refused lease included, is `WorktreePushFailed` (kind
@@ -1140,7 +1143,8 @@ validate"):
   `orca-term.yaml` not approved, with its `Subject` and file, which the client shows before
   approving it). Since #175 also `PrimaryNotRemovable` (kind `primary_checkout`, exit 24: `worktree
   rm` of the primary checkout) and `OnDefaultBranch` (kind `default_branch`, exit 25: `pr create`
-  or `pr compose` of a worktree on the default branch, which has no pull request).
+  or `pr compose` of a worktree on the default branch, which has no pull request; since #195
+  `worktree push` of one too, since orca-term never pushes the default branch).
 - `WorktreeLock` (`adapters/fs.rs`): proof that this process holds a worktree's lock. It can
   only be made by taking the lock, and dropping it releases the lock. `FileLock` is the same for
   the holder's `agent.lock`.
@@ -1233,7 +1237,9 @@ validate"):
   it. `worktree rm` refuses it as `primary_checkout` (exit 24), `--force` or not. On the
   repository's default branch a worktree has no pull request: `pr refresh` records none without
   running gh (`pr::branch_to_ask`), `pr merge` refuses as `no_open_pr`, and `pr create` and `pr
-  compose` refuse as `default_branch` (exit 25).
+  compose` refuse as `default_branch` (exit 25). Nor is it ever pushed (#195): every push goes
+  through `worktree_push::send_to_origin`, which refuses it as `default_branch` before git runs;
+  `worktree rebase` still updates it onto `origin/<default>`.
 - **The agent is launched only through `domain/launch.rs`.** The command line is
   `claude --settings <admin>/claude-settings.json --permission-mode acceptEdits --ide [--resume <id>]`,
   in the worktree,
@@ -1628,7 +1634,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   in `lua/`, `plugin/` and `build.lua`. Since #141 it also rejects the literal `"fetch"` outside
   `src/adapters/git.rs` and a call of `fetch_into` outside `src/ops/worktree_rebase.rs`: only
   `worktree rebase` fetches. Since #146 a call of `push_branch` is allowed in
-  `src/ops/worktree_push.rs` too, the string literal `--force` (either quote) is rejected in every
+  `src/ops/worktree_push.rs` too, and since #195 only there (in `send_to_origin`, which `pr
+  create` pushes through, so the default branch is refused for every push); the string literal `--force` (either quote) is rejected in every
   file scanned, and a literal starting with `--force-with-lease` outside `src/adapters/git.rs`;
   `src/output/json.rs` and `lua/orca-term/core.lua`, which name orca-term's own `worktree rm
   --force` and `worktree push --force-with-lease`, are left out of both.

@@ -248,11 +248,12 @@ pub(crate) enum TypedError {
         path.display()
     )]
     PrimaryNotRemovable { name: String, path: PathBuf },
-    /// `pr create` or `pr compose` of a worktree on the repository's default branch, which has no
-    /// pull request (ADR 0013): the primary checkout, most of the time. Nothing was pushed.
+    /// `pr create`, `pr compose` or `worktree push` of a worktree on the repository's default
+    /// branch, which has no pull request and is never pushed (ADR 0013, #195): the primary
+    /// checkout, most of the time. Nothing was pushed.
     #[error(
-        "worktree {name} is on {branch}, the repository's default branch, which has no pull \
-         request; commit on a branch of its own to open one (nothing was pushed)"
+        "worktree {name} is on {branch}, the repository's default branch, which orca-term never \
+         pushes and which has no pull request; commit on a branch of its own (nothing was pushed)"
     )]
     OnDefaultBranch { name: String, branch: String },
 }
@@ -1163,8 +1164,9 @@ mod tests {
             },
             "default_branch",
             25,
-            "worktree repo is on main, the repository's default branch, which has no pull \
-             request; commit on a branch of its own to open one (nothing was pushed)",
+            "worktree repo is on main, the repository's default branch, which orca-term never \
+             pushes and which has no pull request; commit on a branch of its own (nothing was \
+             pushed)",
         );
     }
 
