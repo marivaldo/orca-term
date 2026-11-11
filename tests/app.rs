@@ -554,6 +554,107 @@ fn a_draft_pull_request_of_the_primary_checkout_on_the_default_branch_is_refused
     assert!(app.wait_ended().success());
 }
 
+/// The project list's file of `fx`'s `HOME`: the fixture unsets `XDG_STATE_HOME`.
+fn projects_file(fx: &AgentRepo) -> PathBuf {
+    fx.repo.home.join(".local/state/orca-term/projects.json")
+}
+
+/// What the project list's file holds when the project at `path` is the only one.
+fn only_project(path: &Path) -> String {
+    format!(
+        r#"{{"schema":1,"projects":[{{"path":"{}"}}]}}"#,
+        path.display()
+    )
+}
+
+#[test]
+fn no_arguments_at_a_terminal_open_the_application_once_the_repository_is_on_the_list() {
+    let fx = AgentRepo::new();
+    let mut command = fx.command(&[]);
+    // The developer may run the tests inside Neovim, where no arguments print the usage.
+    command.env_remove("NVIM");
+
+    let mut app = Running::start_as(&command);
+    app.wait_for("repo  primary");
+    app.wait_for("repo/repo");
+    assert_eq!(
+        fs::read_to_string(projects_file(&fx)).unwrap(),
+        only_project(&fx.repo.root),
+        "no `project add` ran first: opening added it"
+    );
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn the_application_adds_the_primary_checkout_even_from_a_linked_worktree() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let mut command = fx.command(&["app"]);
+    command.current_dir(&worktree);
+
+    let mut app = Running::start_as(&command);
+    app.wait_for("repo/fix");
+    assert_eq!(
+        fs::read_to_string(projects_file(&fx)).unwrap(),
+        only_project(&fx.repo.root)
+    );
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+}
+
+#[test]
+fn a_repository_already_on_the_list_and_a_directory_outside_every_repository_change_nothing() {
+    let fx = AgentRepo::new();
+    let file = projects_file(&fx);
+    let before = format!(
+        r#"{{"schema":1,"projects":[{{"path":"/somewhere/else"}},{{"path":"{}"}}]}}"#,
+        fx.repo.root.display()
+    );
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, &before).unwrap();
+    let outside = fx.repo.tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+
+    for dir in [&fx.repo.root, &outside] {
+        let mut command = fx.command(&["app"]);
+        command.current_dir(dir);
+        let mut app = Running::start_as(&command);
+        app.wait_for("repo/");
+        assert_eq!(fs::read_to_string(&file).unwrap(), before, "{dir:?}");
+        app.type_in(b"\x01q");
+        assert!(app.wait_ended().success());
+    }
+}
+
+#[test]
+fn a_project_list_that_cannot_be_changed_never_stops_the_application() {
+    for unreadable in ["not json", r#"{"schema":99,"projects":[]}"#] {
+        let fx = AgentRepo::new();
+        let file = projects_file(&fx);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, unreadable).unwrap();
+
+        let mut app = Running::start(&fx);
+        app.wait_for("Projects");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            unreadable,
+            "the file is not written over"
+        );
+        app.type_in(b"\x01q");
+        assert!(app.wait_ended().success(), "{unreadable}");
+    }
+}
+
+#[test]
+fn the_application_refused_off_a_terminal_adds_nothing() {
+    let fx = AgentRepo::new();
+    let out = fx.run(&["app"]);
+    assert!(!out.status.success());
+    assert!(!projects_file(&fx).exists(), "nothing was added");
+}
+
 #[test]
 fn started_in_the_primary_checkout_it_opens_it_tagged_and_enter_starts_its_agent() {
     let fx = AgentRepo::new();
