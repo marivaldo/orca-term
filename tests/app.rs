@@ -29,6 +29,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -238,12 +239,16 @@ fn alive(path: &Path) -> bool {
 }
 
 /// A short directory under `/tmp` for the application's sockets, as `XDG_RUNTIME_DIR`, removed
-/// when dropped.
+/// when dropped. Each is its own, so tests running at once never remove another's.
 struct RuntimeDir(PathBuf);
+
+/// How many runtime directories this test process made, to name the next one.
+static RUNTIME_DIRS: AtomicUsize = AtomicUsize::new(0);
 
 impl RuntimeDir {
     fn new() -> Self {
-        let dir = PathBuf::from(format!("/tmp/ot-app-{}", std::process::id()));
+        let n = RUNTIME_DIRS.fetch_add(1, Ordering::SeqCst);
+        let dir = PathBuf::from(format!("/tmp/ot-app-{}-{n}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
