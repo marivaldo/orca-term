@@ -42,7 +42,7 @@ jobs:
       # opencode's sandbox boundary test (#35) runs the fake opencode through the real bwrap.
       - name: Install bubblewrap
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+        run: .github/scripts/apt-install.sh bubblewrap
       - run: just rust
 
   deny:
@@ -182,9 +182,7 @@ jobs:
       # LuaRocks and the Lua 5.1 headers busted's C modules build against, from Ubuntu's signed
       # archive.
       - name: Install LuaRocks
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends luarocks liblua5.1-0-dev
+        run: .github/scripts/apt-install.sh --no-install-recommends luarocks liblua5.1-0-dev
       - run: just lua-rocks
       - run: just lua
 
