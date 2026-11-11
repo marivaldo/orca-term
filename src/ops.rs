@@ -53,7 +53,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::adapters::fs::{self, FileLock, WorktreeLock};
+use crate::adapters::fs::{self, ExistingLock, FileLock, Sharing, WorktreeLock};
 use crate::adapters::nvim::Sent;
 use crate::adapters::{self, env, git, program, script};
 use crate::domain::agent::{Agent, AgentEnd, HolderStatus};
@@ -455,6 +455,60 @@ pub(crate) fn lock_worktree(name: &str, path: &Path) -> Result<WorktreeLock> {
     }
 }
 
+/// How long a write into a worktree's admin directory waits for a removal of that worktree to
+/// end, and a removal for the writes in flight to end.
+const REMOVAL_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// Proof that the worktree whose admin directory it was taken for is still there, and that no
+/// removal of it can start while this is held (`guard_against_removal`).
+#[derive(Debug)]
+pub(crate) struct StillThere {
+    /// The shared lock on git's `gitdir` file of the worktree; `None` for the primary checkout,
+    /// which is never removed.
+    _lock: Option<FileLock>,
+}
+
+/// Holds off a removal of the worktree whose admin directory is `admin` while a command outside
+/// the worktree's lock writes into that directory (`pr.json`, `seen.json`, the notes). `None`
+/// when the worktree is removed or being removed: then nothing may be written there, as the write
+/// would bring back git's admin directory of a removed worktree, or keep git from deleting it
+/// (`worktree rm` failed with "Directory not empty" when `pr refresh` wrote meanwhile).
+///
+/// The lock is a shared `flock` on git's own `gitdir` file of the worktree, which `worktree rm`
+/// locks alone while git deletes the worktree ([`lock_for_removal`]): the file dies with the
+/// worktree, so no lock file of ours outlives it, and none is ever made.
+pub(crate) fn guard_against_removal(admin: &AdminDir) -> Result<Option<StillThere>> {
+    let never_removed = Ok(Some(StillThere { _lock: None }));
+    if admin.is_primary() {
+        return never_removed;
+    }
+    let Some(gitdir) = admin.gitdir_file() else {
+        return never_removed;
+    };
+    match fs::lock_existing_waiting(&gitdir, Sharing::Shared, REMOVAL_LOCK_WAIT)? {
+        ExistingLock::Held(lock) => Ok(Some(StillThere { _lock: Some(lock) })),
+        // Still held after the wait: a removal is deleting the worktree.
+        ExistingLock::Gone | ExistingLock::Busy => Ok(None),
+    }
+}
+
+/// Locks git's `gitdir` file of the worktree `name`, whose admin directory is `admin`, alone, for
+/// `worktree rm` to hold while git deletes the worktree, once the writes in flight into its admin
+/// directory end (`guard_against_removal`). `None` when the file is gone already: nothing writes
+/// into a worktree git no longer knows. Fails when a write still holds it after the wait.
+pub(crate) fn lock_for_removal(name: &str, admin: &AdminDir) -> Result<Option<FileLock>> {
+    let Some(gitdir) = admin.gitdir_file() else {
+        return Ok(None);
+    };
+    match fs::lock_existing_waiting(&gitdir, Sharing::Exclusive, REMOVAL_LOCK_WAIT)? {
+        ExistingLock::Held(lock) => Ok(Some(lock)),
+        ExistingLock::Gone => Ok(None),
+        ExistingLock::Busy => bail!(
+            "another orca-term command is writing to worktree {name}; try again once it finishes"
+        ),
+    }
+}
+
 /// Writes the worktree's `worktree.json` with its setup recorded as `setup`, keeping the agent it
 /// records, and refusing to overwrite a newer schema. Taking `lock` proves the worktree's lock is
 /// held.
@@ -839,12 +893,16 @@ pub(crate) fn read_notes(admin: &AdminDir) -> Result<Notes> {
 /// Changes the pending notes of the worktree `name`, whose admin directory is `admin`, through
 /// `change`, and returns what it returns. Holds `notes.lock` from the read to the write (waiting
 /// for another note command at most [`NOTES_LOCK_WAIT`]), replaces `notes.json` whole, then
-/// removes the kept contents no note refers to any more. Nothing is written when `change` fails.
+/// removes the kept contents no note refers to any more. Nothing is written when `change` fails,
+/// nor when the worktree was removed meanwhile, which is refused (`guard_against_removal`).
 pub(crate) fn change_notes<T>(
     admin: &AdminDir,
     name: &str,
     change: impl FnOnce(&mut Notes) -> Result<T>,
 ) -> Result<T> {
+    let Some(_still_there) = guard_against_removal(admin)? else {
+        bail!("worktree {name} was removed");
+    };
     // A worktree made by hand with git has no admin directory of ours yet.
     fs::create_dir_all(admin.path())?;
     let _lock = fs::lock_file_waiting(&admin.notes_lock(), NOTES_LOCK_WAIT)?.ok_or_else(|| {

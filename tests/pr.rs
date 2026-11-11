@@ -26,6 +26,7 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::process::Stdio;
 
 use fixture::AgentRepo;
 use serde_json::{Value, json};
@@ -358,4 +359,46 @@ fn listing_writes_no_pr_file_and_a_newer_schema_is_never_written_over() {
         "{out:?}"
     );
     assert_eq!(fs::read_to_string(&file).unwrap(), newer);
+}
+
+/// A fake `gh` that says it was asked (`gh.asked` beside it), then answers only once `gh.gate`
+/// exists there, that the branch has no pull request. It needs `sleep` on its PATH.
+const GATED_GH: &str = r#"#!/bin/sh
+dir="${0%/*}"
+: > "$dir/gh.asked"
+while [ ! -e "$dir/gh.gate" ]; do sleep 0.05; done
+printf 'no pull requests found for branch "%s"\n' "$3" >&2
+exit 1
+"#;
+
+#[test]
+fn a_worktree_removed_while_gh_answers_is_left_out_and_its_admin_dir_never_comes_back() {
+    let fixture = AgentRepo::new();
+    fixture.write_tool("gh", GATED_GH);
+    std::os::unix::fs::symlink("/bin/sleep", fixture.bin.join("sleep")).unwrap();
+    let demo = fixture.new_worktree("demo");
+    let git_admin = fixture.admin_dir(&demo).parent().unwrap().to_owned();
+    let refresh = fixture
+        .command(&["pr", "refresh", "demo", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    fixture::wait_until("gh is asked", || fixture.bin.join("gh.asked").exists());
+
+    fixture.ok(&["worktree", "rm", "demo"]);
+    fs::write(fixture.bin.join("gh.gate"), "").unwrap();
+    let out = refresh.wait_with_output().unwrap();
+
+    assert!(out.status.success(), "{out:?}");
+    let refreshed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        refreshed["worktrees"],
+        json!([]),
+        "the removed worktree is left out"
+    );
+    assert!(
+        !git_admin.exists(),
+        "git's admin directory of the removed worktree came back"
+    );
 }

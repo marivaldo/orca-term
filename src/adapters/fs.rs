@@ -9,6 +9,7 @@
 use std::fs::{self, File, TryLockError};
 use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::FileTypeExt as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -379,6 +380,67 @@ pub(crate) fn lock_file_waiting(path: &Path, wait: Duration) -> Result<Option<Fi
     }
 }
 
+/// Whether a lock on a file that must exist already is shared with others or held alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sharing {
+    /// Any number of holders at once, none while one holds it alone.
+    Shared,
+    /// One holder alone.
+    Exclusive,
+}
+
+/// What waiting for a lock on a file that must exist already came to.
+#[derive(Debug)]
+pub(crate) enum ExistingLock {
+    /// The lock is held until the value is dropped, and the file was still there once taken.
+    Held(FileLock),
+    /// The file does not exist, or was deleted while this waited for its lock.
+    Gone,
+    /// Another process still held the lock when the wait ended.
+    Busy,
+}
+
+/// Takes a `flock` on the file at `path`, `sharing` it or not, trying again every 20 ms for at
+/// most `wait`. The file is never created: a missing file, or one deleted while this waited, is
+/// `Gone`, since a lock on a file nobody can open any more guards nothing.
+pub(crate) fn lock_existing_waiting(
+    path: &Path,
+    sharing: Sharing,
+    wait: Duration,
+) -> Result<ExistingLock> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(ExistingLock::Gone),
+        Err(err) => return Err(err).with_context(|| format!("could not open {}", path.display())),
+    };
+    let deadline = Instant::now() + wait;
+    loop {
+        let tried = match sharing {
+            Sharing::Shared => file.try_lock_shared(),
+            Sharing::Exclusive => file.try_lock(),
+        };
+        match tried {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(TryLockError::WouldBlock) => return Ok(ExistingLock::Busy),
+            Err(TryLockError::Error(err)) => {
+                return Err(err).with_context(|| format!("could not lock {}", path.display()));
+            }
+        }
+    }
+    // No name links to the file any more: it was deleted while this waited.
+    let links = file
+        .metadata()
+        .with_context(|| format!("could not read {}", path.display()))?
+        .nlink();
+    if links == 0 {
+        return Ok(ExistingLock::Gone);
+    }
+    Ok(ExistingLock::Held(FileLock(file)))
+}
+
 /// Whether the file at `path` is locked right now. Only reads: a missing file is a free lock, and
 /// a lock taken to find out is released at once.
 pub(crate) fn lock_status_at(path: &Path) -> Result<LockStatus> {
@@ -458,6 +520,38 @@ mod tests {
         assert_eq!(lock.admin(), &admin);
         assert_eq!(lock_status(&admin).unwrap(), LockStatus::Held);
         assert!(try_lock_worktree(&admin).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_lock_on_an_existing_file_is_shared_or_alone_and_a_deleted_file_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("gitdir");
+        let short = Duration::from_millis(50);
+        let gone = lock_existing_waiting(&path, Sharing::Shared, short).unwrap();
+        assert!(matches!(gone, ExistingLock::Gone), "{gone:?}");
+        assert!(!path.exists(), "never created");
+
+        fs::write(&path, "x").unwrap();
+        let one = lock_existing_waiting(&path, Sharing::Shared, short).unwrap();
+        let two = lock_existing_waiting(&path, Sharing::Shared, short).unwrap();
+        assert!(matches!(one, ExistingLock::Held(_)), "{one:?}");
+        assert!(matches!(two, ExistingLock::Held(_)), "{two:?}");
+        let alone = lock_existing_waiting(&path, Sharing::Exclusive, short).unwrap();
+        assert!(matches!(alone, ExistingLock::Busy), "{alone:?}");
+
+        // Deleted while a lock on it is awaited, as git deletes a worktree's `gitdir` file.
+        drop(two);
+        let deleter = {
+            let path = path.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                fs::remove_file(&path).unwrap();
+                drop(one);
+            })
+        };
+        let waited = lock_existing_waiting(&path, Sharing::Exclusive, Duration::from_secs(5));
+        deleter.join().unwrap();
+        assert!(matches!(waited.unwrap(), ExistingLock::Gone));
     }
 
     // As above, that the lock is free again once dropped is left to the black-box tests

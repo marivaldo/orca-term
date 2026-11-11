@@ -357,11 +357,14 @@ everything else under `app/` is pure and tested without a terminal.
 - `ops.rs`: what several commands share: reading the fleet and deriving each worktree's state
   (with, while no holder is alive, how its agent ended last, `agent-end.json`, #178; and
   `read_agent_log`, its `agent.log`, which the application shows),
-  agent and holder, finding the worktree a command names, taking a worktree's lock, refusing a
+  agent and holder, finding the worktree a command names, taking a worktree's lock, holding off a
+  removal while a command writes into a worktree's admin directory outside its lock
+  (`guard_against_removal`, a shared `flock` on git's `gitdir` file of the worktree, which
+  `worktree rm` takes alone through `lock_for_removal` while git deletes the worktree), refusing a
   change under a live holder, writing `worktree.json` (the setup or the agent, keeping the other),
   reading the config files, running a worktree's setup, the registry of running Neovims
   (`nvim_registry`), the notes' shared steps (`find_noted`, `read_notes`, `change_notes`, which
-  holds `notes.lock` from the read to the write and then removes the kept contents no note refers
+  holds off a removal and holds `notes.lock` from the read to the write and then removes the kept contents no note refers
   to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
   `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
   worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
@@ -404,7 +407,8 @@ everything else under `app/` is pure and tested without a terminal.
   commands read the fleet without counting.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (the primary
   checkout included), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
-  (no lock, so never `busy`; never over a newer schema), notify. Doing either twice changes
+  (not under the worktree's lock, so never `busy`; only holding off a removal while it writes,
+  refused once the worktree is removed; never over a newer schema), notify. Doing either twice changes
   nothing more. `mark` writes the mark and notifies; `worktree review` marks through it too.
 - `ops/worktree_review.rs`: `worktree review`: find the target (refusing a worktree whose
   directory is gone; the primary checkout is reviewed against the default branch like any), resolve the default branch as `worktree new` resolves
@@ -429,7 +433,9 @@ everything else under `app/` is pure and tested without a terminal.
   `AgentDidNotStop`, and nothing is removed), go back to the primary checkout (talking to the
   holder enters the admin directory, which git will not delete while it is the current one),
   check the dirty rule again (files written while stopping refuse as `dirty`, the agent left
-  stopped), remove, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
+  stopped), remove while holding git's `gitdir` file of the worktree locked alone, once the writes
+  into its admin directory in flight end (`lock_for_removal`, waiting at most 5 s), so no write
+  keeps git from deleting the admin directory or brings it back, delete its chain of snapshots (`refs/orca-term/worktrees/<id>`, the
   id learnt before git removes the admin directory), delete or keep the branch. The branch's fate
   reads the worktree's `pr.json` before the removal deletes it (#137): when git does not see the
   branch merged into the default branch, a cached `merged` pull request whose head is exactly the
@@ -557,8 +563,9 @@ everything else under `app/` is pure and tested without a terminal.
   one is refused), find gh on PATH, run `gh pr view <branch> --json
   number,title,state,isDraft,url,statusCheckRollup` in every worktree at once (one thread each,
   `program::run_within`, 10 s each), turn each answer into a finding (`domain/pr.rs`), then write
-  each `pr.json` whole with no lock (never over a newer schema) and notify only for a worktree whose
-  finding changed. A worktree on no branch, or on the default branch (#175, `pr::branch_to_ask`),
+  each `pr.json` whole, holding off a removal of that worktree while it writes (never over a newer
+  schema; a worktree removed while gh answered is left out and nothing is written for it, its
+  admin directory found before gh is asked), and notify only for a worktree whose finding changed. A worktree on no branch, or on the default branch (#175, `pr::branch_to_ask`),
   has no pull request and runs no gh. With
   `ops/pr_create.rs`, the only file that names gh; `pr create` finds gh, asks about a branch and
   keeps the answer through its `find_gh`, `ask` and `keep`.
@@ -663,7 +670,9 @@ everything else under `app/` is pure and tested without a terminal.
   unix socket (`is_socket`) or a file this process can open (`is_readable_file`, opened and closed,
   nothing read, #105), a directory for this user alone (`create_private_dir`, #176: made 0700, or
   refused when the one there is a symlink, someone else's, or open to others), and locks: a worktree's `WorktreeLock`, taken without waiting, the holder's `FileLock` on
-  `agent.lock`, and the read-only probes `ls` uses for both.
+  `agent.lock`, the read-only probes `ls` uses for both, and `lock_existing_waiting`, a shared or
+  exclusive `flock` on a file that must exist already, never created; a file deleted while it
+  waited reads as gone.
 - `adapters/script.rs`: the setup script's process, `bash -e -c <script>` in the worktree, its
   stdout and stderr merged through one pipe and copied to the setup log and the live echo.
 - `adapters/env.rs`: the current directory, `HOME`, `XDG_CONFIG_HOME` and the directories of
@@ -1181,6 +1190,19 @@ validate"):
   git's worktree exists and holds it until the setup
   ends; `worktree setup` and `worktree rm` take it without waiting and fail as `busy` when it is
   held.
+- **Nothing writes into a worktree's admin directory while git deletes it.** The writes made
+  outside the worktree's lock that the person or the client start at any time (`pr.json` from
+  `pr refresh`, `pr create`, `pr merge` and `worktree push`; `seen.json` from `worktree seen`,
+  `unseen` and `review`; the notes) hold a shared `flock` on git's `gitdir` file of the worktree
+  while they write (`ops::guard_against_removal`), and `worktree rm` holds it alone while git
+  deletes the worktree (`ops::lock_for_removal`, waiting at most 5 s for the writes in flight,
+  then failing and removing nothing). A write that finds the file gone, or still held alone after
+  5 s, writes nothing: `pr refresh` leaves that worktree out, the others refuse. Without it a
+  write landing during the removal made git fail with "Directory not empty", or brought back
+  `.git/worktrees/<id>/orca-term/` after it. The lock is git's own file, which dies with the
+  worktree, so no lock file of ours outlives it. The agent's writes (hooks, holder, snapshots)
+  need none: `worktree rm` stops the agent first. The primary checkout is never removed, so its
+  writes take no such lock.
 - **A failed setup undoes nothing**: the worktree, its branch and its log stay, and the worktree
   is not ready until `worktree setup` succeeds.
 - **A committed setup script runs only once approved** (#58). A script whose winning config
@@ -1332,7 +1354,7 @@ validate"):
   ended turn (an open turn whose holder is gone counts as ended) is after `seen_through` in
   `seen.json`, whatever its outcome, or when the person marked it by hand. Only the person's
   commands, `worktree seen`, `unseen` and `review`, write `seen.json`: atomically (write and rename), with
-  no lock, the last write winning, and never over a newer schema; a file the core cannot use
+  no lock but the one holding off a removal, the last write winning, and never over a newer schema; a file the core cannot use
   reads as nothing seen and no mark. Hooks never touch it. `worktree ls` derives the mark on
   read, independent of the state.
 - **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
@@ -1353,7 +1375,8 @@ validate"):
   names the GitHub CLI (`cargo xtask gh-guard`); the Neovim client never runs it, only asks the
   core. gh runs with an empty stdin, in the worktree, at most 10 s; gh missing, not logged in or
   not pointed at GitHub is recorded as `unavailable`, never a failure of the command. `pr.json` is
-  written only by `pr refresh`, whole and with no lock, the last write winning, never over a newer
+  written only by `pr refresh`, whole and with no lock but the one holding off a removal, the last
+  write winning, never over a newer
   schema; `worktree ls` and `worktree detail` only read it. `pr refresh` tells the running Neovims
   only about a worktree whose finding changed (`fetched_at` aside), so a refresh that changes
   nothing makes no one read the fleet.
