@@ -165,7 +165,8 @@ either when Neovim is not opened: the usage, the refusal inside Neovim, a missin
 ## Application
 
 `orca-term app` opens the terminal application in the terminal you run it in (ADR 0012). It is
-being built in slices; it shows the side menu and each worktree's agent, Neovim and shell.
+being built in slices; it shows the side menu, each worktree's agent, Neovim and shell, and the
+open worktree's changed files and pull request.
 `orca-term` with no arguments still opens Neovim.
 
 - **Side menu**, on the left at 100 columns and more: every project on your
@@ -191,6 +192,21 @@ being built in slices; it shows the side menu and each worktree's agent, Neovim 
   and is registered as `orca-term nvim register` does, so it hears when a worktree changes.
   Quitting the application ends its Neovims (unsaved buffers are kept in Neovim's swap files) and
   its shells; agents keep running in their holders.
+- **Right column**, on the right at 150 columns and more: `changes` with how many files changed
+  against the default branch and the lines added and deleted, each file with its letter (`M`, `A`,
+  `D`, `R`), name, directory and counts, and a bar of the lines added against deleted; `pull
+  request` with its number, title, state, how many checks fail and run and each check, as
+  `pr refresh` last found it (`○ none yet` without one); `branch` with how far it is ahead of and
+  behind the local default branch. `^a f` hides or shows it. Under 150 columns the centre's tab row
+  shows the summary `4 files +55 −21` instead, and `^a f` lays the right column over the centre.
+  With the focus on it, `j` and `k` move over the files and `enter` opens the file's diff in the
+  worktree's Neovim, through the Neovim client's review (diffview.nvim), and shows Neovim (zoomed,
+  from the overlay). A Neovim you run yourself in the worktree, in a window of its own, opens the
+  diff too; the application cannot raise that window. The changes are read again when the
+  worktree's agent works and every 5 s.
+- **`:checktime`**: when an agent ends a turn, every Neovim registered in the repository is asked
+  to `:checktime`, so the buffers of the files it wrote show what it wrote, with or without the
+  application.
 - **Split and zoom**: `^a |` shows the agent and Neovim (or the shell) side by side, each with its
   own tab row; `^a z` fills the screen with the focused panel and puts everything back as it was,
   the split included.
@@ -203,14 +219,16 @@ cancels):
 
 | Key | What it does |
 |---|---|
-| `^a h`, `^a l` | move the focus: the side menu, the centre, and between the split's halves (zoomed, between the split's halves only, staying zoomed) |
+| `^a h`, `^a l` | move the focus: the side menu, the centre, between the split's halves, and the right column (zoomed, between the split's halves only, staying zoomed) |
 | `^a j`, `^a k` | open the next, or the previous, worktree |
 | `^a 1`, `^a 2`, `^a 3` | show the agent, Neovim or the shell |
 | `^a \|` | split the agent and Neovim (or the shell) side by side, or back |
 | `^a z` | zoom the focused panel, or restore |
+| `^a f` | hide or show the right column; under 150 columns, lay it over the centre or close it |
 | `^a a` | send a literal `Ctrl-a` to the focused panel |
 | `^a q` | quit; every agent keeps running, the Neovims and shells end |
 | `j`, `k`, arrows, `enter` | in the focused side menu: move, and open the worktree |
+| `j`, `k`, arrows, `enter`, `esc` | in the focused right column: move, open the file's diff in Neovim, and leave |
 | `enter` | in a panel whose agent, Neovim or shell is not running: start it |
 
 The application restores your terminal when it quits, when it is ended by a signal (`SIGTERM`,

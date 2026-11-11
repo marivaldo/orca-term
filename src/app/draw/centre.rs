@@ -1,5 +1,6 @@
 //! App: the centre's cards (#174, #176), one per panel shown. Each has a tab row: alone, the
-//! three tabs `1 agent  2 nvim  3 shell` with the open worktree and its agent on the right; in the
+//! three tabs `1 agent  2 nvim  3 shell` with the open worktree and its agent on the right, or,
+//! where the right column is not a column, its summary `4 files +55 −21` and `^a f` (#177); in the
 //! split, `1 agent` on the left with the agent's name, and `2 nvim  3 shell` on the right; zoomed,
 //! the panel's own tab with `zoom` and `^a z restore` (and, from the split, which half it shows).
 //! The active tab is a pill, in the accent with the focus, under the accent's stroke. Under the
@@ -13,7 +14,9 @@ use crate::app::paint::{Painter, Seg, bold, fg, italic, key, pill, seg, segs_wid
 use crate::app::panel::Status;
 use crate::app::program::{self, Kind};
 use crate::app::state::{App, Focus};
-use crate::app::theme::{ACCENT, BG, BORDER, CANVAS, FOCUS_SEL, SELECTION, TEXT, TEXT_2};
+use crate::app::theme::{
+    ACCENT, BG, BORDER, CANVAS, DONE, FAILED, FOCUS_SEL, SELECTION, TEXT, TEXT_2,
+};
 use crate::app::view::Tab;
 
 pub(crate) fn draw(p: &mut Painter<'_>, app: &App) {
@@ -47,8 +50,29 @@ fn header(app: &App, tab: Tab) -> (Vec<Tab>, Vec<Seg>) {
     match (view.split, tab) {
         (true, Tab::Agent) => (vec![Tab::Agent], agent_name(app)),
         (true, _) => (vec![Tab::Nvim, Tab::Shell], Vec::new()),
-        (false, _) => (Tab::ALL.to_vec(), location(app)),
+        (false, _) if app.layout.right.is_some_and(|right| !right.overlay) => {
+            (Tab::ALL.to_vec(), location(app))
+        }
+        (false, _) => (Tab::ALL.to_vec(), summary(app)),
     }
+}
+
+/// `4 files +55 −21  ^a f`: the open worktree's changes, where the right column does not show
+/// beside the centre, and the key that shows it.
+fn summary(app: &App) -> Vec<Seg> {
+    let mut out = Vec::new();
+    if let Some(changes) = app.open_changes() {
+        let lines = changes.totals();
+        let count = changes.files.len();
+        let files = if count == 1 { "file" } else { "files" };
+        out.extend([
+            seg(format!("{count} {files} "), fg(TEXT_2)),
+            seg(format!("+{}", lines.added), fg(DONE)),
+            seg(format!(" −{}  ", lines.deleted), fg(FAILED)),
+        ]);
+    }
+    out.push(key("^a f", false));
+    out
 }
 
 /// Draws `tabs` on the card's tab row, `active` as a pill, and the accent's stroke over it when

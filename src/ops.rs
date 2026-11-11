@@ -18,6 +18,7 @@ pub(crate) mod note_edit;
 pub(crate) mod note_ls;
 pub(crate) mod note_rm;
 pub(crate) mod note_send;
+pub(crate) mod nvim_diff;
 pub(crate) mod nvim_register;
 pub(crate) mod nvim_unregister;
 pub(crate) mod open;
@@ -34,6 +35,7 @@ pub(crate) mod session_resume;
 pub(crate) mod turn_blame;
 pub(crate) mod turn_diff;
 pub(crate) mod turn_ls;
+pub(crate) mod worktree_changes;
 pub(crate) mod worktree_detail;
 pub(crate) mod worktree_ls;
 pub(crate) mod worktree_new;
@@ -719,30 +721,45 @@ impl Changed {
     /// Neovims together take a bounded time (`adapters/nvim.rs`), so the write that came before is
     /// never held up.
     pub(crate) fn notify(&self) {
-        let registry = nvim::registry_dir(&self.common);
-        let Ok(names) = fs::list_file_names(&registry) else {
-            return;
-        };
-        // Each registry file, with the Neovim address it holds.
-        let mut entries = Vec::new();
-        let mut sockets = Vec::new();
-        for name in names.iter().filter(|name| nvim::is_entry_name(name)) {
-            let entry = registry.join(name);
-            let address = fs::read_optional(&entry)
-                .ok()
-                .flatten()
-                .and_then(|bytes| Address::from_entry(&bytes));
-            if let Some(address) = address {
-                sockets.push(address.as_path().to_owned());
-                entries.push(entry);
-            }
-        }
         let message = nvim::worktree_changed(&self.worktree.to_string_lossy());
-        let sent = adapters::nvim::send_all(&sockets, &message);
-        for (entry, sent) in entries.iter().zip(sent) {
-            if sent == Sent::Gone {
-                let _ = fs::remove_if_exists(entry);
-            }
+        send_to_registered(&nvim::registry_dir(&self.common), &message);
+    }
+
+    /// Asks every Neovim registered in the repository to `:checktime`, after the worktree's agent
+    /// ended a turn (#177), so the buffers of the files it wrote show what it wrote. Every
+    /// Neovim of the repository is asked, not only the worktree's: the registry does not say which
+    /// worktree a Neovim works in, and `:checktime` touches only buffers whose file changed on
+    /// disk. Never fails, as [`Changed::notify`].
+    pub(crate) fn checktime(&self) {
+        send_to_registered(&nvim::registry_dir(&self.common), &nvim::checktime());
+    }
+}
+
+/// Sends `message` to every Neovim in the registry `registry`, all at once and bounded in time
+/// (`adapters/nvim.rs`). A Neovim that is gone has its file removed from the registry; any other
+/// failure is skipped. Never fails.
+pub(crate) fn send_to_registered(registry: &Path, message: &[u8]) {
+    let Ok(names) = fs::list_file_names(registry) else {
+        return;
+    };
+    // Each registry file, with the Neovim address it holds.
+    let mut entries = Vec::new();
+    let mut sockets = Vec::new();
+    for name in names.iter().filter(|name| nvim::is_entry_name(name)) {
+        let entry = registry.join(name);
+        let address = fs::read_optional(&entry)
+            .ok()
+            .flatten()
+            .and_then(|bytes| Address::from_entry(&bytes));
+        if let Some(address) = address {
+            sockets.push(address.as_path().to_owned());
+            entries.push(entry);
+        }
+    }
+    let sent = adapters::nvim::send_all(&sockets, message);
+    for (entry, sent) in entries.iter().zip(sent) {
+        if sent == Sent::Gone {
+            let _ = fs::remove_if_exists(entry);
         }
     }
 }

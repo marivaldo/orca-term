@@ -1463,6 +1463,7 @@ mod tests {
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::None,
                     head: None,
+                    runs: Vec::new(),
                 }),
             },
             uncommitted: 0,
@@ -1492,6 +1493,7 @@ mod tests {
                     url: "https://github.com/o/r/pull/12".to_owned(),
                     checks: Checks::Passing,
                     head: None,
+                    runs: Vec::new(),
                 }),
             },
             method: Method::Squash,
@@ -1519,6 +1521,7 @@ mod tests {
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::Pending,
             head: None,
+            runs: Vec::new(),
         }));
         let shapes = [
             (

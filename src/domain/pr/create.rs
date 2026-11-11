@@ -255,6 +255,7 @@ pub(crate) fn created_pr(stdout: &[u8], title: &str, readiness: Readiness) -> Op
         url: url.to_owned(),
         checks: Checks::None,
         head: None,
+        runs: Vec::new(),
     })
 }
 
@@ -475,6 +476,7 @@ mod tests {
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::None,
             head: None,
+            runs: Vec::new(),
         })
     }
 

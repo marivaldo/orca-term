@@ -106,6 +106,28 @@ pub(crate) fn trunc(text: &str, cells: u16) -> String {
     out
 }
 
+/// `text` cut to at most `cells` cells from its start, beginning with `…` when it did not fit: a
+/// directory keeps its end, the part nearest the file (`…mplates/`).
+pub(crate) fn trunc_left(text: &str, cells: u16) -> String {
+    if width(text) <= cells {
+        return text.to_owned();
+    }
+    if cells == 0 {
+        return String::new();
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let w = u16::try_from(c.width().unwrap_or(0)).unwrap_or(u16::MAX);
+        if used + w + 1 > cells {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
+}
+
 /// The words of `text` in lines of at most `cells` cells; a word longer than a line is cut.
 pub(crate) fn wrap(text: &str, cells: u16) -> Vec<String> {
     let mut lines = Vec::new();
@@ -295,6 +317,14 @@ mod tests {
         assert_eq!(Mode::detect(false, Some("24bit")), Mode::Truecolor);
         assert_eq!(Mode::detect(false, None), Mode::Ansi256);
         assert_eq!(Mode::detect(false, Some("yes")), Mode::Ansi256);
+    }
+
+    #[test]
+    fn a_directory_is_cut_from_its_start_keeping_its_end() {
+        assert_eq!(trunc_left("src/auth/", 9), "src/auth/");
+        assert_eq!(trunc_left("app/templates/", 9), "…mplates/");
+        assert_eq!(trunc_left("abc", 1), "…");
+        assert_eq!(trunc_left("abc", 0), "");
     }
 
     #[test]

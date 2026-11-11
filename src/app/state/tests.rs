@@ -1,4 +1,4 @@
-//! App: the state's tests: what each key and each change does (#174, #176).
+//! App: the state's tests: what each key and each change does (#174, #176, #177).
 
 use super::*;
 use crate::adapters::pty::Printed;
@@ -203,10 +203,8 @@ fn the_panel_follows_the_screens_size() {
     assert_eq!(app.fit(SCREEN), []);
     assert_eq!(
         app.fit(Rect::new(0, 0, 160, 40)),
-        [Effect::SizeAgent(Size {
-            rows: 35,
-            cols: 119
-        })]
+        [Effect::SizeAgent(Size { rows: 35, cols: 84 })],
+        "160 columns: the side menu and the right column take 34 each"
     );
 }
 
@@ -400,4 +398,113 @@ fn a_program_answers_its_terminals_questions_and_starts_again_once_ended() {
         Some(&ProgramStatus::Failed("nvim: not found".to_owned()))
     );
     assert_eq!(app.key(press(KeyCode::Enter), now).len(), 1, "tries again");
+}
+
+/// `fix`'s changes: three files.
+fn three_files() -> crate::domain::changes::Changes {
+    use crate::domain::changes::{Change, ChangedFile, Changes};
+    let file = |path: &str| ChangedFile {
+        path: path.to_owned(),
+        change: Change::Modified,
+        lines: None,
+    };
+    Changes {
+        files: vec![file("a.rs"), file("b.rs"), file("c.rs")],
+        drift: None,
+    }
+}
+
+#[test]
+fn from_150_columns_l_reaches_the_right_column_and_enter_opens_the_diff_in_neovim() {
+    let (mut app, now) = app();
+    app.fit(Rect::new(0, 0, 180, 48));
+    app.changes_read(PathBuf::from("/p/api.wt/fix"), Ok(three_files()));
+    assert!(app.layout.right.is_some_and(|right| !right.overlay));
+
+    prefixed(&mut app, now, KeyCode::Char('l'));
+    assert_eq!(app.focus, Focus::RightColumn);
+    assert_eq!(
+        app.key(press(KeyCode::Char('j')), now),
+        [],
+        "j moves the cursor"
+    );
+    app.key(press(KeyCode::Char('j')), now);
+    app.key(press(KeyCode::Char('j')), now);
+    assert_eq!(app.file_cursor, 2, "and stops at the last file");
+    app.key(press(KeyCode::Char('k')), now);
+
+    let effects = app.key(press(KeyCode::Enter), now);
+    assert!(
+        matches!(&effects[0], Effect::Run(id, _) if id.kind == Kind::Nvim),
+        "Neovim starts first, so the diff can wait for it: {effects:?}"
+    );
+    assert_eq!(
+        effects[1..],
+        [Effect::OpenDiff {
+            primary: PathBuf::from("/p/api"),
+            worktree: PathBuf::from("/p/api.wt/fix"),
+            file: "b.rs".to_owned(),
+        }]
+    );
+    assert_eq!((app.focus, app.view.tab), (Focus::Centre, Tab::Nvim));
+    assert!(!app.view.zoom, "a column: no zoom");
+
+    prefixed(&mut app, now, KeyCode::Char('l'));
+    assert_eq!(app.focus, Focus::RightColumn);
+    prefixed(&mut app, now, KeyCode::Char('h'));
+    assert_eq!(app.focus, Focus::Centre, "^a h goes back to the centre");
+}
+
+#[test]
+fn f_hides_and_shows_the_column_from_150_columns() {
+    let (mut app, now) = app();
+    app.fit(Rect::new(0, 0, 180, 48));
+    prefixed(&mut app, now, KeyCode::Char('l'));
+    prefixed(&mut app, now, KeyCode::Char('f'));
+    assert_eq!(app.layout.right, None);
+    assert_eq!(
+        app.focus,
+        Focus::Centre,
+        "the focus leaves the hidden column"
+    );
+    prefixed(&mut app, now, KeyCode::Char('f'));
+    assert!(app.layout.right.is_some());
+    assert_eq!(app.focus, Focus::Centre);
+}
+
+#[test]
+fn under_150_columns_f_lays_the_right_column_over_the_centre_and_enter_zooms_neovim() {
+    let (mut app, now) = app();
+    app.changes_read(PathBuf::from("/p/api.wt/fix"), Ok(three_files()));
+    assert_eq!(app.layout.right, None, "hidden under 150 columns");
+    prefixed(&mut app, now, KeyCode::Char('l'));
+    assert_eq!(app.focus, Focus::Centre, "nothing to reach");
+
+    prefixed(&mut app, now, KeyCode::Char('f'));
+    assert!(app.layout.right.is_some_and(|right| right.overlay));
+    assert_eq!(app.focus, Focus::RightColumn, "the overlay takes the focus");
+    app.key(press(KeyCode::Esc), now);
+    assert_eq!(app.layout.right, None, "esc closes it");
+    assert_eq!(app.focus, Focus::Centre);
+
+    prefixed(&mut app, now, KeyCode::Char('f'));
+    let effects = app.key(press(KeyCode::Enter), now);
+    assert!(matches!(effects.last(), Some(Effect::OpenDiff { file, .. }) if file == "a.rs"));
+    assert_eq!(app.layout.right, None, "the overlay closes");
+    assert!(app.view.zoom, "Neovim is zoomed");
+    assert_eq!((app.focus, app.view.tab), (Focus::Centre, Tab::Nvim));
+}
+
+#[test]
+fn enter_opens_nothing_before_the_changes_are_read_or_with_none() {
+    let (mut app, now) = app();
+    app.fit(Rect::new(0, 0, 180, 48));
+    prefixed(&mut app, now, KeyCode::Char('l'));
+    assert_eq!(app.key(press(KeyCode::Enter), now), []);
+    app.changes_read(PathBuf::from("/p/api.wt/docs"), Ok(three_files()));
+    assert_eq!(app.open_changes(), None, "another worktree's changes");
+    assert_eq!(app.key(press(KeyCode::Enter), now), []);
+    app.changes_read(PathBuf::from("/p/api.wt/fix"), Err("git failed".to_owned()));
+    assert_eq!(app.changes_error(), Some("git failed"));
+    assert_eq!(app.key(press(KeyCode::Enter), now), []);
 }

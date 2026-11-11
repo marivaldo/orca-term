@@ -978,10 +978,12 @@ end
 ---(made when missing) and the review opens from it in diffview, in a review tab of its own, or the
 ---worktree's review tab already open becomes current and is read again. The sidebar is read again
 ---once the core answers, so the unseen mark goes at once. Without diffview.nvim nothing runs, so
----nothing is marked; a refusal of the core is told with its reason and opens nothing.
+---nothing is marked; a refusal of the core is told with its reason and opens nothing. With `file`
+---(relative to the worktree), the review shows that file's diff.
 ---@param path string
 ---@param primary string the primary checkout's path, where the core runs
-function M.review(path, primary)
+---@param file? string
+function M.review(path, primary, file)
   if not review.available() then
     fail({
       kind = 'no_diffview',
@@ -996,11 +998,31 @@ function M.review(path, primary)
       return
     end
     tabs.go_to(reviewed.worktree.path)
-    local open_err = review.open(reviewed.worktree.path, reviewed.base)
+    local open_err = review.open(reviewed.worktree.path, reviewed.base, file)
     if open_err then
       fail(open_err)
     end
   end)
+end
+
+---What the core asks every Neovim of the repository when the person presses enter on a changed file
+---in the application's right column (#177, `orca-term nvim diff`): the review of the worktree at
+---`path`, on `file`'s diff, opens in this Neovim when it works in that worktree, that is when one of
+---its tabs has the worktree as its directory (a Neovim started in the worktree, as the application
+---starts its own, has). Any other Neovim does nothing. It returns at once, so the core's request is
+---answered before the review opens, which then runs as `M.review` does.
+---@param path string the worktree, as the core prints it
+---@param primary string the primary checkout's path, where the core runs
+---@param file string relative to the worktree
+---@return boolean opened whether this Neovim opens the review
+function M.diff_from_core(path, primary, file)
+  if #tabs.find_all(path) == 0 then
+    return false
+  end
+  vim.schedule(function()
+    M.review(path, primary, file)
+  end)
+  return true
 end
 
 ---The current tab's worktree: the worktree whose tab is current, or the worktree a review tab or a

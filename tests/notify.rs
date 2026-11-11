@@ -327,21 +327,34 @@ fn commit_setup(fx: &AgentRepo, script: &str) {
 /// Runs the handler the agent's settings register for `SessionStart`, as claude would: the
 /// command with its arguments, a payload on stdin, in the worktree.
 fn fire_session_start(worktree: &Path, admin: &Path) {
+    fire(
+        worktree,
+        admin,
+        "SessionStart",
+        &json!({"source": "startup"}),
+    );
+}
+
+/// Runs the handler the agent's settings register for `event`, as claude would, with a payload
+/// naming the session, the directory and the event, plus `fields`.
+fn fire(worktree: &Path, admin: &Path, event: &str, fields: &Value) {
     let settings: Value =
         serde_json::from_slice(&fs::read(admin.join("claude-settings.json")).unwrap()).unwrap();
-    let handler = &settings["hooks"]["SessionStart"][0]["hooks"][0];
+    let handler = &settings["hooks"][event][0]["hooks"][0];
     let args: Vec<&str> = handler["args"]
         .as_array()
         .unwrap()
         .iter()
         .map(|arg| arg.as_str().unwrap())
         .collect();
-    let payload = json!({
+    let mut payload = json!({
         "session_id": "40b1fb34-8b28-4e24-9bcf-31292c24b65f",
         "cwd": worktree,
-        "hook_event_name": "SessionStart",
-        "source": "startup",
+        "hook_event_name": event,
     });
+    for (key, value) in fields.as_object().unwrap() {
+        payload[key] = value.clone();
+    }
     let mut child = Command::new(handler["command"].as_str().unwrap())
         .args(&args)
         .current_dir(worktree)
@@ -436,6 +449,80 @@ fn a_hook_event_notifies_every_registered_neovim() {
     let path = listed_path(&fx, "fix");
     assert_eq!(first.paths(), times(&path, 1));
     assert_eq!(second.paths(), times(&path, 1));
+}
+
+#[test]
+fn the_end_of_a_turn_asks_every_registered_neovim_to_checktime() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    let admin = fx.admin_dir(&worktree);
+    fx.ok(&["agent", "start", "fix"]);
+    let (first, second) = (Neovim::new(), Neovim::new());
+    fx.ok(&["nvim", "register", &first.address()]);
+    fx.ok(&["nvim", "register", &second.address()]);
+    let path = listed_path(&fx, "fix");
+    let changed = json!([
+        0,
+        1,
+        "nvim_exec_autocmds",
+        ["User", {"pattern": "OrcaTermWorktreeChanged", "data": {"path": path}}]
+    ]);
+    let checktime = json!([0, 1, "nvim_command", ["checktime"]]);
+
+    fire(
+        &worktree,
+        &admin,
+        "UserPromptSubmit",
+        &json!({"prompt": "write it"}),
+    );
+    assert_eq!(
+        first.messages(),
+        std::slice::from_ref(&changed),
+        "a turn begins"
+    );
+
+    fire(&worktree, &admin, "Stop", &json!({}));
+    for neovim in [&first, &second] {
+        let mut messages = neovim.messages();
+        if neovim.address() == second.address() {
+            // The second one heard the begin too.
+            assert_eq!(messages.remove(0), changed);
+        }
+        assert_eq!(
+            messages,
+            [changed.clone(), checktime.clone()],
+            "a turn ends"
+        );
+    }
+}
+
+#[test]
+fn nvim_diff_asks_every_registered_neovim_to_open_the_files_diff() {
+    let fx = AgentRepo::new();
+    fx.new_worktree("fix");
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
+    let (path, primary) = (listed_path(&fx, "fix"), listed_path(&fx, "repo"));
+
+    let text = fx.ok(&["nvim", "diff", "fix", "src/a.rs"]);
+    assert_eq!(
+        text,
+        "asked the Neovims of fix to open the diff of src/a.rs\n"
+    );
+    assert_eq!(
+        neovim.messages(),
+        [json!([
+            0,
+            1,
+            "nvim_exec_lua",
+            [
+                "return require('orca-term.actions').diff_from_core(...)",
+                [path, primary, "src/a.rs"]
+            ]
+        ])]
+    );
+    let out = fx.run(&["nvim", "diff", "nope", "a.rs", "--json"]);
+    assert!(!out.status.success(), "an unknown worktree is refused");
 }
 
 #[test]

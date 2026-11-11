@@ -4,6 +4,7 @@
 pub(crate) mod agent;
 pub(crate) mod blame;
 pub(crate) mod branch;
+pub(crate) mod changes;
 pub(crate) mod config;
 pub(crate) mod contract;
 pub(crate) mod detail;

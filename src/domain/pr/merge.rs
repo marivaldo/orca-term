@@ -336,6 +336,7 @@ mod tests {
             url: "https://github.com/o/r/pull/12".to_owned(),
             checks: Checks::Passing,
             head: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            runs: Vec::new(),
         }
     }
 

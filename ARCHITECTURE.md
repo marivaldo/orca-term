@@ -184,20 +184,21 @@ the adapters, and returns a domain value that `output` prints.
 
 ### app
 
-The terminal application (#174, #176, ADR 0012), drawn in the "Quiet v2" look of the design on the
+The terminal application (#174, #176, #177, ADR 0012), drawn in the "Quiet v2" look of the design on the
 branch `prototype/terminal-application` (`prototype/terminal-application/design/`). It sits above
 the operations: it reads the fleets and starts agents through them, and talks to each agent's
 holder through the holder adapter, as `agent attach` does. Each worktree's Neovim and shell are
 not held: the application runs them on PTYs of its own and ends them on quit. Only `app.rs`,
-`app/running.rs` and the adapters they call touch the outside world; everything else under `app/`
-is pure and tested without a terminal.
+`app/running.rs`, `app/watch.rs` and the operations and adapters they call touch the outside world;
+everything else under `app/` is pure and tested without a terminal.
 
 - `app.rs`: the run loop. One channel carries everything that happens: the terminal's keys,
   pastes and resizes (`adapters/screen.rs`), every project's fleet read again each second on a
   thread of its own (`ops::fleets::run_quick`), what the open agent's holder sends
   (`adapters/holder/client.rs`, tagged with the connection's number so a closed one is ignored),
   the end of an agent start (run on a thread, `ops::agent_start::run_in` with no approval
-  possible), what a Neovim or a shell printed or that it ended (`adapters/pty.rs`), and SIGTERM,
+  possible), what a Neovim or a shell printed or that it ended (`adapters/pty.rs`), the open
+  worktree's changes read (`app/watch.rs`), and SIGTERM,
   SIGHUP or SIGINT. Each batch of messages becomes effects from the state, which the loop carries
   out (`Link` keeps the one connection to the open worktree's holder, `Running` the Neovims and
   shells), and the loop draws the next frame. Once the loop ends and the terminal is restored,
@@ -210,13 +211,22 @@ is pure and tested without a terminal.
   the registry of the worktree's repository) once its socket appears, looked for after each batch
   of messages, since the core forgets an address with nothing behind it; when it ends, or on quit,
   it is unregistered and a socket left behind is removed. A failed registration is not retried.
+  A diff to open (#177) goes to every Neovim of the repository through `ops::nvim_diff::run_in`, on
+  a thread of its own; when the worktree's own Neovim was just started, it waits until that Neovim
+  is registered.
+- `app/watch.rs` (#177): the thread that reads the open worktree's changed files and drift
+  (`ops::worktree_changes`) for the right column. The run loop tells it the open worktree as the
+  fleets list it whenever that changes (another worktree, or its entry: its hooks write its state as
+  the agent works); it reads then, and at least every 5 s for the person's own edits, never every
+  second.
 - `app/state.rs`: `App`, everything shown and remembered (the fleets, the open worktree, the
   side menu's cursor, the focus, the view, the prefix's arming time, the agent's panel, every
   worktree's Neovim and shell started so far, a message, the layout, the spinner's frame), and
   what each key does to it, as `Effect`s: `Type` bytes into the agent, `Attach` to a holder,
   `Start` an agent at a size, `SizeAgent`, `Run` a Neovim or a shell at a size, `TypeInto` it,
-  `Resize` it, `Quit`. `Ctrl-a` arms the prefix for one key within 1.5 s: `h`/`l` move the focus
-  (between the split's halves, else to the side menu while it shows), `j`/`k` open the next or
+  `Resize` it, `OpenDiff` in the worktree's Neovims, `Quit`. `Ctrl-a` arms the prefix for one key
+  within 1.5 s: `h`/`l` move the focus (between the split's halves, else to the side menu or the
+  right column while it shows), `f` shows or hides the right column, `j`/`k` open the next or
   previous worktree in the side menu's order (after the last comes the first), `1`/`2`/`3` show
   the agent, Neovim or the shell, `|` (or `\`) splits, `z` zooms (taking the focus to the
   centre), `a` types `Ctrl-a` into the focused panel, `q` quits, anything else (`esc`) disarms it.
@@ -229,6 +239,12 @@ is pure and tested without a terminal.
   since a worktree may sit inside the primary checkout, #175), else the first, when
   none is open or the open one is gone, and attaches to the open one's agent once its holder is
   alive.
+- `app/state/right_column.rs` (#177): what the state does with the right column: the open
+  worktree's changes as last read (`ChangesRead`, kept only for the worktree they are of), `^a f`
+  (the column on or off where it fits, else the overlay, which takes the focus), `j`/`k` moving the
+  cursor over the changed files, `esc` leaving, and `enter` opening the file's diff: Neovim shows
+  with the focus (zoomed when the right column was an overlay), is started first when it was not,
+  then `OpenDiff`.
 - `app/state/programs.rs` (#176): what the state does with the Neovims and shells: starting the
   ones shown, their keys and pastes, their output (whose answers go back as `TypeInto`), their
   end, a failed start, and `enter` starting one again.
@@ -248,14 +264,17 @@ is pure and tested without a terminal.
   room for the longest name, else `/tmp/orca-term-<uid>/`, each socket `nvim-<pid>-<n>`, so every
   path fits macOS's 103 bytes for a socket's path.
 - `app/view.rs` (#176): the `View`: the focused `Tab` (agent, nvim, shell), the split's right half
-  (Neovim or the shell, whichever was shown last), the split and the zoom, the same whichever
+  (Neovim or the shell, whichever was shown last), the split and the zoom, whether the right
+  column is wanted as a column and whether it shows as an overlay (#177), the same whichever
   worktree is open; which panels are shown, and how `h`/`l` move between the split's halves
   (zoomed, they switch panel and stay zoomed).
 - `app/keys.rs`: a crossterm key back into the bytes xterm sends for it (control codes, `ESC`
   before an alt key, the arrows in normal or application mode, modifiers as `1;<m>`), and a paste
   inside the bracketed-paste marks when the agent asked for them.
 - `app/layout.rs`: where each part goes, by the size and the view: the side menu 34 columns wide
-  from 150 columns, 28 from 100, none under 100 or while zoomed; the centre beside it (the whole
+  from 150 columns, 28 from 100, none under 100 or while zoomed; the right column (#177) 34
+  columns wide on the right from 150 columns (x145 at 180) unless zoomed or hidden with `^a f`,
+  else over the centre's right side while the overlay shows; the centre between them (the whole
   width zoomed), one `Card` per panel shown, the split's two halving the centre with a column of
   canvas between; each panel's terminal inside its card, two columns in (Neovim one, none in the
   split, its sign column at the card's edge as the design draws it); the size a panel not on
@@ -276,9 +295,15 @@ is pure and tested without a terminal.
   row, alone `1 agent  2 nvim  3 shell` with the open worktree and its agent on the right, in the
   split `1 agent` with the agent's name and `2 nvim  3 shell`, zoomed the panel's own tab with
   `split  agent | nvim`, the `zoom` pill and `^a z restore`; the active tab a pill, in the accent
-  under the accent's stroke when focused; then the panel's screen, how to start an agent, or that
-  a Neovim or shell ended or could not start) and the status bar (`status.rs`, which names the
-  focused panel and adds the `zoom` pill). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
+  under the accent's stroke when focused; where the right column is not beside the centre, the
+  summary `4 files +55 −21` and `^a f` instead of the open worktree; then the panel's screen, how
+  to start an agent, or that a Neovim or shell ended or could not start), the right column
+  (`right_column.rs`, #177: `changes` with the count and the lines added and deleted, each file
+  with its letter, name, directory cut from the left and counts, the cursor's in the accent with
+  the focus, the diffstat bar; `pull request` with its number, title, state, how many checks fail
+  and run, and each check, or `○ none yet`, or why gh could not say; `branch` with its drift) and
+  the status bar (`status.rs`, which names the focused part, `files` for the right column, and adds
+  the `zoom` pill). `draw/tests.rs` draws screens on ratatui's `TestBackend` and compares them
   with `app/snapshots/*.txt`: the text, then each cell's text colour and background as one letter
   per token; a changed screen is written beside its snapshot as `<name>.new.txt`.
 - `app/paint.rs`: the painter (text at a column, cards with half-line edges, pills, keycaps,
@@ -299,7 +324,9 @@ is pure and tested without a terminal.
   to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
   `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
   worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
-  and `notify_changed`, which every command calls after it writes a worktree's state. The turn
+  and `notify_changed`, which every command calls after it writes a worktree's state; `Changed`
+  also asks them to `:checktime` after a turn's end (#177), and `send_to_registered` sends any one
+  request to every Neovim of a registry, pruning the gone ones. The turn
   commands share `find_turned` (refusing a worktree whose directory is gone) and `read_history`
   (the whole `turns.jsonl` and `status.json`, read with no lock: the hook only appends to the one
   and replaces the other whole). The prerequisites: `check_program` finds a program on PATH as a
@@ -339,6 +366,11 @@ is pure and tested without a terminal.
   its start point, find the review's base with `git merge-base <default branch> HEAD` in the
   worktree, then mark it seen as `worktree seen` does. The base comes first, so a failure (no
   default branch, unrelated histories) marks nothing.
+- `ops/worktree_changes.rs` (#177): a worktree's changed files with their letters and counts
+  (`domain/changes.rs`: `git diff --name-status` and `--numstat` against the merge base with the
+  start point, the untracked files with their lines counted up to 1 MiB and for the first 200),
+  and its drift as `worktree detail` reads it; only reads. What the application's right column
+  shows.
 - `ops/worktree_detail.rs`: `worktree detail`: find the target (the primary checkout included;
   refusing an unknown worktree), read the hooks' live status for the whole detail and the latest turn's
   denials, `worktree.json` and the end of the setup log (64 KiB at most), and the drift: the
@@ -407,7 +439,8 @@ is pure and tested without a terminal.
   and the end snapshot belong to `opencode`): read the payload from stdin,
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event, take
   the snapshot when the event opened or closed a turn, fill its id into the records, append to
-  `turns.jsonl`, replace `status.json`, and exit 0 without printing whatever happens; what went
+  `turns.jsonl`, replace `status.json`, tell the running Neovims, and, when the event ended a turn,
+  ask them to `:checktime` (#177), and exit 0 without printing whatever happens; what went
   wrong is appended to `hook.log`, emptied first once past 256 KiB. The snapshot: copy the real
   index (`git rev-parse --git-path index`) to `snapshot.index` in the admin directory, `git add -A`
   and `git write-tree` through the copy (`GIT_INDEX_FILE`), `git commit-tree` with the identities
@@ -457,6 +490,10 @@ is pure and tested without a terminal.
   registry (idempotent; creating the file is the only write, so no lock). `run_in` does the same
   for the repository of a given directory: the application registers each Neovim it starts so
   (#176).
+- `ops/nvim_diff.rs` (#177): the hidden `nvim diff <worktree> <file>`: send every Neovim of the
+  repository the request that opens the file's diff in the worktree's review; the Neovim client
+  decides there whether that Neovim works in the worktree (`diff_from_core` in
+  `lua/orca-term/actions.lua`). `run_in` is what the application does on enter on a changed file.
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
   one not recorded is not an error. `run_in` does it for a given directory's repository (#176).
 - `ops/open.rs`: `open` and `orca-term` with no arguments (#148): find the Neovim to open
@@ -556,7 +593,8 @@ is pure and tested without a terminal.
 - `adapters/git.rs`: every git process, one function per question (`worktree_list`,
   `default_branch`, `local_default_branch`, `is_merged`, `merge_base`, `left_right_counts` (the
   drift's `rev-list --left-right --count`), `changed_paths` and `untracked_files` (the changed
-  files' `diff --name-only --merge-base` and `ls-files --others --exclude-standard`), `blob_id` of some content, `diff_files` between two
+  files' `diff --name-only --merge-base` and `ls-files --others --exclude-standard`),
+  `diff_name_status` and `diff_numstat` (the same diff's letters and counts, #177), `blob_id` of some content, `diff_files` between two
   files, `index_path`, `config_value`, `read_ref`, `refs_under`, `commit_exists`, `has_file`, the
   turn commands' `patch` (`git diff` between two snapshots) and `blame_porcelain`, `pr compose`'s
   `base_point`, `commits_ahead` and `uncommitted_status`, ...) or change (`worktree_add`,
@@ -707,8 +745,14 @@ is pure and tested without a terminal.
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
-  unix socket, `v:servername`); and the msgpack-RPC request, encoded by hand, that fires
-  `User OrcaTermWorktreeChanged` with the worktree's path.
+  unix socket, `v:servername`); and the msgpack-RPC requests, encoded by hand (arrays, maps,
+  strings, positive integers of any size, #177): the one that fires `User OrcaTermWorktreeChanged`
+  with the worktree's path, `checktime`, and `open_diff`, which calls the Neovim client's
+  `diff_from_core` with the worktree, the primary checkout and the file (#177).
+- `domain/changes.rs` (#177): a worktree's changed files (`ChangedFile`: its path, its `Change`,
+  M, A, D or R, and its lines added and deleted, none for a binary file), read from git's
+  `--name-status -z` and `--numstat -z` and the untracked files, sorted by path; `count_lines` as
+  git counts an added file's; `Changes`, the files and the drift, with their totals.
 - `domain/agent.rs`: the agent a worktree runs (`Agent::ClaudeCode`, recorded as `claude-code`,
   run as `claude`; `Agent::OpenCode`, recorded and run as `opencode`, #35), whether its holder is alive, the holder's record (`agent.json`), a terminal
   size, and the reports of `agent start`, `swap`, `stop` and `attach`.
@@ -873,7 +917,9 @@ is pure and tested without a terminal.
   any schema, never written over a newer one, an unusable one read as never fetched), and whether
   a finding `changed`. Since #137 gh is also asked for `headRefOid`, kept as the pull request's
   optional `head`, and `merged_as` says when a `merged` pull request whose head is exactly a
-  branch's tip proves that branch merged.
+  branch's tip proves that branch merged. Since #177 each check is kept too (`runs`: its name or
+  context and its `CheckResult`), for the application's right column; an older `pr.json` reads with
+  none, and the JSON contract does not show them.
 - `domain/pr/create.rs`: a new pull request (#132): the commits ahead read from `git log`
   (`parse_log`), the template's name (`is_template_name`, `TEMPLATE_DIRS`), the message as `gh pr
   create --fill` makes it (`compose`: the only commit's subject, else the branch name; the
@@ -1232,7 +1278,10 @@ validate"):
   Neovims are told at once, one thread each, within 200 ms in all, so one that never accepts,
   reads or answers cannot hold the command up (it misses that change); notifying never fails the
   write before it. A Neovim that is gone has its file pruned; any other failure
-  is skipped and the file kept. `worktree ls` sends nothing.
+  is skipped and the file kept. `worktree ls` sends nothing. A hook whose event ended a turn then
+  asks every registered Neovim to `:checktime` the same way (#177), with or without the
+  application: every Neovim of the repository, since the registry does not say which worktree a
+  Neovim works in, and `:checktime` only touches buffers whose file changed on disk.
 - **gh runs only from `pr refresh`, and its answer is a cache** (#87). Only `ops/pr_refresh.rs`
   names the GitHub CLI (`cargo xtask gh-guard`); the Neovim client never runs it, only asks the
   core. gh runs with an empty stdin, in the worktree, at most 10 s; gh missing, not logged in or
@@ -2027,7 +2076,8 @@ what they print.
   goes back to the worktree's review tab and refreshes it (`refresh_files`) when one is open, or
   runs `require('diffview').open({ '-C' .. fnameescape(path), base })` (diffview passes `-C`
   through `expand()`, so the path is escaped; spaces need nothing, the arguments being a list) and
-  marks the new tab. The first review makes the `orca-term-review` group, whose `User
+  marks the new tab. With a file (#177), a new review opens on it (`--selected-file`, escaped
+  likewise) and one already open shows it (`set_file_by_path`). The first review makes the `orca-term-review` group, whose `User
   DiffviewViewOpened`, `DiffviewViewEnter` and `DiffviewDiffBufWinEnter` put a buffer-local `gf` on
   the current buffer and on the view's file panel in orca-term's review tabs only; diffview sets
   its own `gf` on a diff buffer each time it shows it, just before `DiffviewDiffBufWinEnter`, so
@@ -2151,8 +2201,12 @@ what they print.
   `review` (`d`: without diffview.nvim it only says it is needed, naming its URL, and runs
   nothing; else `worktree review` without blocking, then the sidebar is read again (the mark goes)
   and, unless the core refused, the worktree's tab through `tabs.lua` and the review through
-  `review.lua`), `review_current` (`:OrcaTerm review`: the worktree whose tab is current, or
-  whose review tab is; anywhere else it says it needs a worktree's tab),
+  `review.lua`, on a given file when one is given), `diff_from_core` (#177: what `orca-term nvim
+  diff` and the application's right column ask every Neovim of the repository; only a Neovim with
+  a tab whose directory is the worktree, as one started in it has, opens the review on the file,
+  scheduled after it answered; any other does nothing), `review_current` (`:OrcaTerm review`: the
+  worktree whose tab is current, or whose review tab is; anywhere else it says it needs a
+  worktree's tab),
   `notes_current` (`:OrcaTerm notes`: the notes of the same worktree, through `notes.lua`;
   anywhere else it says it needs a worktree's tab or its review),
   `turns` and `turns_current` (`:OrcaTerm turns`: the same worktree's turns from `turn ls`, newest

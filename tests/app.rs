@@ -29,6 +29,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -238,12 +239,16 @@ fn alive(path: &Path) -> bool {
 }
 
 /// A short directory under `/tmp` for the application's sockets, as `XDG_RUNTIME_DIR`, removed
-/// when dropped.
+/// when dropped. Each is its own, so tests running at once never remove another's.
 struct RuntimeDir(PathBuf);
+
+/// How many runtime directories this test process made, to name the next one.
+static RUNTIME_DIRS: AtomicUsize = AtomicUsize::new(0);
 
 impl RuntimeDir {
     fn new() -> Self {
-        let dir = PathBuf::from(format!("/tmp/ot-app-{}", std::process::id()));
+        let n = RUNTIME_DIRS.fetch_add(1, Ordering::SeqCst);
+        let dir = PathBuf::from(format!("/tmp/ot-app-{}-{n}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -318,6 +323,77 @@ fn the_nvim_tab_runs_neovim_in_the_worktree_registered_and_quitting_ends_it_and_
     assert!(!registered(), "and takes Neovim off the registry");
     assert!(!socket.exists(), "and removes its socket");
     drop(listener);
+}
+
+/// Listens at `socket` as Neovim would, and returns the first request made there, read until it
+/// holds `until`, after answering it as Neovim answers.
+fn first_request(socket: &Path, until: &str) -> String {
+    let listener = UnixListener::bind(socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut accepted = None;
+    wait_until("a request to Neovim", || {
+        accepted = listener.accept().ok();
+        accepted.is_some()
+    });
+    let (mut stream, _) = accepted.unwrap();
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !String::from_utf8_lossy(&request).contains(until) {
+        let n = stream.read(&mut chunk).unwrap();
+        assert!(n > 0, "{:?}", String::from_utf8_lossy(&request));
+        request.extend_from_slice(&chunk[..n]);
+    }
+    stream.write_all(&[0x94, 0x01, 0x01, 0xc0, 0xc0]).unwrap();
+    String::from_utf8_lossy(&request).into_owned()
+}
+
+#[test]
+fn the_right_column_lists_the_changed_files_and_enter_opens_a_diff_in_the_worktrees_neovim() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    fs::write(worktree.join("login.rs"), "one\ntwo\nthree\n").unwrap();
+    // Through the fixture's git config, which gives the commit an author on any machine.
+    let at = worktree.to_str().unwrap();
+    fx.repo.git(&["-C", at, "add", "login.rs"]);
+    fx.repo.git(&["-C", at, "commit", "--quiet", "-m", "login"]);
+    fs::write(worktree.join("notes.txt"), "a\nb\n").unwrap();
+    fx.ok(&["project", "add"]);
+    fx.write_tool("nvim", FAKE_NVIM);
+    let runtime = RuntimeDir::new();
+    let mut command = fx.command(&["app"]);
+    command.env("XDG_RUNTIME_DIR", &runtime.0);
+
+    let mut app = Running::start_as(&command);
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("changes  2");
+    app.wait_for("login.rs");
+    app.wait_for("notes.txt");
+    app.wait_for("↑1 ahead");
+
+    app.type_in(b"\x01l");
+    app.wait_for("files");
+    app.type_in(b"j\r");
+    app.wait_for("fake nvim ready");
+
+    // The stand-in cannot listen: the test does it for it, as Neovim would, and reads what the
+    // application asks once the Neovim is registered.
+    let log = fx.log.display().to_string();
+    let args = fs::read_to_string(format!("{log}.nvim-args")).unwrap();
+    let socket = PathBuf::from(args.lines().nth(1).unwrap());
+    let text = first_request(&socket, "notes.txt");
+    assert!(text.contains("diff_from_core"), "{text}");
+    assert!(
+        text.contains(worktree.canonicalize().unwrap().to_str().unwrap()),
+        "{text}"
+    );
+
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
 }
 
 #[test]
