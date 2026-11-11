@@ -18,6 +18,10 @@ use crate::domain::project::ProjectFleet;
 /// The card's title.
 const TITLE: &str = "Projects";
 
+/// The tag after the primary checkout's name (ADR 0013), `TEXT_2` on `RAISED` as the design draws
+/// it.
+const PRIMARY_TAG: &str = " primary ";
+
 /// The most lines a project's error takes.
 const ERROR_LINES: usize = 3;
 
@@ -211,11 +215,16 @@ fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
     let (glyph, state) = theme::look(&worktree.state, menu.app.frame);
     p.text(x + 4, row, &glyph.to_string(), bold(state));
     let unseen = worktree.unseen && !open;
-    let room = w.saturating_sub(8 + if unseen { 2 } else { 0 });
+    let tag = if worktree.primary { PRIMARY_TAG } else { "" };
+    let tag_room = if tag.is_empty() { 0 } else { width(tag) + 1 };
+    let room = w.saturating_sub(8 + if unseen { 2 } else { 0 } + tag_room);
     let name_colour = if cursor { ACCENT } else { TEXT };
-    let after = p.text(x + 6, row, &trunc(&worktree.name, room), bold(name_colour));
+    let mut after = p.text(x + 6, row, &trunc(&worktree.name, room), bold(name_colour));
     if unseen {
-        p.text(after + 1, row, &theme::UNSEEN.to_string(), bold(state));
+        after = p.text(after + 1, row, &theme::UNSEEN.to_string(), bold(state));
+    }
+    if !tag.is_empty() {
+        p.text(after + 1, row, tag, fg(TEXT_2).bg(RAISED.color()));
     }
     let end = x + w - 2;
     if menu.lines == 2 {

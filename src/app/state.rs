@@ -127,13 +127,17 @@ impl App {
         Vec::new()
     }
 
-    /// The worktree containing the directory the application started in, else the first one.
+    /// The worktree containing the directory the application started in, else the first one. The
+    /// deepest one wins: a worktree may sit inside the primary checkout, which is a worktree too
+    /// (ADR 0013).
     fn first_to_open(&self) -> Option<PathBuf> {
         let order = menu::order(&self.fleets);
-        let started_in = self
-            .start_in
-            .as_deref()
-            .and_then(|dir| order.iter().find(|path| dir.starts_with(path)));
+        let started_in = self.start_in.as_deref().and_then(|dir| {
+            order
+                .iter()
+                .filter(|path| dir.starts_with(path))
+                .max_by_key(|path| path.components().count())
+        });
         started_in.or(order.first()).cloned()
     }
 
@@ -561,5 +565,28 @@ mod tests {
         let mut started = App::new(SCREEN, Some(PathBuf::from("/p/web.wt/ui/src")));
         started.set_fleets(std::mem::take(&mut { app }.fleets));
         assert_eq!(open(&started), "/p/web.wt/ui");
+    }
+
+    #[test]
+    fn started_in_a_worktree_inside_the_primary_checkout_it_opens_that_worktree() {
+        let fleets = || {
+            vec![fixture::project(
+                "/p/api",
+                vec![
+                    fixture::primary("/p/api", State::Idle),
+                    fixture::worktree("/p/api/.worktrees/fix", State::NoAgent),
+                ],
+            )]
+        };
+        let mut inside = App::new(SCREEN, Some(PathBuf::from("/p/api/.worktrees/fix/src")));
+        inside.set_fleets(fleets());
+        assert_eq!(open(&inside), "/p/api/.worktrees/fix");
+        let mut primary = App::new(SCREEN, Some(PathBuf::from("/p/api/src")));
+        primary.set_fleets(fleets());
+        assert_eq!(
+            open(&primary),
+            "/p/api",
+            "the primary checkout opens like any"
+        );
     }
 }

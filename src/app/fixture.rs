@@ -37,6 +37,16 @@ pub(crate) fn worktree(path: &str, state: State) -> Worktree {
     }
 }
 
+/// The primary checkout at `path`, on `main`, in `state` (ADR 0013): the first worktree of its
+/// project's fleet, as the core lists it.
+pub(crate) fn primary(path: &str, state: State) -> Worktree {
+    Worktree {
+        branch: Some(Branch::new("main")),
+        primary: true,
+        ..worktree(path, state)
+    }
+}
+
 /// The project whose primary checkout is `path`, with `worktrees`.
 pub(crate) fn project(path: &str, worktrees: Vec<Worktree>) -> ProjectFleet {
     ProjectFleet {

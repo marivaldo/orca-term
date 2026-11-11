@@ -209,7 +209,8 @@ touch the outside world; everything under `app/` is pure and tested without a te
   quits, anything else (`esc`) disarms it. The focused side menu moves its cursor with `j`/`k`
   and the arrows and opens with `enter`, giving the centre the focus. The centre types every key
   into a running agent, encoded again (`keys.rs`); where none runs `enter` starts it. A fleet read
-  opens the worktree containing the directory the application started in, else the first, when
+  opens the worktree containing the directory the application started in (the deepest such one,
+  since a worktree may sit inside the primary checkout, #175), else the first, when
   none is open or the open one is gone, and attaches to the open one's agent once its holder is
   alive.
 - `app/panel.rs`: the agent's panel: a `vt100` screen fed with the replay and then the agent's
@@ -230,7 +231,9 @@ touch the outside world; everything under `app/` is pure and tested without a te
   claude-code, a worktree's message (its activity, else its state in words) and its age (`now`,
   `9m`, `3h`, `2d`).
 - `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
-  project's initial and name, its worktrees in three lines, or two under 40 rows, the open one in
+  project's initial and name, its worktrees in three lines, or two under 40 rows, the primary
+  checkout first as the fleet lists it, with the ` primary ` tag (TEXT_2 on RAISED) after its name
+  and unseen mark (#175), the open one in
   a half-line card, the cursor's in the accent with the focus; `no worktrees yet`; a project that
   cannot be read shows its error, wrapped to three lines and muted; the list scrolls to the open or
   cursor's worktree, and to its end from the last one), the centre (`centre.rs`: the `1 agent`

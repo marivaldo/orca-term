@@ -169,7 +169,8 @@ being built in slices; this first one shows the side menu and the agent's termin
 with no arguments still opens Neovim.
 
 - **Side menu**, on the left at 100 columns and more: every project on your
-  [project list](#projects), each with its worktrees. A worktree shows its state's glyph (`◐`
+  [project list](#projects), each with its worktrees, its primary checkout first with the
+  ` primary ` tag after its name. A worktree shows its state's glyph (`◐`
   working, `?` waiting for you, `●` finished, `✗` failed, `○` idle, `·` no agent), its name and
   its unseen mark `•`; then its branch and its pull request's number, as `pr refresh` last found
   it; then its agent, what the agent said last and how long ago. Under 40 rows each worktree takes
@@ -180,8 +181,8 @@ with no arguments still opens Neovim.
   `orca-term agent attach` is: its screen is replayed, every key goes to it, and it takes the
   panel's size. A worktree with no agent running says so, and `enter` starts it, as
   `orca-term agent start` does (a start that needs your approval fails, saying why: run
-  `orca-term agent start` in a shell then). The application opens the worktree you start it in,
-  else the first one.
+  `orca-term agent start` in a shell then). The application opens the worktree you start it in
+  (the deepest, when one sits inside the primary checkout), else the first one.
 - **Status bar**: the open worktree, how many worktrees need you, failed, are running or are
   quiet, and the keys.
 
