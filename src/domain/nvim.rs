@@ -2,7 +2,8 @@
 //! registers its server address (`v:servername`, the path of a unix socket) in the registry,
 //! `<git common dir>/orca-term/nvim/`, one file per Neovim; after every write to a worktree's
 //! state the core sends each one a msgpack-RPC request that fires `User OrcaTermWorktreeChanged`
-//! there, with the worktree's path, so its sidebar redraws.
+//! there, with the worktree's path, so its sidebar redraws. When an agent's turn ends the core
+//! also asks each one to `:checktime` (#177), so open buffers show what the agent wrote.
 //!
 //! A registry file is named after its address: the address's 64-bit FNV-1a hash in 16 lowercase
 //! hex digits, so the name is short, the same for the same address every time (registering is
@@ -10,7 +11,7 @@
 //! itself, which is what the core connects to.
 //!
 //! The message is encoded by hand, since it needs only a few msgpack types: arrays, maps, strings
-//! and a small positive integer.
+//! and positive integers.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -109,7 +110,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// The id of the one request the core sends on each connection.
-pub(crate) const REQUEST_ID: u8 = 1;
+pub(crate) const REQUEST_ID: u64 = 1;
 
 /// The msgpack-RPC request that tells a Neovim the worktree at `path` changed:
 /// `[0, REQUEST_ID, "nvim_exec_autocmds", ["User", {"pattern": EVENT, "data": {"path": path}}]]`.
@@ -136,6 +137,47 @@ pub(crate) fn worktree_changed(path: &str) -> Vec<u8> {
     out
 }
 
+/// The msgpack-RPC request that asks a Neovim to `:checktime`: `[0, REQUEST_ID, "nvim_command",
+/// ["checktime"]]`. Neovim then reads again every buffer whose file changed on disk and that has no
+/// change of its own ('autoread', on by default), and asks about one that has. Only the buffers
+/// whose file changed are touched, so a Neovim with none of the worktree's files open sees
+/// nothing. A request, for the reason [`worktree_changed`] gives.
+pub(crate) fn checktime() -> Vec<u8> {
+    let mut out = Vec::new();
+    push_array(&mut out, 4);
+    push_uint(&mut out, 0);
+    push_uint(&mut out, REQUEST_ID);
+    push_str(&mut out, "nvim_command");
+    push_array(&mut out, 1);
+    push_str(&mut out, "checktime");
+    out
+}
+
+/// The Lua a diff request runs: the Neovim client's entry point for it, given the worktree, the
+/// primary checkout and the file.
+pub(crate) const OPEN_DIFF_LUA: &str = "return require('orca-term.actions').diff_from_core(...)";
+
+/// The msgpack-RPC request that asks a Neovim to open the diff of `file` (relative to the
+/// worktree) in the review of the worktree at `worktree`, whose primary checkout is `primary`
+/// (#177): `[0, REQUEST_ID, "nvim_exec_lua", [OPEN_DIFF_LUA, [worktree, primary, file]]]`. The
+/// client decides there whether that Neovim works in the worktree, and opens the review only then,
+/// once it answered, so the core never waits for the review. A Neovim without the client answers
+/// with an error, and nothing happens there.
+pub(crate) fn open_diff(worktree: &str, primary: &str, file: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_array(&mut out, 4);
+    push_uint(&mut out, 0);
+    push_uint(&mut out, REQUEST_ID);
+    push_str(&mut out, "nvim_exec_lua");
+    push_array(&mut out, 2);
+    push_str(&mut out, OPEN_DIFF_LUA);
+    push_array(&mut out, 3);
+    push_str(&mut out, worktree);
+    push_str(&mut out, primary);
+    push_str(&mut out, file);
+    out
+}
+
 /// A msgpack array of `len` items follows: a fixarray up to 15 items, else an array 16.
 fn push_array(out: &mut Vec<u8>, len: u16) {
     if let Ok(short) = u8::try_from(len)
@@ -153,9 +195,25 @@ fn push_map(out: &mut Vec<u8>, len: u8) {
     out.push(0x80 | (len & 0x0f));
 }
 
-/// A msgpack positive fixint: a number from 0 to 127.
-fn push_uint(out: &mut Vec<u8>, value: u8) {
-    out.push(value & 0x7f);
+/// A msgpack positive integer in the fewest bytes: a positive fixint up to 127, else a uint 8,
+/// uint 16, uint 32 or uint 64 by its size. A line number is often above 127.
+fn push_uint(out: &mut Vec<u8>, value: u64) {
+    if let Ok(small) = u8::try_from(value) {
+        if small < 0x80 {
+            out.push(small);
+        } else {
+            out.extend([0xcc, small]);
+        }
+    } else if let Ok(value) = u16::try_from(value) {
+        out.push(0xcd);
+        out.extend(value.to_be_bytes());
+    } else if let Ok(value) = u32::try_from(value) {
+        out.push(0xce);
+        out.extend(value.to_be_bytes());
+    } else {
+        out.push(0xcf);
+        out.extend(value.to_be_bytes());
+    }
 }
 
 /// A msgpack string: a fixstr up to 31 bytes, else a str 8, str 16 or str 32 by its length.
@@ -259,6 +317,54 @@ mod tests {
         let mut out = Vec::new();
         push_array(&mut out, 15);
         assert_eq!(out, [0x9f]);
+    }
+
+    #[test]
+    fn checktime_is_the_exact_msgpack_of_the_command_call() {
+        let mut expected = vec![0x94, 0x00, 0x01];
+        expected.extend(fixstr("nvim_command"));
+        expected.push(0x91);
+        expected.extend(fixstr("checktime"));
+        assert_eq!(checktime(), expected);
+    }
+
+    #[test]
+    fn the_diff_request_calls_the_clients_review_with_the_worktree_and_the_file() {
+        let mut expected = vec![0x94, 0x00, 0x01];
+        expected.extend(fixstr("nvim_exec_lua"));
+        expected.push(0x92);
+        expected.extend([0xd9, u8::try_from(OPEN_DIFF_LUA.len()).unwrap()]);
+        expected.extend_from_slice(OPEN_DIFF_LUA.as_bytes());
+        expected.push(0x93);
+        expected.extend(fixstr("/w/fix"));
+        expected.extend(fixstr("/w/repo"));
+        expected.extend(fixstr("src/a b.rs"));
+        assert_eq!(open_diff("/w/fix", "/w/repo", "src/a b.rs"), expected);
+        assert_eq!(
+            OPEN_DIFF_LUA,
+            "return require('orca-term.actions').diff_from_core(...)"
+        );
+    }
+
+    #[test]
+    fn integers_above_127_take_the_fewest_bytes_that_hold_them() {
+        let encoded = |value: u64| {
+            let mut out = Vec::new();
+            push_uint(&mut out, value);
+            out
+        };
+        assert_eq!(encoded(0), [0x00]);
+        assert_eq!(encoded(127), [0x7f], "the largest positive fixint");
+        assert_eq!(encoded(128), [0xcc, 0x80], "a uint 8 from 128");
+        assert_eq!(encoded(255), [0xcc, 0xff]);
+        assert_eq!(encoded(256), [0xcd, 0x01, 0x00], "a uint 16 from 256");
+        assert_eq!(encoded(65_535), [0xcd, 0xff, 0xff]);
+        assert_eq!(encoded(65_536), [0xce, 0x00, 0x01, 0x00, 0x00], "a uint 32");
+        assert_eq!(
+            encoded(1 << 32),
+            [0xcf, 0, 0, 0, 1, 0, 0, 0, 0],
+            "a uint 64 from 2^32"
+        );
     }
 
     #[test]

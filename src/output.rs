@@ -1158,6 +1158,23 @@ pub(crate) fn nvim_unregistered(address: &Address, format: Format) -> anyhow::Re
     Ok(())
 }
 
+/// Prints that the Neovims of the repository were asked to open the diff of `file` in the review
+/// of `worktree` (`nvim diff`): the ones working in it open it.
+pub(crate) fn nvim_diff_asked(
+    worktree: &Worktree,
+    file: &str,
+    format: Format,
+) -> anyhow::Result<()> {
+    match format {
+        Format::Text => out(&format!(
+            "asked the Neovims of {} to open the diff of {file}",
+            worktree.name
+        )),
+        Format::Json => out(&json::done()?),
+    }
+    Ok(())
+}
+
 /// Says on stderr how `agent attach` ended, once the terminal is the person's again.
 pub(crate) fn attach_ended(end: &AttachEnd) {
     let line = match end {

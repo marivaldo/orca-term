@@ -19,7 +19,9 @@
 //! tip, so the next snapshot starts the chain again.
 //!
 //! Once the status is written, and `hook.lock` released, it tells the running Neovims that the
-//! worktree changed (`ops::notify_changed`), which never fails and is bounded in time.
+//! worktree changed (`ops::Changed::notify`), and, when the event ended a turn, asks them to
+//! `:checktime` (#177) so their buffers show what the agent wrote; both never fail and are
+//! bounded in time.
 //!
 //! When `ORCA_TERM_RECORD` names a file (the live checks set it, #44), the payload is first
 //! appended to that file as received, before anything reads it (`domain/hook/record.rs`).
@@ -35,8 +37,8 @@ use crate::domain::hook::{self, Applied, Payload, record as tap};
 use crate::domain::review::Commit;
 use crate::domain::snapshot::{self, Bounds, Identity};
 use crate::domain::state::AdminDir;
-use crate::domain::turn::{self, StatusRead};
-use crate::ops::{notify_changed, worktree_of};
+use crate::domain::turn::{self, RecordKind, StatusRead};
+use crate::ops::{Changed, worktree_of};
 
 /// How long a hook waits for another hook of the same worktree to finish.
 const LOCK_WAIT: Duration = Duration::from_secs(1);
@@ -65,10 +67,26 @@ pub(crate) fn run(agent: Option<&str>, event: Option<&str>, admin: Option<&Path>
         return;
     }
     match record(agent, event, &admin) {
-        Ok(true) => notify_changed(&admin),
-        Ok(false) => {}
+        Ok(Some(written)) => {
+            if let Some(changed) = Changed::of(&admin) {
+                changed.notify();
+                if written == Written::TurnEnded {
+                    changed.checktime();
+                }
+            }
+        }
+        Ok(None) => {}
         Err(err) => log(&admin, &err),
     }
+}
+
+/// What a hook wrote, when it wrote anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    /// The status, with or without lines of the turn log, and no turn ended.
+    Status,
+    /// The status and the end of a turn: the agent stopped, so its files may have changed.
+    TurnEnded,
 }
 
 /// The payload `bytes`, as the agent `agent` wrote it: claude's own, or a line of opencode's
@@ -95,16 +113,16 @@ fn tap_payload(admin: &AdminDir, agent: Agent, event: Option<&str>, bytes: &[u8]
 }
 
 /// Reads the payload, records it when the tap is on, takes `hook.lock`, and writes what the event
-/// changes: the new turn log lines first, then the status, replaced whole. Returns whether
-/// anything was written.
-fn record(agent: Option<&str>, event: Option<&str>, admin: &AdminDir) -> Result<bool> {
+/// changes: the new turn log lines first, then the status, replaced whole. Returns what was
+/// written, `None` for nothing.
+fn record(agent: Option<&str>, event: Option<&str>, admin: &AdminDir) -> Result<Option<Written>> {
     let Some(agent) = agent.and_then(Agent::from_program) else {
         bail!("no hooks are known for the agent {agent:?}");
     };
     let bytes = stdin::read_all()?;
     tap_payload(admin, agent, event, &bytes);
     let Some(payload) = read_payload(agent, &bytes)? else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(_lock) = fs::lock_file_waiting(&admin.hook_lock(), LOCK_WAIT)? else {
         bail!(
@@ -142,7 +160,15 @@ fn record(agent: Option<&str>, event: Option<&str>, admin: &AdminDir) -> Result<
         fs::append(&admin.turn_log(), &lines)?;
     }
     fs::write_atomically(&admin.status_file(), &turn::status_bytes(&applied.status)?)?;
-    Ok(true)
+    let ended = applied
+        .records
+        .iter()
+        .any(|record| record.kind == RecordKind::End);
+    Ok(Some(if ended {
+        Written::TurnEnded
+    } else {
+        Written::Status
+    }))
 }
 
 /// Takes the snapshot that bounds what `applied` opened or closed (`bounds`), at `now`, and moves

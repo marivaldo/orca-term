@@ -26,7 +26,7 @@ use crate::domain::trust::{self, Unapproved};
 use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_resolve, agent_start, agent_stop, agent_swap,
-    check_git, doctor, fleets, hook, note_add, note_edit, note_ls, note_rm, note_send,
+    check_git, doctor, fleets, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_diff,
     nvim_register, nvim_unregister, open, pr_compose, pr_create, pr_merge, pr_refresh, project_add,
     project_ls, project_rm, session_ls, session_new, session_resume, turn_blame, turn_diff,
     turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_push,
@@ -118,7 +118,9 @@ enum Command {
         args: Vec<String>,
     },
     /// What a running Neovim runs so the core tells it whenever a worktree changes: `nvim
-    /// register <address>` as it starts, `nvim unregister <address>` as it exits.
+    /// register <address>` as it starts, `nvim unregister <address>` as it exits; and `nvim diff
+    /// <worktree> <file>`, which asks the worktree's Neovims to open a file's diff, as the
+    /// application does.
     #[command(hide = true)]
     Nvim {
         #[command(subcommand)]
@@ -237,6 +239,16 @@ enum NvimCommand {
     Unregister {
         /// The Neovim's server address (`v:servername`): the absolute path of its unix socket.
         address: Address,
+        /// Print JSON carrying the contract integer instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the Neovims working in a worktree to open a changed file's diff in its review.
+    Diff {
+        /// The worktree's name, or its path when several worktrees share the name.
+        worktree: Target,
+        /// The file, relative to the worktree.
+        file: String,
         /// Print JSON carrying the contract integer instead of text.
         #[arg(long)]
         json: bool,
@@ -621,6 +633,17 @@ enum AgentCommand {
     },
 }
 
+impl NvimCommand {
+    /// Whether the command asked for JSON.
+    fn json(&self) -> bool {
+        match self {
+            Self::Register { json, .. }
+            | Self::Unregister { json, .. }
+            | Self::Diff { json, .. } => *json,
+        }
+    }
+}
+
 impl Cli {
     /// How the command asked for its output, which is also how its error is printed.
     pub fn format(&self) -> Format {
@@ -678,9 +701,7 @@ impl Cli {
             },
             Command::Fleets { json } | Command::Doctor { json } => *json,
             Command::Hook { .. } | Command::Open | Command::App => false,
-            Command::Nvim { command } => match command {
-                NvimCommand::Register { json, .. } | NvimCommand::Unregister { json, .. } => *json,
-            },
+            Command::Nvim { command } => command.json(),
         };
         Format::from_json_flag(json)
     }
@@ -1228,6 +1249,10 @@ fn run_nvim(command: &NvimCommand, format: Format) -> Result<ExitCode> {
         NvimCommand::Unregister { address, .. } => {
             nvim_unregister::run(address)?;
             output::nvim_unregistered(address, format)?;
+        }
+        NvimCommand::Diff { worktree, file, .. } => {
+            let worktree = nvim_diff::run(worktree, file)?;
+            output::nvim_diff_asked(&worktree, file, format)?;
         }
     }
     Ok(ExitCode::SUCCESS)

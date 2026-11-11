@@ -440,19 +440,25 @@ end
 
 ---Opens diffview on `revisions` (a commit, or a range `A..B`) of the worktree at `path`, in the new
 ---tab diffview makes, and returns that tab; or `nil` and an error naming `what` when diffview
----failed or opened no view.
+---failed or opened no view. With `file` (relative to the worktree), that file is shown first.
 ---@param dv table diffview's main module
 ---@param path string
 ---@param revisions string
 ---@param what string what is being opened, for the error
+---@param file? string
 ---@return integer? tab
 ---@return orca_term.Error? err
-local function open_diffview(dv, path, revisions, what)
+local function open_diffview(dv, path, revisions, what, file)
   local before = vim.api.nvim_get_current_tabpage()
   opening = true
-  -- diffview reads `-C`'s value through expand(), which would expand a `$`, `%` or `#` in the path:
-  -- fnameescape() keeps it literal. The arguments are a list, so spaces need nothing more.
-  local opened, problem = pcall(dv.open, { '-C' .. vim.fn.fnameescape(path), revisions })
+  -- diffview reads `-C`'s and `--selected-file`'s values through expand(), which would expand a
+  -- `$`, `%` or `#` in the path: fnameescape() keeps them literal. The arguments are a list, so
+  -- spaces need nothing more.
+  local args = { '-C' .. vim.fn.fnameescape(path), revisions }
+  if file then
+    table.insert(args, '--selected-file=' .. vim.fn.fnameescape(path .. '/' .. file))
+  end
+  local opened, problem = pcall(dv.open, args)
   opening = false
 
   local view = view_in(vim.api.nvim_get_current_tabpage())
@@ -470,12 +476,15 @@ end
 ---Opens the review of the worktree at `path` against `base`, from the worktree's tab (the caller
 ---has gone there). When the worktree's review tab is already open, goes to it and has diffview
 ---read the changes again instead of opening a second one. Otherwise opens diffview with
----`-C<path> <base>` in a new tab and marks it as the worktree's review. Returns an error when
----diffview is not installed or opened no view.
+---`-C<path> <base>` in a new tab and marks it as the worktree's review. With `file` (relative to
+---the worktree), the review shows that file's diff (#177): diffview's `--selected-file` for a new
+---review, the file set in the one already open. Returns an error when diffview is not installed or
+---opened no view.
 ---@param path string
 ---@param base string the review's base, a full commit id
+---@param file? string
 ---@return orca_term.Error? err
-function M.open(path, base)
+function M.open(path, base, file)
   local dv = diffview()
   if not dv then
     return {
@@ -489,13 +498,17 @@ function M.open(path, base)
   if existing then
     vim.api.nvim_set_current_tabpage(existing)
     dv.emit('refresh_files')
+    local view = view_in(existing)
+    if file and view then
+      view:set_file_by_path(file, true, true)
+    end
     notes.refresh()
     return nil
   end
 
   ensure_autocmds()
   notes.start()
-  local tab, err = open_diffview(dv, path, base, 'the review of ' .. path)
+  local tab, err = open_diffview(dv, path, base, 'the review of ' .. path, file)
   if not tab then
     return err
   end
