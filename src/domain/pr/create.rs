@@ -190,8 +190,9 @@ pub(crate) fn check_title(title: &str) -> Result<()> {
 }
 
 /// Refuses, as the typed `default_branch`, the worktree `name` on `branch` when it is the
-/// repository's `default` branch (ADR 0013): pull requests go into it, and it has none of its own.
-/// The primary checkout is on it most of the time.
+/// repository's `default` branch (ADR 0013): pull requests go into it, and it has none of its own;
+/// nor is it ever pushed (#195, `ops::worktree_push::send_to_origin`). The primary checkout is on
+/// it most of the time.
 pub(crate) fn check_not_default_branch(
     name: &str,
     branch: &Branch,

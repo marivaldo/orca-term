@@ -1,6 +1,7 @@
 //! Ops: `pr create`, which pushes a worktree's branch and creates its pull request on GitHub
 //! through the GitHub CLI, from the core and outside any agent's sandbox (#132,
-//! `domain/pr/create.rs`). One of the two ops that push, with `worktree push` (`cargo xtask
+//! `domain/pr/create.rs`). One of the two ops that push, with `worktree push`, through its
+//! `send_to_origin`, which refuses the default branch for every push (#195, `cargo xtask
 //! gh-guard`).
 //!
 //! It refuses first, pushing nothing: an empty title, the repository's default branch, which has
@@ -17,16 +18,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::adapters::git::{self, PushMode};
+use crate::adapters::git::PushMode;
 use crate::adapters::{env, fs, program};
 use crate::domain::branch::Branch;
 use crate::domain::error::TypedError;
-use crate::domain::fleet::Worktree;
+use crate::domain::fleet::{PrimaryCheckout, Worktree};
 use crate::domain::pr::create::{self, Body, Composed, PrCreated, Readiness};
 use crate::domain::pr::{Found, GH_MISSING, PrFacts};
 use crate::domain::push::PushRun;
 use crate::domain::worktree::Target;
-use crate::ops::{find_target, pr_compose, pr_refresh, read_fleet};
+use crate::ops::{find_target, pr_compose, pr_refresh, read_fleet, worktree_push};
 
 /// What `pr create` is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +49,14 @@ pub(crate) fn run(target: &Target, wanted: &Wanted) -> Result<PrCreated> {
     let worktree = find_target(&fleet, &cwd, target)?;
     let composed = pr_compose::prepare(&fleet.primary, worktree, wanted.base.as_ref())?;
     let body = || body_of(&cwd, wanted.body_file.as_deref());
-    create_pr(worktree, &composed, &wanted.title, body, wanted.readiness)
+    create_pr(
+        &fleet.primary,
+        worktree,
+        &composed,
+        &wanted.title,
+        body,
+        wanted.readiness,
+    )
 }
 
 /// Opens a draft pull request for the worktree `target` names in the repository containing `dir`,
@@ -66,12 +74,21 @@ pub(crate) fn draft_in(dir: &Path, target: &Target) -> Result<PrCreated> {
             Body::Text(message.body.clone())
         })
     };
-    create_pr(worktree, &composed, &message.title, body, Readiness::Draft)
+    create_pr(
+        &fleet.primary,
+        worktree,
+        &composed,
+        &message.title,
+        body,
+        Readiness::Draft,
+    )
 }
 
-/// Creates the pull request of `worktree`, whose message and branches `composed` holds, with
-/// `title` and the body `body` gives, once nothing refuses it; then records it.
+/// Creates the pull request of `worktree`, in the repository of `primary`, whose message and
+/// branches `composed` holds, with `title` and the body `body` gives, once nothing refuses it;
+/// then records it.
 fn create_pr(
+    primary: &PrimaryCheckout,
     worktree: &Worktree,
     composed: &Composed,
     title: &str,
@@ -90,7 +107,7 @@ fn create_pr(
     create::check_no_open_pr(&worktree.name, &pr_refresh::ask(Some(&gh), worktree, None))?;
 
     let body = body()?;
-    push(worktree, &composed.branch)?;
+    push(primary, worktree, &composed.branch)?;
     let args = create::create_args(&composed.base, &composed.branch, title, &body, readiness);
     let printed = run_gh_create(&gh, &args, worktree, &composed.branch)?;
 
@@ -122,10 +139,11 @@ fn create_pr(
     })
 }
 
-/// Pushes `branch` of `worktree` to `origin`, setting its upstream, never forced. A push git
-/// refuses is the typed `push_failed`, with git's words.
-fn push(worktree: &Worktree, branch: &Branch) -> Result<()> {
-    match git::push_branch(&worktree.path, branch, PushMode::Plain)? {
+/// Pushes `branch` of `worktree` to `origin`, setting its upstream, never forced, through the
+/// push every caller shares, which refuses the default branch. A push git refuses is the typed
+/// `push_failed`, with git's words.
+fn push(primary: &PrimaryCheckout, worktree: &Worktree, branch: &Branch) -> Result<()> {
+    match worktree_push::send_to_origin(primary, worktree, branch, PushMode::Plain)? {
         PushRun::Pushed | PushRun::UpToDate => Ok(()),
         PushRun::Diverged(reason) | PushRun::Failed(reason) => Err(TypedError::PushFailed {
             name: worktree.name.clone(),

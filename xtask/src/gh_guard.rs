@@ -13,8 +13,9 @@
 //!
 //! A push sends the person's commits to the network the same way, so `git push` is started in one
 //! function alone, `push_branch` in `src/adapters/git.rs`, the only file that may hold the literal
-//! `"push"`, and only `src/ops/pr_create.rs` and `src/ops/worktree_push.rs` (#146) may call it.
-//! Every read path (`pr compose`, `worktree ls`, ...) stays off the network.
+//! `"push"`, and only `src/ops/worktree_push.rs` (#146) may call it, in `send_to_origin`, which
+//! `pr create` pushes through too: that one road refuses the repository's default branch for
+//! every push (#195). Every read path (`pr compose`, `worktree ls`, ...) stays off the network.
 //!
 //! A push never forces (#146): the string literal `--force` is refused in every file scanned, so
 //! git's force is never written (`branch -D` and `worktree remove -f` spell theirs out), and a
@@ -63,12 +64,13 @@ const DELETE_BRANCH: &str = "delete-branch";
 /// The one file that may start `git push`: the git adapter, in `push_branch`.
 const PUSH_ADAPTER: &str = "src/adapters/git.rs";
 
-/// The ops that may push, through `push_branch`.
-const PUSH_OPS: &[&str] = &["src/ops/pr_create.rs", "src/ops/worktree_push.rs"];
+/// The one op that may call `push_branch`: `worktree push`, in `send_to_origin`, which refuses the
+/// default branch and which `pr create` pushes through too (#195).
+const PUSH_OP: &str = "src/ops/worktree_push.rs";
 
-/// The same ops, as the findings name them.
-const PUSH_OPS_TEXT: &str =
-    "src/ops/pr_create.rs (`pr create`) and src/ops/worktree_push.rs (`worktree push`)";
+/// The same op, as the findings name it.
+const PUSH_OP_TEXT: &str =
+    "src/ops/worktree_push.rs (`send_to_origin`, which `worktree push` and `pr create` share)";
 
 /// The files that name orca-term's own flags `worktree rm --force` and `worktree push
 /// --force-with-lease`, which git never sees: the reason `worktree rm --json` prints, and the
@@ -186,9 +188,8 @@ fn check_force(path: &str, text: &str, marker: &str) -> Vec<String> {
 }
 
 /// The findings about the network in the Rust file at `path` holding `text`: the literal
-/// `"push"` or `"fetch"` outside the git adapter, a call of `push_branch` outside the adapter,
-/// `pr create` and `worktree push`, and a call of `fetch_into` outside the adapter and `worktree
-/// rebase`.
+/// `"push"` or `"fetch"` outside the git adapter, a call of `push_branch` outside the adapter and
+/// `worktree push`, and a call of `fetch_into` outside the adapter and `worktree rebase`.
 fn check_push(path: &str, text: &str) -> Vec<String> {
     let is_rust = Path::new(path)
         .extension()
@@ -205,9 +206,9 @@ fn check_push(path: &str, text: &str) -> Vec<String> {
                 n + 1
             ));
         }
-        if code.contains(PUSH_CALL) && !PUSH_OPS.contains(&path) {
+        if code.contains(PUSH_CALL) && path != PUSH_OP {
             problems.push(format!(
-                "{path}:{}: pushes a branch; only {PUSH_OPS_TEXT} may push",
+                "{path}:{}: pushes a branch; only {PUSH_OP_TEXT} may push",
                 n + 1
             ));
         }
@@ -292,22 +293,29 @@ mod tests {
     }
 
     #[test]
-    fn only_the_git_adapter_names_push_and_only_pr_create_and_worktree_push_call_it() {
+    fn only_the_git_adapter_names_push_and_only_worktree_push_calls_it() {
         let adapter = "invoke(worktree, &[\"push\", \"-u\", \"origin\", branch])\n";
         assert!(check_file(PUSH_ADAPTER, adapter).is_empty());
-        for op in PUSH_OPS {
-            let pushes = "git::push_branch(&worktree.path, branch, mode)?\n";
-            assert_eq!(check_file(op, pushes), Vec::<String>::new());
-        }
+        let pushes = "git::push_branch(&worktree.path, branch, mode)?\n";
+        assert_eq!(check_file(PUSH_OP, pushes), Vec::<String>::new());
+        let refused = |path: &str| {
+            vec![format!(
+                "{path}:1: pushes a branch; only src/ops/worktree_push.rs (`send_to_origin`, \
+                 which `worktree push` and `pr create` share) may push"
+            )]
+        };
+        // `pr create` pushes through `worktree_push::send_to_origin`, which refuses the default
+        // branch (#195), never through the adapter itself.
+        assert_eq!(
+            check_file("src/ops/pr_create.rs", pushes),
+            refused("src/ops/pr_create.rs")
+        );
         assert_eq!(
             check_file(
                 "src/ops/pr_compose.rs",
                 "git::push_branch(&path, &branch)?;\n"
             ),
-            [
-                "src/ops/pr_compose.rs:1: pushes a branch; only src/ops/pr_create.rs (`pr create`) \
-                 and src/ops/worktree_push.rs (`worktree push`) may push"
-            ]
+            refused("src/ops/pr_compose.rs")
         );
         assert_eq!(
             check_file(

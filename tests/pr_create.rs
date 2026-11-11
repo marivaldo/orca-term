@@ -455,8 +455,8 @@ fn the_primary_checkout_on_the_default_branch_opens_and_merges_no_pull_request()
     assert_eq!(error["kind"], "default_branch");
     assert_eq!(
         error["message"],
-        "worktree repo is on main, the repository's default branch, which has no pull request; \
-         commit on a branch of its own to open one (nothing was pushed)"
+        "worktree repo is on main, the repository's default branch, which orca-term never pushes \
+         and which has no pull request; commit on a branch of its own (nothing was pushed)"
     );
     let error = repo.error_of(&["pr", "compose", "."], 25);
     assert_eq!(error["kind"], "default_branch");
