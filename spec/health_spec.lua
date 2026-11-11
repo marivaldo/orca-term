@@ -57,16 +57,22 @@ local function core_version()
   return vim.trim(support.run({ support.binary, '--version' })):match('^orca%-term (%S+)$')
 end
 
----The Neovim section, for a Neovim of at least 0.11 and diffview `present` or not.
+---The Neovim section, for a Neovim of at least 0.11, diffview `present` or not, and
+---claudecode.nvim loaded when `claudecode` is.
 ---@param present boolean
+---@param claudecode? boolean
 ---@return string[][]
-local function neovim_section(present)
+local function neovim_section(present, claudecode)
   local diffview_line = present and { 'ok', 'diffview.nvim found' }
     or { 'warn', 'diffview.nvim not found: the review (`d`) needs diffview.nvim' }
+  local claudecode_line = claudecode
+      and { 'ok', 'claudecode.nvim loaded: claude in this worktree links to this Neovim' }
+    or { 'warn', 'claudecode.nvim not loaded: claude in this worktree cannot link to this Neovim' }
   return {
     { 'start', 'orca-term: Neovim' },
     { 'ok', 'Neovim ' .. tostring(vim.version()) },
     diffview_line,
+    claudecode_line,
   }
 end
 
@@ -83,6 +89,7 @@ describe(':checkhealth orca-term', function()
     end
     package.preload['diffview'] = nil
     package.loaded['diffview'] = nil
+    package.loaded['claudecode'] = nil
     support.cleanup()
   end)
 
@@ -90,7 +97,8 @@ describe(':checkhealth orca-term', function()
     orca_term.setup({ binary = support.binary })
     local version = core_version()
     local git = git_line()
-    support.agent_repo()
+    -- In the fixture's repository: the doctor asks the Neovims registered there, none.
+    support.cd(support.agent_repo().root)
     diffview(true)
 
     local calls = checkhealth()
@@ -104,6 +112,10 @@ describe(':checkhealth orca-term', function()
         { 'ok', SANDBOX },
         { 'ok', 'claude 2.1.296' },
         { 'ok', 'opencode not installed (optional)' },
+        {
+          'info',
+          'claudecode.nvim not checked: no Neovim of this repository is registered with orca-term',
+        },
         { 'info', 'contract 1, orca-term ' .. version },
         { 'ok', 'the core speaks contract ' .. core.CONTRACT .. ', as this client does' },
       }, neovim_section(true)),
@@ -114,6 +126,7 @@ describe(':checkhealth orca-term', function()
   it('shows a missing program as an error naming the fix, and a missing diffview', function()
     orca_term.setup({ binary = support.binary })
     local repo = support.agent_repo()
+    support.cd(repo.root)
     vim.fn.delete(repo.bin .. '/claude')
     diffview(false)
 
@@ -124,8 +137,22 @@ describe(':checkhealth orca-term', function()
       'claude: not found on PATH; install Claude Code '
         .. '(https://docs.anthropic.com/en/docs/claude-code)',
     }, calls[6])
-    assert.are.same(neovim_section(false), vim.list_slice(calls, #calls - 2))
+    assert.are.same(neovim_section(false), vim.list_slice(calls, #calls - 3))
   end)
+
+  it(
+    "reads claudecode.nvim in this Neovim itself, which cannot answer the doctor's question",
+    function()
+      orca_term.setup({ binary = support.binary })
+      support.cd(support.agent_repo().root)
+      diffview(true)
+      package.loaded['claudecode'] = {}
+
+      local calls = checkhealth()
+
+      assert.are.same(neovim_section(true, true), vim.list_slice(calls, #calls - 3))
+    end
+  )
 
   it('says no binary is found, and still checks Neovim', function()
     local missing = support.temp_dir() .. '/orca-term'
@@ -165,7 +192,7 @@ describe(':checkhealth orca-term', function()
 
   it('is found by Neovim as `:checkhealth orca-term`', function()
     orca_term.setup({ binary = support.binary })
-    support.agent_repo()
+    support.cd(support.agent_repo().root)
     diffview(true)
     vim.opt.runtimepath:append(support.root)
 

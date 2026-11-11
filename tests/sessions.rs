@@ -283,7 +283,7 @@ fn resume_relaunches_claude_with_the_session_then_only_reports_it_while_current(
     write_transcript(&fx, SECOND);
     fx.ok(&["agent", "start", "demo"]);
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", SECOND]);
+    assert_eq!(fx.argv()[5..], ["--resume", SECOND]);
 
     let doc = json(&fx.run(&["session", "resume", "demo", FIRST, "--json"]));
     assert_eq!(doc["session"], FIRST);
@@ -293,7 +293,7 @@ fn resume_relaunches_claude_with_the_session_then_only_reports_it_while_current(
     assert_eq!(doc["stopped"], true);
     assert_eq!(doc["holder"]["status"], "started");
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", FIRST], "the holder relaunched");
+    assert_eq!(fx.argv()[5..], ["--resume", FIRST], "the holder relaunched");
     assert_eq!(fx.starts(), 2);
     assert_eq!(wt.status()["session"], FIRST);
     assert_eq!(
@@ -323,7 +323,7 @@ fn resume_relaunches_claude_with_the_session_then_only_reports_it_while_current(
         "{text}"
     );
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", SECOND], "the holder started");
+    assert_eq!(fx.argv()[5..], ["--resume", SECOND], "the holder started");
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn resume_of_the_other_agents_session_swaps_the_agent() {
     assert_eq!(doc["stopped"], true);
     assert_eq!(doc["resumed"], FIRST);
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", FIRST]);
+    assert_eq!(fx.argv()[5..], ["--resume", FIRST]);
     assert_eq!(state_file(&wt.admin)["agent"], "claude-code");
 
     oc.list_sessions(&json!([{"id": "ses_0"}, {"id": "ses_1", "title": "add tests"}]));
@@ -508,7 +508,7 @@ fn session_new_keeps_every_session_and_its_turns_and_resume_brings_the_old_one_b
     );
     assert_eq!(doc["stopped"], false);
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", SECOND]);
+    assert_eq!(fx.argv()[5..], ["--resume", SECOND]);
     assert_eq!(
         listed(&fx),
         [
@@ -525,7 +525,7 @@ fn session_new_restarts_a_running_agent_on_a_new_session() {
     write_transcript(&fx, SECOND);
     fx.ok(&["agent", "start", "demo"]);
     fx.wait_for_output("demo", "fake claude ready");
-    assert_eq!(fx.argv()[4..], ["--resume", SECOND]);
+    assert_eq!(fx.argv()[5..], ["--resume", SECOND]);
 
     let text = fx.ok(&["session", "new", "demo"]);
     assert!(

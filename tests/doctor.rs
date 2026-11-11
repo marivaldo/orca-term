@@ -24,8 +24,14 @@ mod fixture;
 )]
 mod support;
 
-use std::path::Path;
+use std::io::{Read as _, Write as _};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use fixture::AgentRepo;
 use serde_json::{Value, json};
@@ -201,11 +207,17 @@ fn doctor_names_the_agent_socket_setting_when_only_an_agent_holds_the_ssh_signin
     assert_eq!(
         names,
         [
-            "git", "sandbox", "claude", "opencode", "signing", "contract"
+            "git",
+            "sandbox",
+            "claude",
+            "opencode",
+            "claudecode",
+            "signing",
+            "contract"
         ]
     );
-    assert_eq!(checks[4]["status"], "info");
-    assert_eq!(checks[4]["found"], Value::Null);
+    assert_eq!(checks[5]["status"], "info");
+    assert_eq!(checks[5]["found"], Value::Null);
 
     // The private half readable as a file: git signs without the agent.
     std::fs::write(keys.join("signing"), "not a key either\n").unwrap();
@@ -391,5 +403,161 @@ fn the_tested_opencode_is_the_newest_one_recorded_in_the_fixtures() {
     assert_eq!(
         doc["checks"][3]["message"],
         format!("opencode 99.0.0: newer than the tested {OPENCODE_TESTED}; it may still work")
+    );
+}
+
+/// A test Neovim for the claudecode.nvim line (#179): a unix socket at a short path under `/tmp`
+/// (a socket address holds about 100 bytes), answering each request as Neovim answers
+/// `nvim_exec_lua` returning `loaded`, and keeping the requests it read.
+struct Neovim {
+    dir: PathBuf,
+    requests: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl Neovim {
+    fn answering(loaded: bool) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::SeqCst);
+        let dir = PathBuf::from(format!("/tmp/ot-doctor-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = UnixListener::bind(dir.join("nvim.sock")).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let keep = Arc::clone(&requests);
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                keep.lock().unwrap().push(answer(stream, loaded));
+            }
+        });
+        Self { dir, requests }
+    }
+
+    fn address(&self) -> String {
+        self.dir.join("nvim.sock").display().to_string()
+    }
+}
+
+impl Drop for Neovim {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Reads one request from `stream`, up to its last byte, the empty array of the Lua's arguments
+/// (0x90), answers it as Neovim answers `nvim_exec_lua` returning `loaded`,
+/// `[1, 1, nil, loaded]`, and returns the request's bytes.
+fn answer(mut stream: UnixStream, loaded: bool) -> Vec<u8> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while bytes.last() != Some(&0x90) {
+        match stream.read(&mut chunk) {
+            Ok(read) if read > 0 => bytes.extend_from_slice(&chunk[..read]),
+            _ => break,
+        }
+    }
+    let boolean = if loaded { 0xc3 } else { 0xc2 };
+    let _ = stream.write_all(&[0x94, 0x01, 0x01, 0xc0, boolean]);
+    bytes
+}
+
+/// The doctor's claudecode check, as `--json` gives it, run from the primary checkout.
+fn claudecode_check(fx: &AgentRepo) -> Value {
+    let out = fx.run(&["doctor", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "never a refusal: {}",
+        stdout(&out)
+    );
+    let doc = json(&out);
+    let checks = doc["checks"].as_array().unwrap();
+    let names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "git",
+            "sandbox",
+            "claude",
+            "opencode",
+            "claudecode",
+            "contract"
+        ]
+    );
+    checks[4].clone()
+}
+
+#[test]
+fn doctor_asks_the_registered_neovims_whether_claudecode_nvim_is_loaded() {
+    let fx = AgentRepo::new();
+    fx.write_claude(&format!("{TESTED} (Claude Code)"), "");
+
+    let none = claudecode_check(&fx);
+    assert_eq!(
+        none,
+        json!({
+            "name": "claudecode",
+            "status": "info",
+            "found": null,
+            "need": null,
+            "message": "claudecode.nvim not checked: no Neovim of this repository is registered \
+                        with orca-term",
+        })
+    );
+
+    let with = Neovim::answering(true);
+    fx.ok(&["nvim", "register", &with.address()]);
+    let loaded = claudecode_check(&fx);
+    assert_eq!(loaded["status"], "ok");
+    assert_eq!(
+        loaded["message"],
+        "claudecode.nvim loaded in 1 of 1 registered Neovims"
+    );
+    let requests = with.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "one question to the one Neovim");
+    let request = String::from_utf8_lossy(&requests[0]).into_owned();
+    assert!(
+        request.contains("nvim_exec_lua")
+            && request.contains("return package.loaded['claudecode'] ~= nil"),
+        "{request:?}"
+    );
+
+    let without = Neovim::answering(false);
+    fx.ok(&["nvim", "register", &without.address()]);
+    let missing = claudecode_check(&fx);
+    assert_eq!(missing["status"], "warn");
+    assert_eq!(
+        missing["message"],
+        "claudecode.nvim not loaded in 1 of 2 registered Neovims; claude links only to a Neovim \
+         running it (see the README)"
+    );
+    let text = stdout(&fx.run(&["doctor"]));
+    assert!(
+        text.contains("\nwarn     claudecode.nvim not loaded in 1 of 2 registered Neovims;"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_registered_neovim_that_is_gone_leaves_claudecode_nvim_unchecked_and_registered() {
+    let fx = AgentRepo::new();
+    fx.write_claude(&format!("{TESTED} (Claude Code)"), "");
+    let gone = Neovim::answering(true);
+    let address = gone.address();
+    fx.ok(&["nvim", "register", &address]);
+    drop(gone);
+
+    let check = claudecode_check(&fx);
+
+    assert_eq!(check["status"], "info");
+    assert_eq!(
+        check["message"],
+        "claudecode.nvim not checked: none of the 1 registered Neovims answered"
+    );
+    let registry = fx.repo.root.join(".git/orca-term/nvim");
+    assert_eq!(
+        std::fs::read_dir(registry).unwrap().count(),
+        1,
+        "the doctor only looks: the registry keeps the address"
     );
 }

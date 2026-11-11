@@ -763,12 +763,24 @@ impl Changed {
 /// (`adapters/nvim.rs`). A Neovim that is gone has its file removed from the registry; any other
 /// failure is skipped. Never fails.
 pub(crate) fn send_to_registered(registry: &Path, message: &[u8]) {
+    let (entries, sockets): (Vec<PathBuf>, Vec<PathBuf>) =
+        registered_neovims(registry).into_iter().unzip();
+    let sent = adapters::nvim::send_all(&sockets, message);
+    for (entry, sent) in entries.iter().zip(sent) {
+        if sent == Sent::Gone {
+            let _ = fs::remove_if_exists(entry);
+        }
+    }
+}
+
+/// The Neovims in the registry `registry`: each registry file, with the socket of the address it
+/// holds. Empty when there is no registry; a file that holds no address is left out. Never
+/// writes.
+pub(crate) fn registered_neovims(registry: &Path) -> Vec<(PathBuf, PathBuf)> {
     let Ok(names) = fs::list_file_names(registry) else {
-        return;
+        return Vec::new();
     };
-    // Each registry file, with the Neovim address it holds.
-    let mut entries = Vec::new();
-    let mut sockets = Vec::new();
+    let mut found = Vec::new();
     for name in names.iter().filter(|name| nvim::is_entry_name(name)) {
         let entry = registry.join(name);
         let address = fs::read_optional(&entry)
@@ -776,16 +788,10 @@ pub(crate) fn send_to_registered(registry: &Path, message: &[u8]) {
             .flatten()
             .and_then(|bytes| Address::from_entry(&bytes));
         if let Some(address) = address {
-            sockets.push(address.as_path().to_owned());
-            entries.push(entry);
+            found.push((entry, address.as_path().to_owned()));
         }
     }
-    let sent = adapters::nvim::send_all(&sockets, message);
-    for (entry, sent) in entries.iter().zip(sent) {
-        if sent == Sent::Gone {
-            let _ = fs::remove_if_exists(entry);
-        }
-    }
+    found
 }
 
 /// The path of the worktree whose admin directory is `admin`, as `worktree ls` prints it, from

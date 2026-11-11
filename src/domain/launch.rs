@@ -4,7 +4,8 @@
 //! config), and the variables kept from its environment. For opencode (#35), `launch/opencode.rs`:
 //! its command line inside the sandbox orca-term wraps it in, and the plugin that reports its
 //! turns. For both: the session a cold start resumes, and the guard that no launch ever bypasses
-//! permissions. The versions they need are `domain/prerequisite.rs`'s.
+//! permissions. claude is also started with `--ide`, which links it to the worktree's Neovim
+//! through Claude Code's editor protocol (#179). The versions they need are `domain/prerequisite.rs`'s.
 //!
 //! The forbidden flags and modes are listed here and nowhere else in the source:
 //! `cargo xtask launch-guard` rejects their literals in any other file.
@@ -28,15 +29,26 @@ use crate::domain::turn::Status;
 /// asking; the sandbox confines everything else (ADR 0007).
 pub(crate) const PERMISSION_MODE: &str = "acceptEdits";
 
-/// Variables removed from the agent's environment, so that an orca-term run from inside a Claude
-/// Code session never starts the agent as a child session of it. Everything else passes through:
-/// auth and config variables must.
+/// Variables removed from the agent's environment. The first four, so that an orca-term run from
+/// inside a Claude Code session never starts the agent as a child session of it. The last two are
+/// what an editor's own terminal sets to tie the claude started there to that editor's port: an
+/// orca-term run from such a terminal would pass them on, and the agent would link to that editor
+/// (frozen at that port) instead of finding the worktree's Neovim through its lock file
+/// ([`IDE_FLAG`]). Everything else passes through: auth and config variables must.
 pub(crate) const STRIPPED_VARS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SSE_PORT",
+    "ENABLE_IDE_INTEGRATION",
 ];
+
+/// The flag that links claude to an editor as it starts (#179): claude reads the lock files editors
+/// write under `~/.claude/ide/` and connects when exactly one valid editor is there, such as the
+/// worktree's Neovim running coder/claudecode.nvim. Without one, claude starts as usual. It takes
+/// no value, so the guard refuses anything joined to it as `--ide=...`.
+const IDE_FLAG: &str = "--ide";
 
 /// Flags no launch may carry: claude's, and opencode's (whose TUI takes `--auto`, `--yolo` and
 /// `--dangerously-skip-permissions` alike, measured in its 1.18.0 source). `--permission-mode` is
@@ -77,8 +89,8 @@ const SESSION_FLAGS: &[&str] = &[RESUME_FLAG, "-s", "--session"];
 /// The longest session id ever put on claude's command line.
 const MAX_SESSION_ID_CHARS: usize = 128;
 
-/// The command line claude is started with: its settings file and the permission mode, and,
-/// when `resume` names a session, `--resume <id>` to continue it.
+/// The command line claude is started with: its settings file, the permission mode and
+/// [`IDE_FLAG`], and, when `resume` names a session, `--resume <id>` to continue it.
 pub(crate) fn claude_argv(
     program: &str,
     settings_file: &Path,
@@ -90,6 +102,7 @@ pub(crate) fn claude_argv(
         settings_file.display().to_string(),
         "--permission-mode".to_owned(),
         PERMISSION_MODE.to_owned(),
+        IDE_FLAG.to_owned(),
     ];
     if let Some(session) = resume {
         argv.push(RESUME_FLAG.to_owned());
@@ -320,8 +333,8 @@ pub(crate) fn settings_bytes(settings: &Value) -> Result<Vec<u8>> {
 
 /// Refuses a launch that bypasses permissions: an argument among [`FORBIDDEN_FLAGS`], a
 /// `--permission-mode` other than [`PERMISSION_MODE`] (as two arguments or as `--permission-mode=`),
-/// a `--resume` whose value is not a [`SessionId`], or settings whose `permissions.defaultMode`
-/// is one of [`FORBIDDEN_MODES`]. Arguments are compared whole, never as substrings: the settings
+/// a `--resume` whose value is not a [`SessionId`], an [`IDE_FLAG`] given a value (`--ide=...`),
+/// or settings whose `permissions.defaultMode` is one of [`FORBIDDEN_MODES`]. Arguments are compared whole, never as substrings: the settings
 /// legitimately name `disableBypassPermissionsMode`. Every argument is checked, the values of
 /// flags included, so a forbidden flag hidden as a value is still refused.
 pub(crate) fn check_launch(argv: &[String], settings: &Value) -> Result<()> {
@@ -333,6 +346,7 @@ pub(crate) fn check_launch(argv: &[String], settings: &Value) -> Result<()> {
         }
         check_permission_mode(arg, value)?;
         check_resume(arg, value)?;
+        check_ide(arg)?;
     }
     if let Some(mode) = settings
         .pointer("/permissions/defaultMode")
@@ -360,6 +374,20 @@ fn check_permission_mode(arg: &str, value: Option<&str>) -> Result<()> {
         bail!(
             "refusing to launch the agent with `--permission-mode {mode}`; only \
              `{PERMISSION_MODE}` is allowed"
+        );
+    }
+    Ok(())
+}
+
+/// Refuses `arg` when it is [`IDE_FLAG`] with a value joined to it: the flag takes none, so
+/// whatever follows `--ide=` could only be smuggled in.
+fn check_ide(arg: &str) -> Result<()> {
+    if let Some(value) = arg
+        .strip_prefix(IDE_FLAG)
+        .and_then(|rest| rest.strip_prefix('='))
+    {
+        bail!(
+            "refusing to launch the agent with `{IDE_FLAG}={value}`; `{IDE_FLAG}` takes no value"
         );
     }
     Ok(())
@@ -405,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn the_argv_passes_the_settings_file_and_accept_edits() {
+    fn the_argv_passes_the_settings_file_accept_edits_and_ide() {
         assert_eq!(
             claude_argv("claude", Path::new("/a/claude-settings.json"), None),
             [
@@ -413,7 +441,8 @@ mod tests {
                 "--settings",
                 "/a/claude-settings.json",
                 "--permission-mode",
-                "acceptEdits"
+                "acceptEdits",
+                "--ide"
             ]
         );
         let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
@@ -438,12 +467,36 @@ mod tests {
                 "/a/s.json",
                 "--permission-mode",
                 "acceptEdits",
+                "--ide",
                 "--resume",
                 UUID
             ]
         );
         let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
         check_launch(&argv, &settings).unwrap();
+    }
+
+    #[test]
+    fn the_guard_passes_ide_and_still_refuses_a_bypass_beside_it() {
+        let settings = claude_settings(Path::new("/r/.git"), &[], &[], &[], &target());
+        check_launch(&argv(&["--ide"]), &settings).unwrap();
+        for bypass in [
+            &["--ide", "--dangerously-skip-permissions"][..],
+            &["--ide", "--allow-dangerously-skip-permissions"],
+            &["--dangerously-skip-permissions", "--ide"],
+            &["--ide", "--permission-mode", "plan"],
+            &["--ide", "--permission-mode=bypassPermissions"],
+            &["--ide", "--resume", "--auto"],
+        ] {
+            assert!(
+                check_launch(&argv(bypass), &settings).is_err(),
+                "{bypass:?}"
+            );
+        }
+        assert!(
+            check_launch(&argv(&["--ide=--yolo"]), &settings).is_err(),
+            "--ide takes no value: anything joined to it is refused"
+        );
     }
 
     #[test]
@@ -851,14 +904,16 @@ mod tests {
     }
 
     #[test]
-    fn only_the_session_variables_are_stripped() {
+    fn only_the_session_and_editor_port_variables_are_stripped() {
         assert_eq!(
             STRIPPED_VARS,
             [
                 "CLAUDECODE",
                 "CLAUDE_CODE_ENTRYPOINT",
                 "CLAUDE_CODE_SESSION_ID",
-                "CLAUDE_CODE_CHILD_SESSION"
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_SSE_PORT",
+                "ENABLE_IDE_INTEGRATION"
             ]
         );
     }

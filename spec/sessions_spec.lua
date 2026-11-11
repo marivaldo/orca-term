@@ -190,7 +190,7 @@ describe('Sessions', function()
     assert.are.same({ { CURRENT_HELLO, OLD_HELLO } }, ui.shown)
     assert.are.same(
       { '--resume', FIRST.session_id },
-      vim.list_slice(assert(support.claude_argv(repo)), 5)
+      vim.list_slice(assert(support.claude_argv(repo)), 6)
     )
     assert(not vim.api.nvim_buf_is_valid(before), 'the old terminal is gone')
     assert.are.equal(after, vim.api.nvim_get_current_buf(), 'shown in the current window')
@@ -213,7 +213,7 @@ describe('Sessions', function()
     assert.are.equal(demo, vim.fn.getcwd(-1, vim.fn.tabpagenr()), "in the worktree's tab")
     assert.are.same(
       {},
-      vim.list_slice(assert(support.claude_argv(repo)), 5),
+      vim.list_slice(assert(support.claude_argv(repo)), 6),
       'the agent started first, on no session, was not restarted'
     )
     assert.are.same({}, ui.notes)
@@ -271,7 +271,7 @@ describe('Sessions', function()
 
     local after = wait_for_terminal_showing(demo, 'fake claude ready', before)
     assert.are.equal(after, vim.api.nvim_get_current_buf(), 'shown in the current window')
-    assert.are.same({}, vim.list_slice(assert(support.claude_argv(repo)), 5), 'no --resume')
+    assert.are.same({}, vim.list_slice(assert(support.claude_argv(repo)), 6), 'no --resume')
     assert.are.same({ SECOND.session_id, FIRST.session_id }, sessions(repo))
     assert.are.same({}, ui.notes)
   end)

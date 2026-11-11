@@ -1193,7 +1193,7 @@ fn a_cold_start_resumes_the_recorded_session() {
         argv[argv.len() - 2..],
         ["--resume".to_owned(), session.clone()]
     );
-    assert_eq!(argv[2..4], ["--permission-mode", "acceptEdits"]);
+    assert_eq!(argv[2..5], ["--permission-mode", "acceptEdits", "--ide"]);
     assert_eq!(fx.starts(), 2);
 
     fx.ok(&["agent", "stop", "fix"]);

@@ -11,7 +11,10 @@
 //! itself, which is what the core connects to.
 //!
 //! The message is encoded by hand, since it needs only a few msgpack types: arrays, maps, strings
-//! and positive integers.
+//! and positive integers. `nvim/claudecode.rs` builds one more request, the doctor's question
+//! whether coder/claudecode.nvim is loaded (#179), and reads its answer.
+
+pub(crate) mod claudecode;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

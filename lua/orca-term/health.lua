@@ -1,12 +1,17 @@
 -- orca-term's `:checkhealth orca-term`: the core binary this client uses, the core's own report
 -- on the programs it needs (`orca-term doctor --json`, run through core.lua like every other core
--- command), the contract, and what the Neovim side needs: Neovim 0.11 or later, and diffview.nvim
--- for the review. It only reports: nothing is installed.
+-- command), the contract, and what the Neovim side needs: Neovim 0.11 or later, diffview.nvim
+-- for the review, and coder/claudecode.nvim, which links claude to this Neovim (#179). It only
+-- reports: nothing is installed.
 
 local core = require('orca-term.core')
 local review = require('orca-term.review')
 
 local M = {}
+
+---The module of coder/claudecode.nvim, looked up among the loaded ones only: requiring it would
+---load a plugin that loads lazily and start its server.
+local CLAUDECODE = 'claudecode'
 
 ---Shows one check of the core's report as `vim.health` does: ok, a warning, an error for a
 ---program missing or too old, or information.
@@ -39,7 +44,7 @@ local function check_core()
   vim.health.ok(('the core speaks contract %d, as this client does'):format(report.contract))
 end
 
----The Neovim version, and diffview.nvim for the review.
+---The Neovim version, diffview.nvim for the review, and claudecode.nvim for claude's link.
 local function check_neovim()
   vim.health.start('orca-term: Neovim')
   local version = tostring(vim.version())
@@ -54,6 +59,16 @@ local function check_neovim()
     vim.health.warn(
       'diffview.nvim not found: the review (`d`) needs diffview.nvim',
       { 'install it from ' .. review.DIFFVIEW_URL }
+    )
+  end
+  -- Read here and not left to the doctor: this Neovim waits for the doctor, so it cannot answer
+  -- the doctor's question while it does.
+  if package.loaded[CLAUDECODE] ~= nil then
+    vim.health.ok('claudecode.nvim loaded: claude in this worktree links to this Neovim')
+  else
+    vim.health.warn(
+      'claudecode.nvim not loaded: claude in this worktree cannot link to this Neovim',
+      { 'install coder/claudecode.nvim with its terminal provider `none` (see the README)' }
     )
   end
 end

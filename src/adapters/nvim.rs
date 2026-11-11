@@ -1,5 +1,7 @@
 //! Adapter: the server sockets of the running Neovims. The core only ever sends one request to
 //! each and hangs up: it connects, writes the request, waits for Neovim's answer, and closes.
+//! Telling a Neovim a worktree changed needs only the answer's first byte; the doctor's question
+//! (#179) reads the few bytes of its answer, and the domain decides what they mean.
 //!
 //! The wait matters: Neovim drops a call still waiting to run when its connection closes, so a
 //! message written and closed at once may never run (Neovim 0.11 on Linux drops it every time).
@@ -33,55 +35,94 @@ pub(crate) enum Sent {
 }
 
 /// Sends `message` to every unix socket in `sockets` at once, all within [`SEND_TIMEOUT`], and
-/// returns what became of each, in the same order. Each send runs on a thread of its own, so a
-/// Neovim that never accepts, never reads or never answers cannot hold the caller up: past the
-/// timeout its thread is left behind, and ends with the process.
+/// returns what became of each, in the same order.
 pub(crate) fn send_all(sockets: &[PathBuf], message: &[u8]) -> Vec<Sent> {
+    exchange_all(sockets, message, 1)
+        .into_iter()
+        .map(|outcome| match outcome {
+            Outcome::Answered(_) => Sent::Delivered,
+            Outcome::Gone => Sent::Gone,
+            Outcome::Skipped => Sent::Skipped,
+        })
+        .collect()
+}
+
+/// Asks every unix socket in `sockets` the request `message`, at once and within
+/// [`SEND_TIMEOUT`], and returns the first `answer_len` bytes of each answer, in the same order:
+/// `None` for a Neovim that is gone, did not answer in time, or answered fewer bytes.
+pub(crate) fn ask_all(
+    sockets: &[PathBuf],
+    message: &[u8],
+    answer_len: usize,
+) -> Vec<Option<Vec<u8>>> {
+    exchange_all(sockets, message, answer_len)
+        .into_iter()
+        .map(|outcome| match outcome {
+            Outcome::Answered(answer) => Some(answer),
+            Outcome::Gone | Outcome::Skipped => None,
+        })
+        .collect()
+}
+
+/// What became of one request, with the answer's first bytes when it was answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Outcome {
+    Answered(Vec<u8>),
+    Gone,
+    Skipped,
+}
+
+/// Sends `message` to every socket at once and reads the first `answer_len` bytes of each
+/// answer. Each exchange runs on a thread of its own, so a Neovim that never accepts, never reads
+/// or never answers cannot hold the caller up: past the timeout its thread is left behind, and
+/// ends with the process.
+fn exchange_all(sockets: &[PathBuf], message: &[u8], answer_len: usize) -> Vec<Outcome> {
     let (sender, receiver) = mpsc::channel();
     for (index, socket) in sockets.iter().enumerate() {
         let sender = sender.clone();
         let socket = socket.clone();
         let message = message.to_vec();
         thread::spawn(move || {
-            let _ = sender.send((index, request(&socket, &message)));
+            let _ = sender.send((index, request(&socket, &message, answer_len)));
         });
     }
     drop(sender);
 
     // Anything not heard from by the deadline was skipped.
-    let mut sent = vec![Sent::Skipped; sockets.len()];
+    let mut outcomes = vec![Outcome::Skipped; sockets.len()];
     let deadline = Instant::now() + SEND_TIMEOUT;
     for _ in sockets {
         let left = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(left) {
-            Ok((index, outcome)) => sent[index] = outcome,
+            Ok((index, outcome)) => outcomes[index] = outcome,
             Err(_) => break,
         }
     }
-    sent
+    outcomes
 }
 
-/// Connects to `socket`, writes `message`, waits for the first byte of Neovim's answer, and closes.
-fn request(socket: &Path, message: &[u8]) -> Sent {
+/// Connects to `socket`, writes `message`, reads the first `answer_len` bytes of Neovim's
+/// answer, and closes.
+fn request(socket: &Path, message: &[u8], answer_len: usize) -> Outcome {
     let mut stream = match UnixStream::connect(socket) {
         Ok(stream) => stream,
         // Nothing at the path, or a socket file nobody listens on: the Neovim is gone.
-        Err(err) if is_gone(&err) => return Sent::Gone,
+        Err(err) if is_gone(&err) => return Outcome::Gone,
         // Too long for a socket address, no permission, or anything else: leave it be.
-        Err(_) => return Sent::Skipped,
+        Err(_) => return Outcome::Skipped,
     };
     let timeouts = stream
         .set_write_timeout(Some(SEND_TIMEOUT))
         .and_then(|()| stream.set_read_timeout(Some(SEND_TIMEOUT)));
     if timeouts.is_err() || stream.write_all(message).is_err() {
-        return Sent::Skipped;
+        return Outcome::Skipped;
     }
-    // The answer's first byte means the call ran; the rest of it is not needed.
-    let mut first = [0_u8; 1];
-    match stream.read(&mut first) {
-        Ok(1) => Sent::Delivered,
-        // Closed without an answer, or no answer in time.
-        Ok(_) | Err(_) => Sent::Skipped,
+    // The answer's first bytes mean the call ran; the rest of it is not needed.
+    let mut answer = vec![0_u8; answer_len];
+    match stream.read_exact(&mut answer) {
+        Ok(()) => Outcome::Answered(answer),
+        // Closed without a whole answer, or no answer in time.
+        Err(_) => Outcome::Skipped,
     }
 }
 

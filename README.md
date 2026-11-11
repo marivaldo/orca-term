@@ -152,7 +152,8 @@ a script). `orca-term open` opens Neovim the same way even without a terminal, f
 terminal launchers; inside Neovim it refuses with
 `orca-term: already inside Neovim; run :OrcaTerm sidebar` and exits 1. When `nvim` (or the
 program `ORCA_TERM_NVIM` names) is not there, both fail with the error `prerequisite` (exit code
-9). `orca-term doctor` does not check Neovim or its config.
+9). `orca-term doctor` does not check Neovim or its config, only whether the Neovims registered
+in the repository have claudecode.nvim loaded (see [Claude and Neovim](#claude-and-neovim)).
 
 Just before they open Neovim, `orca-term` with no arguments and `orca-term open` add the
 repository you are in to your [project list](#projects), by its primary checkout, as
@@ -352,6 +353,86 @@ Limits:
   Keychain, and `gh` cannot verify GitHub's TLS certificate (`x509: OSStatus -26276`), so
   `gh pr create` fails too. Listing `gh *` in claude's own `sandbox.excludedCommands` does not
   change that. Open the pull request from your own terminal.
+
+## Claude and Neovim
+
+claude can see what you do in the worktree's Neovim through Claude Code's own editor protocol:
+the file you are in and the lines you have selected go along with each prompt, and
+`:ClaudeCodeSend` sends a selection as an at-mention. orca-term starts claude with `--ide`, which
+links it, as it starts, to the one editor whose lock file under `~/.claude/ide/` is valid for the
+worktree. Neovim serves that protocol through
+[coder/claudecode.nvim](https://github.com/coder/claudecode.nvim), which you install in your own
+Neovim; orca-term ships no part of it. With lazy.nvim:
+
+```lua
+{
+  'coder/claudecode.nvim',
+  lazy = false,
+  opts = { terminal = { provider = 'none' } },
+}
+```
+
+The terminal provider `none` keeps the plugin from opening a claude of its own: orca-term starts
+the worktree's claude. `lazy = false` loads it when Neovim starts, so its lock file is there when
+claude starts; loaded only on a key or a command, it writes none until then. Open that Neovim in
+the worktree (`cd` into it first): the lock file names Neovim's working directory, and claude
+links only to an editor open on its own worktree. A Neovim started after claude is not picked up
+by `--ide`: type `/ide` in claude to link it. In the [application](#application), the worktree's
+Neovim already runs in the worktree, but it starts the first time its tab shows, often after the
+agent: show it (`^a 2`), then type `/ide` in the agent. Without claudecode.nvim, claude starts as
+before.
+
+`orca-term doctor` asks the Neovims registered with orca-term in the repository (the Lua client
+registers each Neovim that loads it) whether they have claudecode.nvim loaded: `ok` when they
+have, a `warn` line when one has not, and an `info` line saying it was not checked when none is
+registered or none answered. It never fails because of it. `:checkhealth orca-term` reads it in
+its own Neovim, which cannot answer the doctor while it waits for it.
+
+Limits:
+
+- Every launch runs under `acceptEdits`, so edits in the worktree are not asked about, and the
+  protocol's proposed diffs in Neovim mostly do not open; the file and the selection do go along.
+- Two Neovims open on the same worktree are two valid editors: `--ide` links to neither, and
+  `/ide` in claude lets you pick one.
+- An orca-term started from an editor's own terminal does not pass that editor's port
+  (`CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION`) on to the agent, so claude never links to
+  that editor instead of the worktree's Neovim.
+- opencode is not linked: it has no such protocol for Neovim (`opencode.nvim` goes through
+  opencode's own server, left for later).
+- CI never runs a real claude, so the link itself is checked by hand, before each release, with
+  the steps below; the doctor's question is tested against real Neovims.
+
+To check the link by hand, in a repository with orca-term, with claudecode.nvim installed as above
+(each block pasted into fish):
+
+```fish
+orca-term worktree new ide-check
+```
+
+In a second terminal, open your Neovim in that worktree:
+
+```fish
+cd (orca-term worktree ls --json | jq -r '.worktrees[] | select(.name == "ide-check") | .path')
+nvim README.md
+```
+
+`:checkhealth orca-term` there shows `claudecode.nvim loaded`, and
+`grep -l ide-check ~/.claude/ide/*.lock` in the first terminal names one lock file. Then, in the
+first terminal, start claude after that Neovim, so `--ide` links them:
+
+```fish
+orca-term agent start ide-check
+orca-term agent attach ide-check
+```
+
+Type `/ide`: it shows Neovim connected. Select a few lines in Neovim (`V`, then `j`), then ask
+claude `which lines do I have selected in the editor? quote them`: it quotes them. Detach with
+`Ctrl-\` and clean up:
+
+```fish
+orca-term agent stop ide-check
+orca-term worktree rm ide-check --force
+```
 
 ## opencode
 
@@ -987,7 +1068,9 @@ info     contract 1, orca-term 0.1.0
 It needs git 2.38 or later, claude's sandbox tools (`sandbox-exec` on macOS, `bwrap` and `socat`
 on Linux) and claude 2.1.295 or later. A claude newer than the one orca-term was tested with is
 only a warning. opencode is optional, since you may use only claude; starting it needs 1.18.0 or
-later, and one newer than the tested 1.18.0 is only a warning too. When git signs with an ssh key only an agent can use, an `info` line before the contract
+later, and one newer than the tested 1.18.0 is only a warning too. Inside a repository, a
+`claudecode` line says whether the Neovims registered there have claudecode.nvim loaded, a
+warning at worst (see Claude and Neovim). When git signs with an ssh key only an agent can use, an `info` line before the contract
 names `sandbox.agent_socket` (see Signing). With `--json` it prints the same checks as one
 document. It exits 0 unless something is missing or too old; then it prints the whole report and
 exits 9.
@@ -997,8 +1080,8 @@ every command, claude or opencode for `agent start`, such as
 `orca-term: git 2.30.1: orca-term needs 2.38 or later; run orca-term doctor for the full report`.
 
 In Neovim, `:checkhealth orca-term` shows the core binary the client uses, the doctor's checks,
-whether the core speaks the client's contract, the Neovim version (0.11 or later) and whether
-diffview.nvim is there for the review.
+whether the core speaks the client's contract, the Neovim version (0.11 or later), whether
+diffview.nvim is there for the review, and whether claudecode.nvim is loaded in that Neovim.
 
 ## Development
 
