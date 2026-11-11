@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::domain::agent::AgentEnd;
 use crate::domain::fleet::Worktree;
 use crate::domain::pr::{Checks, Found};
 use crate::domain::project::ProjectFleet;
@@ -97,7 +98,7 @@ pub(crate) struct Counts {
 pub(crate) fn counts(fleets: &[ProjectFleet]) -> Counts {
     let mut counts = Counts::default();
     for worktree in worktrees(fleets) {
-        match worktree.state {
+        match state(worktree) {
             State::Waiting => counts.needs_you += 1,
             State::Failed => counts.failed += 1,
             State::Working => counts.running += 1,
@@ -109,7 +110,34 @@ pub(crate) fn counts(fleets: &[ProjectFleet]) -> Counts {
 
 /// Whether any worktree is working, so the spinner turns.
 pub(crate) fn any_working(fleets: &[ProjectFleet]) -> bool {
-    worktrees(fleets).any(|worktree| worktree.state == State::Working)
+    worktrees(fleets).any(|worktree| *state(worktree) == State::Working)
+}
+
+/// The state the application shows for `worktree`: the one the core read, except that an agent
+/// whose holder recorded a failed end (#178) shows as failed. Its hooks may never say so: an
+/// agent can die between two turns, or before its first, and the core's own state, which the
+/// Neovim client and `worktree ls` read too, stays as it was.
+pub(crate) fn state(worktree: &Worktree) -> &State {
+    if failed_end(worktree).is_some() {
+        &State::Failed
+    } else {
+        &worktree.state
+    }
+}
+
+/// How the worktree's agent failed, while no holder runs there.
+fn failed_end(worktree: &Worktree) -> Option<&AgentEnd> {
+    worktree
+        .agent_end
+        .as_ref()
+        .filter(|end| end.failed && !worktree.holder.is_alive())
+}
+
+/// When the worktree was last active: its session's last activity, or its agent's failed end
+/// when that came later.
+pub(crate) fn last_active(worktree: &Worktree) -> Option<u64> {
+    let ended = failed_end(worktree).map(|end| end.ended_at);
+    worktree.last_activity.max(ended)
 }
 
 fn worktrees(fleets: &[ProjectFleet]) -> impl Iterator<Item = &Worktree> {
@@ -144,8 +172,12 @@ pub(crate) fn agent_label(agent: &str) -> &str {
     }
 }
 
-/// What the worktree's agent said or is doing last, or else its state in words.
+/// What the worktree's agent said or is doing last, or else its state in words; for an agent that
+/// failed, that it stopped and how.
 pub(crate) fn message(worktree: &Worktree) -> String {
+    if let Some(end) = failed_end(worktree) {
+        return format!("agent stopped ({})", end.exit);
+    }
     worktree
         .activity
         .clone()
@@ -203,6 +235,30 @@ mod tests {
         assert_eq!(paths("LOG"), ["/code/app.wt/fix-login"]);
         assert_eq!(paths("api"), ["/code/api.wt/pagination"], "by project");
         assert!(paths("zzz").is_empty());
+    }
+
+    #[test]
+    fn an_agent_whose_holder_recorded_a_failure_shows_and_counts_as_failed() {
+        let mut fix = fixture::worktree("/code/app.wt/fix", State::Idle);
+        fix.last_activity = Some(1_000);
+        fix.agent_end = Some(AgentEnd::new(Some(3), None, false, 2_000, 5_000));
+        assert_eq!(state(&fix), &State::Failed);
+        assert_eq!(message(&fix), "agent stopped (exit 3)");
+        assert_eq!(
+            last_active(&fix),
+            Some(5_000),
+            "its end, later than its turns"
+        );
+        let fleets = vec![fixture::project("/code/app", vec![fix.clone()])];
+        assert_eq!(counts(&fleets).failed, 1);
+
+        let mut stopped = fix.clone();
+        stopped.agent_end = Some(AgentEnd::new(Some(129), None, true, 2_000, 5_000));
+        assert_eq!(state(&stopped), &State::Idle, "a stop asked for");
+        assert_eq!(last_active(&stopped), Some(1_000));
+        let mut running = fix;
+        running.holder = crate::domain::agent::HolderStatus::Alive;
+        assert_eq!(state(&running), &State::Idle, "a new holder runs");
     }
 
     #[test]

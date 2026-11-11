@@ -308,7 +308,10 @@ everything else under `app/` is pure and tested without a terminal.
   running, quiet: everything else), the pull request's number and checks, `claude` for
   claude-code, a worktree's message (its activity, else its state in words) and its age (`now`,
   `9m`, `3h`, `2d`), how long something lasted (`12s`, then as the age), and which worktrees match
-  what the picker or the filter was given (#178).
+  what the picker or the filter was given (#178). The state it shows is the core's, except that
+  a worktree whose holder recorded a failed end (`AgentEnd`) shows and counts as failed, with
+  `agent stopped (exit N)` and its end's age: its hooks may never say so, an agent dying between
+  turns or before its first, and the core's own state (`worktree ls`, the Neovim client) stays.
 - `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
   project's initial and name, its worktrees in three lines, or two under 40 rows, the primary
   checkout first as the fleet lists it, with the ` primary ` tag (TEXT_2 on RAISED) after its name

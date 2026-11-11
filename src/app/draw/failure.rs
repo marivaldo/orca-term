@@ -78,10 +78,11 @@ fn last_output(app: &App) -> Option<&Emulator> {
 }
 
 /// That the changes are kept, with how many files and lines changed, as the right column read
-/// them (#177), else how many files the core counted, when either is known.
+/// them (#177), else how many files the core counted, when either is known and not none.
 fn kept(app: &App) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let files = match app.open_changes() {
+        Some(changes) if changes.files.is_empty() => String::new(),
         Some(changes) => {
             let (n, lines) = (changes.files.len(), changes.totals());
             format!(
@@ -96,6 +97,7 @@ fn kept(app: &App) -> String {
             .as_deref()
             .and_then(|open| menu::find(&app.fleets, open))
             .and_then(|(_, worktree)| worktree.changed_files)
+            .filter(|n| *n > 0)
             .map(|n| format!(" ({n} file{})", plural(n)))
             .unwrap_or_default(),
     };

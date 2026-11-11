@@ -5,7 +5,7 @@
   ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                                                                   A flag.rs src/auth/        +31   
      ✗ fix-login                      > Make the login retry with backoff.                                           M login.rs src/auth/    +18 −9   
        fix-login             #131                                                                                    M session.rs src/auth/   +6 −2   
-       ◐ claude · Allow edits… 2m     ● Read src/auth/session.ts                                                                                      
+       ◐ claude · agent stopp… 2m     ● Read src/auth/session.ts                                                                                      
   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                                                   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   
      ◐ run-tests •                    error: stream closed: connection reset by peer                                                                  
        run-tests                      claude exited with code 1                                                                                       

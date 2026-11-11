@@ -138,12 +138,11 @@ fn item(
         p.tint(Rect::new(x + 1, y, w.saturating_sub(2), 1), FOCUS_SEL);
         p.text(x + 1, y, "▎", fg(ACCENT).bg(FOCUS_SEL.color()));
     }
-    let (glyph, state) = theme::look(&worktree.state, app.frame);
+    let (glyph, state) = theme::look(menu::state(worktree), app.frame);
     p.text(x + 4, y, &glyph.to_string(), bold(state));
     let name = if cursor { ACCENT } else { TEXT };
     p.text(x + 6, y, &trunc(&worktree.name, 14), bold(name));
-    let age = worktree
-        .last_activity
+    let age = menu::last_active(worktree)
         .map(|then| menu::age(then, now_ms))
         .unwrap_or_default();
     let end = x + w - 3;

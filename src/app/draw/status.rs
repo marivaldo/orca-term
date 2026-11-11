@@ -92,7 +92,7 @@ fn where_keys_go(app: &App, bar: Tok) -> Vec<Seg> {
     let Some((project, worktree)) = found else {
         return vec![seg("no worktree", fg(TEXT_2))];
     };
-    let (glyph, tok) = theme::look(&worktree.state, app.frame);
+    let (glyph, tok) = theme::look(menu::state(worktree), app.frame);
     let focus = match (&app.overlay, app.focus) {
         (Some(Overlay::Picker(_)), _) => "picker",
         (Some(Overlay::Help), _) => "help",

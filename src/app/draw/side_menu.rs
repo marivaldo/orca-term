@@ -259,7 +259,7 @@ fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
     if cursor || open {
         highlight(p, menu, row, cursor);
     }
-    let (glyph, state) = theme::look(&worktree.state, menu.app.frame);
+    let (glyph, state) = theme::look(menu::state(worktree), menu.app.frame);
     p.text(x + 4, row, &glyph.to_string(), bold(state));
     let unseen = worktree.unseen && !open;
     let tag = if worktree.primary { PRIMARY_TAG } else { "" };
@@ -306,8 +306,7 @@ fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
 /// right.
 fn last_line(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16, lead: &[Seg]) {
     let (x, end) = (menu.card.x, menu.card.x + menu.card.width - 2);
-    let age = worktree
-        .last_activity
+    let age = menu::last_active(worktree)
         .map(|then| menu::age(then, menu.now_ms))
         .unwrap_or_default();
     let after = p.line(x + 6, row, lead);
