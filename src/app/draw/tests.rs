@@ -17,9 +17,11 @@ use ratatui::style::Color;
 
 use crate::adapters::fs;
 use crate::adapters::holder::client::Heard;
+use crate::adapters::pty::Printed;
 use crate::app::draw::frame;
 use crate::app::fixture;
 use crate::app::paint::Mode;
+use crate::app::program::{Kind, ProgramId};
 use crate::app::state::App;
 use crate::app::theme::{self, Tok};
 use crate::domain::agent::HolderStatus;
@@ -266,6 +268,76 @@ fn a_long_list_scrolls_to_the_open_worktree_and_to_its_end_from_the_last() {
 #[test]
 fn under_100_columns_only_the_centre() {
     check("narrow", &app(90, 24, fleets()));
+}
+
+/// A Neovim's screen, as a stand-in draws it: numbered lines, the end of the buffer and a
+/// statusline with the mode on the WORKING colour.
+const NVIM_SCREEN: &[u8] = b"\x1b[2J\x1b[H\x1b[90m  1 \x1b[0m\x1b[34muse\x1b[0m std::io;\r\n\x1b[90m  2 \x1b[0m\r\n\x1b[90m  3 \x1b[0m\x1b[34mfn\x1b[0m \x1b[1mmain\x1b[0m() {}\r\n\x1b[90m~\r\n~\x1b[0m\r\n\x1b[44;30m NORMAL \x1b[0m src/main.rs";
+
+/// Presses `^a` and then `code`, and sizes the panels to the new view, as the run loop does.
+fn prefixed(app: &mut App, code: KeyCode) {
+    press(app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    press(app, code, KeyModifiers::NONE);
+    let status = app.layout.status;
+    app.fit(Rect::new(0, 0, status.width, status.y + 1));
+}
+
+/// What the open worktree's Neovim printed: [`NVIM_SCREEN`].
+fn nvim_draws(app: &mut App) {
+    let id = ProgramId {
+        worktree: PathBuf::from("/code/app.wt/fix-login"),
+        kind: Kind::Nvim,
+    };
+    app.printed(&id, Printed::Output(NVIM_SCREEN.to_vec()));
+}
+
+#[test]
+fn the_nvim_tab() {
+    let mut app = app(150, 44, fleets());
+    prefixed(&mut app, KeyCode::Char('2'));
+    nvim_draws(&mut app);
+    check("nvim-tab", &app);
+}
+
+#[test]
+fn the_split_with_the_agent_focused_and_the_prefix_armed() {
+    let mut app = app(150, 44, fleets());
+    prefixed(&mut app, KeyCode::Char('|'));
+    nvim_draws(&mut app);
+    press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    check("split-agent", &app);
+}
+
+#[test]
+fn the_split_with_neovim_focused() {
+    let mut app = app(150, 44, fleets());
+    prefixed(&mut app, KeyCode::Char('|'));
+    prefixed(&mut app, KeyCode::Char('l'));
+    nvim_draws(&mut app);
+    check("split-nvim", &app);
+}
+
+#[test]
+fn the_zoom_of_neovim_from_the_split() {
+    let mut app = app(150, 44, fleets());
+    prefixed(&mut app, KeyCode::Char('|'));
+    prefixed(&mut app, KeyCode::Char('l'));
+    prefixed(&mut app, KeyCode::Char('z'));
+    nvim_draws(&mut app);
+    check("zoom", &app);
+}
+
+#[test]
+fn a_shell_that_ended_says_how_to_start_it_again() {
+    let mut app = app(120, 30, fleets());
+    prefixed(&mut app, KeyCode::Char('3'));
+    let id = ProgramId {
+        worktree: PathBuf::from("/code/app.wt/fix-login"),
+        kind: Kind::Shell,
+    };
+    app.printed(&id, Printed::Output(b"$ exit\r\n".to_vec()));
+    app.printed(&id, Printed::Ended("exit 0".to_owned()));
+    check("shell-ended", &app);
 }
 
 #[test]

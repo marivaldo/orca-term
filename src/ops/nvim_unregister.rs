@@ -2,14 +2,22 @@
 //! the Neovim's server address out of the repository's registry (`domain/nvim.rs`). An address
 //! that is not registered is not an error.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::adapters::fs;
 use crate::domain::nvim::Address;
-use crate::ops::nvim_registry;
+use crate::ops::{nvim_registry, nvim_registry_of};
 
 /// Removes `address` from the registry of the repository containing the current directory.
 /// Removing its file is the only write, so no lock is needed.
 pub(crate) fn run(address: &Address) -> Result<()> {
     fs::remove_if_exists(&nvim_registry()?.join(address.entry_name()))
+}
+
+/// Removes `address` from the registry of the repository containing `dir`: what the application
+/// does when a Neovim it started ends (#176).
+pub(crate) fn run_in(dir: &Path, address: &Address) -> Result<()> {
+    fs::remove_if_exists(&nvim_registry_of(dir)?.join(address.entry_name()))
 }

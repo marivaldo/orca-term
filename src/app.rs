@@ -1,12 +1,14 @@
 //! App: `orca-term app`, the terminal application (ADR 0012): the side menu with every project's
-//! worktrees and, in the centre, the open worktree's agent terminal attached to its holder (#174).
-//! It is a client of the core: it reads the fleets and starts agents through the operations, and
-//! talks to each agent's holder as `agent attach` does. Quitting stops no agent.
+//! worktrees and, in the centre, the open worktree's panels: its agent's terminal attached to its
+//! holder (#174), its Neovim and its shell (#176). It is a client of the core: it reads the fleets
+//! and starts agents through the operations, and talks to each agent's holder as `agent attach`
+//! does. Quitting stops no agent; it ends the Neovims and shells the application started.
 //!
 //! This file is the run loop. Everything that happens arrives as one message on one channel: a key
 //! or a paste (from the terminal's reader), the fleets read again, what the open agent's holder
-//! sent, an agent started, a signal to quit. Each message changes the state (`state.rs`), which
-//! answers with effects the loop carries out, and the loop draws the next frame.
+//! sent, an agent started, what a Neovim or a shell printed, a signal to quit. Each message
+//! changes the state (`state.rs`), which answers with effects the loop carries out, and the loop
+//! draws the next frame.
 //!
 //! Live updates come from reading every project's fleet again each second, on a thread of its own
 //! (`ops::fleets::run_quick`): one listing of the worktrees by git per project, and their small
@@ -16,7 +18,10 @@
 //! git process per project a second, and the side menu needs a clock anyway, for the ages and the
 //! spinner.
 
+mod running;
+
 pub(crate) mod draw;
+pub(crate) mod emulator;
 #[cfg(test)]
 pub(crate) mod fixture;
 pub(crate) mod keys;
@@ -24,8 +29,10 @@ pub(crate) mod layout;
 pub(crate) mod menu;
 pub(crate) mod paint;
 pub(crate) mod panel;
+pub(crate) mod program;
 pub(crate) mod state;
 pub(crate) mod theme;
+pub(crate) mod view;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -36,9 +43,12 @@ use anyhow::{Result, bail};
 use ratatui::crossterm::event::{Event, KeyEventKind};
 
 use crate::adapters::holder::client::{Client, Heard};
+use crate::adapters::pty::Printed;
 use crate::adapters::screen::{self, Screen};
 use crate::adapters::{env, git, terminal};
 use crate::app::paint::Mode;
+use crate::app::program::ProgramId;
+use crate::app::running::Running;
 use crate::app::state::{App, Effect};
 use crate::domain::agent::{Size, StartMode};
 use crate::domain::project::ProjectFleet;
@@ -64,12 +74,14 @@ enum Msg {
     Heard(u64, Heard),
     /// The core started the agent of the worktree at this path, or could not.
     Started(PathBuf, Result<(), String>),
+    /// What a worktree's Neovim or shell printed, or its end.
+    Printed(ProgramId, Printed),
     /// A signal asked the application to end.
     Quit,
 }
 
 /// Runs the application in this terminal until the person quits or a signal ends it. The
-/// terminal is restored in every case.
+/// terminal is restored in every case, then the Neovims and shells it started are ended.
 pub(crate) fn run() -> Result<()> {
     if !terminal::stdin_and_stdout_are_terminals() {
         bail!("`orca-term app` draws on a terminal: run it in one");
@@ -78,28 +90,55 @@ pub(crate) fn run() -> Result<()> {
     let (no_color, colorterm) = env::colour_env();
     let mode = Mode::detect(no_color, colorterm.as_deref());
     let (sender, messages) = mpsc::channel();
-    let mut screen = Screen::enter()?;
-    let mut app = App::new(screen.area()?, start_in);
-    listen(&sender)?;
-    let mut link = Link::default();
+    let mut programs = Running::default();
+    let served = Screen::enter().and_then(|mut screen| {
+        let mut app = App::new(screen.area()?, start_in);
+        listen(&sender)?;
+        let mut parts = Parts {
+            link: Link::default(),
+            programs: &mut programs,
+            sender: &sender,
+        };
+        serve(&mut screen, &mut app, &mut parts, &messages, mode)
+    });
+    programs.end_all();
+    served
+}
+
+/// What the loop carries the effects out with.
+struct Parts<'a> {
+    link: Link,
+    programs: &'a mut Running,
+    sender: &'a Sender<Msg>,
+}
+
+/// Draws, waits for messages and carries out their effects, until the application quits.
+fn serve(
+    screen: &mut Screen,
+    app: &mut App,
+    parts: &mut Parts<'_>,
+    messages: &Receiver<Msg>,
+    mode: Mode,
+) -> Result<()> {
     loop {
-        if let Some(size) = app.fit(screen.area()?) {
-            link.send_size(size);
+        for effect in app.fit(screen.area()?) {
+            apply(app, parts, effect);
         }
-        screen.draw(|frame| draw::frame(frame, &app, env::now_millis(), mode))?;
-        let Some(batch) = next_batch(&messages) else {
+        screen.draw(|frame| draw::frame(frame, app, env::now_millis(), mode))?;
+        let Some(batch) = next_batch(messages) else {
             return Ok(());
         };
         let effects: Vec<Effect> = batch
             .into_iter()
-            .flat_map(|message| handle(&mut app, &link, message))
+            .flat_map(|message| handle(app, parts, message))
             .collect();
         for effect in effects {
-            if !apply(&mut app, &mut link, &sender, effect) {
+            if !apply(app, parts, effect) {
                 return Ok(());
             }
         }
-        link.follow(&app);
+        parts.link.follow(app);
+        parts.programs.register_listening();
         app.tick(Instant::now());
     }
 }
@@ -137,7 +176,7 @@ fn listen(sender: &Sender<Msg>) -> Result<()> {
 }
 
 /// What `message` does to the state, as effects to carry out.
-fn handle(app: &mut App, link: &Link, message: Msg) -> Vec<Effect> {
+fn handle(app: &mut App, parts: &mut Parts<'_>, message: Msg) -> Vec<Effect> {
     let now = Instant::now();
     match message {
         Msg::Event(Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key, now),
@@ -149,7 +188,7 @@ fn handle(app: &mut App, link: &Link, message: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Heard(connection, heard) => {
-            if connection == link.number
+            if connection == parts.link.number
                 && let Some(panel) = app.panel.as_mut()
             {
                 panel.heard(heard);
@@ -157,25 +196,40 @@ fn handle(app: &mut App, link: &Link, message: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Started(path, result) => app.started(&path, result, now),
+        Msg::Printed(id, printed) => {
+            if matches!(printed, Printed::Ended(_)) {
+                parts.programs.ended(&id);
+            }
+            app.printed(&id, printed)
+        }
         Msg::Quit => vec![Effect::Quit],
     }
 }
 
 /// Carries out `effect`. Returns `false` to quit.
-fn apply(app: &mut App, link: &mut Link, sender: &Sender<Msg>, effect: Effect) -> bool {
+fn apply(app: &mut App, parts: &mut Parts<'_>, effect: Effect) -> bool {
+    let link = &mut parts.link;
     match effect {
         Effect::Type(bytes) => link.type_bytes(&bytes),
-        Effect::Attach(path) => match link.attach(&path, sender) {
+        Effect::Attach(path) => match link.attach(&path, parts.sender) {
             Ok(()) => {
                 app.attached(&path);
                 if let Some(panel) = &app.panel {
-                    let (rows, cols) = panel.size();
+                    let (rows, cols) = panel.screen.size();
                     link.send_size(Size { rows, cols });
                 }
             }
             Err(err) => app.attach_failed(&path, format!("{err:#}"), Instant::now()),
         },
-        Effect::Start(path, size) => start_agent(path, size, sender.clone()),
+        Effect::Start(path, size) => start_agent(path, size, parts.sender.clone()),
+        Effect::SizeAgent(size) => link.send_size(size),
+        Effect::Run(id, size) => {
+            if let Err(err) = parts.programs.run(&id, size, parts.sender) {
+                app.run_failed(&id, format!("{err:#}"));
+            }
+        }
+        Effect::TypeInto(id, bytes) => parts.programs.type_into(&id, bytes),
+        Effect::Resize(id, size) => parts.programs.resize(&id, size),
         Effect::Quit => return false,
     }
     true

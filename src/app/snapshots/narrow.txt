@@ -1,5 +1,5 @@
  ▗▄▁▁▁▁▁▁▁▁▁▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖ 
-   ▐1 agent▌                                                   app/fix-login  ·  claude   
+   ▐1 agent▌  2 nvim   3 shell                                 app/fix-login  ·  claude   
                                                                                           
    fake claude ready                                                                      
                                                                                           
@@ -21,10 +21,10 @@
                                                                                           
                                                                                           
  ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘ 
- ▐orca▌  ? app/fix-login  agent    ? 1   ✗ 1   ◐ 1   ○ 2   ^a j k  worktree   ^a q  quit  
+ ▐orca▌  ? app/fix-login  agent    ? 1   ✗ 1   ◐ 1   ○ 2        ^a |  split   ^a q  quit  
 
 TbbAAAAAAAAAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbT
-TTTfAAAAAAAfTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtttttttttttttooooottttttTTT
+TTTfAAAAAAAfTttttttttTtttttttttTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTtttttttttttttooooottttttTTT
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
@@ -46,7 +46,7 @@ TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 TbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbT
-TsTTTTsTTWTTTTTTTTTTTTTTtttttttTTTTWTTTTTFTTTTTKTTTTTtTTTTTTTTTTTTtttttttttttTTTTTTttttttT
+TsTTTTsTTWTTTTTTTTTTTTTTtttttttTTTTWTTTTTFTTTTTKTTTTTtTTTTTTTTTTTTTTTttttttttTTTTTTttttttT
 
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 cbbbfffffffbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
@@ -71,4 +71,4 @@ cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-ccssssccccccccccccccccccccccccccccccccccccccccccccccccccccrrrrrrrrcccccccccccrrrrrrccccccc
+ccsssscccccccccccccccccccccccccccccccccccccccccccccccccccccccccrrrrrrccccccccrrrrrrccccccc

@@ -1,5 +1,6 @@
-//! App: the status bar (#174): the `orca` pill (`^A`, lit, while the prefix waits), the open
-//! worktree and where the keys go, the counts of every project's worktrees (needs you, failed,
+//! App: the status bar (#174, #176): the `orca` pill (`^A`, lit, while the prefix waits), the
+//! open worktree and where the keys go (`worktrees`, `agent`, `nvim`, `shell`, then `zoom`), the
+//! counts of every project's worktrees (needs you, failed,
 //! running, quiet), and on the right the keys, or a message for a while. While the prefix waits the
 //! whole bar is lit and lists the keys it arms.
 
@@ -7,7 +8,8 @@ use crate::app::menu::{self, Counts};
 use crate::app::paint::{Painter, Seg, bold, fg, key, pill, seg, segs_width, trunc, width};
 use crate::app::state::{App, Focus};
 use crate::app::theme::{
-    self, ACCENT, BG, CANVAS, FAILED, FOCUS_BG, SELECTION, TEXT, TEXT_2, WAITING, WORKING,
+    self, ACCENT, BG, CANVAS, FAILED, FOCUS_BG, FOCUS_SEL, SELECTION, TEXT, TEXT_2, Tok, WAITING,
+    WORKING,
 };
 
 /// The keys shown without the prefix, and with it.
@@ -15,11 +17,16 @@ const KEYS: &[(&str, &str)] = &[
     ("^a", "prefix"),
     ("^a h l", "focus"),
     ("^a j k", "worktree"),
+    ("^a z", "zoom"),
+    ("^a |", "split"),
     ("^a q", "quit"),
 ];
 const ARMED_KEYS: &[(&str, &str)] = &[
     ("h l", "focus"),
     ("j k", "worktree"),
+    ("1 2 3", "panel"),
+    ("z", "zoom"),
+    ("|", "split"),
     ("a", "send ^A"),
     ("q", "quit"),
     ("esc", "cancel"),
@@ -40,7 +47,7 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App) {
         pill("orca", SELECTION, TEXT, bar)
     };
     let mut x = p.line(1, y, &badge) + 2;
-    x = p.line(x, y, &where_keys_go(app)) + 4;
+    x = p.line(x, y, &where_keys_go(app, bar)) + 4;
 
     let message = app
         .message
@@ -69,8 +76,9 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App) {
     }
 }
 
-/// The open worktree's glyph and `project/worktree`, then where the keys go.
-fn where_keys_go(app: &App) -> Vec<Seg> {
+/// The open worktree's glyph and `project/worktree`, then where the keys go, and `zoom` on the
+/// status bar's `bar` colour while zoomed.
+fn where_keys_go(app: &App, bar: Tok) -> Vec<Seg> {
     let found = app
         .open
         .as_deref()
@@ -81,16 +89,21 @@ fn where_keys_go(app: &App) -> Vec<Seg> {
     let (glyph, tok) = theme::look(&worktree.state, app.frame);
     let focus = match app.focus {
         Focus::SideMenu => "worktrees",
-        Focus::Centre => "agent",
+        Focus::Centre => app.view.tab.name(),
     };
-    vec![
+    let mut segs = vec![
         seg(glyph.to_string(), bold(tok)),
         seg(
             format!(" {}/{}", menu::project_name(&project.path), worktree.name),
             bold(TEXT),
         ),
         seg(format!("  {focus}"), fg(TEXT_2)),
-    ]
+    ];
+    if app.view.zoom {
+        segs.push(seg("  ", fg(TEXT)));
+        segs.extend(pill("zoom", FOCUS_SEL, ACCENT, bar));
+    }
+    segs
 }
 
 /// `? 1 needs you   ✗ 0 failed   ◐ 2 running   ○ 3 quiet`, or without the words.

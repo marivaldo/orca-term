@@ -24,7 +24,10 @@ mod fixture;
 )]
 mod support;
 
+use std::fs;
 use std::io::{Read as _, Write as _};
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -47,9 +50,13 @@ struct Running {
 impl Running {
     /// Starts `orca-term app` as `fx` runs the binary, in a terminal `ROWS` by `COLS`.
     fn start(fx: &AgentRepo) -> Self {
+        Self::start_as(&fx.command(&["app"]))
+    }
+
+    /// Starts `orca-term app` as `template` says, in a terminal `ROWS` by `COLS`.
+    fn start_as(template: &std::process::Command) -> Self {
         let (pty, pts) = pty_process::blocking::open().unwrap();
         pty.resize(pty_process::Size::new(ROWS, COLS)).unwrap();
-        let template = fx.command(&["app"]);
         let mut command = pty_process::blocking::Command::new(template.get_program())
             .args(template.get_args())
             .current_dir(template.get_current_dir().unwrap());
@@ -205,6 +212,112 @@ fn an_agent_started_elsewhere_shows_up_on_its_own() {
     app.wait_for("fake claude ready");
     app.type_in(b"\x01q");
     assert!(app.wait_ended().success());
+}
+
+/// The stand-in Neovim: records its arguments and its pid beside the fake claude's log, says
+/// where it runs, and echoes every line typed. It never starts a real Neovim.
+const FAKE_NVIM: &str = r#"#!/bin/bash
+printf '%s\n' "$@" > "$ORCA_TERM_FAKE_CLAUDE_LOG.nvim-args"
+echo $$ > "$ORCA_TERM_FAKE_CLAUDE_LOG.nvim-pid"
+pwd -P > "$ORCA_TERM_FAKE_CLAUDE_LOG.nvim-cwd"
+echo "fake nvim ready"
+while IFS= read -r line; do echo "nvim got: $line"; done
+"#;
+
+/// The stand-in shell, run as `$SHELL`.
+const FAKE_SHELL: &str = r#"#!/bin/bash
+echo $$ > "$ORCA_TERM_FAKE_CLAUDE_LOG.shell-pid"
+echo "fake shell ready"
+while IFS= read -r line; do echo "shell got: $line"; done
+"#;
+
+/// Whether the process `pid`, read from the file at `path`, still runs.
+fn alive(path: &Path) -> bool {
+    let pid: i32 = fs::read_to_string(path).unwrap().trim().parse().unwrap();
+    rustix::process::test_kill_process(Pid::from_raw(pid).unwrap()).is_ok()
+}
+
+/// A short directory under `/tmp` for the application's sockets, as `XDG_RUNTIME_DIR`, removed
+/// when dropped.
+struct RuntimeDir(PathBuf);
+
+impl RuntimeDir {
+    fn new() -> Self {
+        let dir = PathBuf::from(format!("/tmp/ot-app-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for RuntimeDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_nvim_tab_runs_neovim_in_the_worktree_registered_and_quitting_ends_it_and_the_shell() {
+    let fx = AgentRepo::new();
+    let worktree = fx.new_worktree("fix");
+    fx.ok(&["project", "add"]);
+    fx.write_tool("nvim", FAKE_NVIM);
+    fx.write_tool("fake-shell", FAKE_SHELL);
+    let runtime = RuntimeDir::new();
+    let mut command = fx.command(&["app"]);
+    command
+        .env("XDG_RUNTIME_DIR", &runtime.0)
+        .env("SHELL", fx.bin.join("fake-shell"));
+
+    let mut app = Running::start_as(&command);
+    // Started in the primary checkout, which it opens (#175): `fix` comes after it.
+    app.wait_for("repo/repo");
+    app.type_in(b"\x01j");
+    app.wait_for("repo/fix");
+    app.type_in(b"\x012");
+    app.wait_for("fake nvim ready");
+    app.type_in(b"hello\r");
+    app.wait_for("nvim got: hello");
+
+    let log = fx.log.display().to_string();
+    let cwd = fs::read_to_string(format!("{log}.nvim-cwd")).unwrap();
+    assert_eq!(Path::new(cwd.trim()), worktree.canonicalize().unwrap());
+    let args = fs::read_to_string(format!("{log}.nvim-args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(args[0], "--listen", "{args:?}");
+    let socket = Path::new(args[1]);
+    assert!(
+        socket.starts_with(runtime.0.join("orca-term")),
+        "{socket:?}"
+    );
+    assert!(socket.as_os_str().len() <= 103, "fits a socket address");
+
+    // The stand-in cannot listen: the test does it for it, as Neovim would.
+    let listener = UnixListener::bind(socket).unwrap();
+    let registry = fx.repo.root.join(".git/orca-term/nvim");
+    let registered = || {
+        fs::read_dir(&registry).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| fs::read(entry.path()).unwrap() == args[1].as_bytes())
+        })
+    };
+    wait_until("the Neovim registering", registered);
+
+    app.type_in(b"\x013");
+    app.wait_for("fake shell ready");
+    let pids = (
+        PathBuf::from(format!("{log}.nvim-pid")),
+        PathBuf::from(format!("{log}.shell-pid")),
+    );
+    assert!(alive(&pids.0) && alive(&pids.1));
+
+    app.type_in(b"\x01q");
+    assert!(app.wait_ended().success());
+    assert!(!alive(&pids.0), "quitting ends Neovim");
+    assert!(!alive(&pids.1), "and the shell");
+    assert!(!registered(), "and takes Neovim off the registry");
+    assert!(!socket.exists(), "and removes its socket");
+    drop(listener);
 }
 
 #[test]

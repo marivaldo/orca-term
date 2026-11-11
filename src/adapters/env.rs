@@ -1,6 +1,7 @@
 //! Adapter: the process environment, meaning the current directory, the variables the
 //! configuration depends on, the directories of PATH, whether it runs inside Neovim and which
-//! Neovim to open, the running binary's path, the clock, the live checks' recording tap and the
+//! Neovim to open, the shell, the directory for sockets, the process's user and id, the running
+//! binary's path, the clock, the live checks' recording tap and the
 //! socket of the person's ssh agent.
 #![expect(
     clippy::disallowed_methods,
@@ -94,6 +95,31 @@ pub(crate) fn config_env() -> Env {
 pub(crate) fn colour_env() -> (bool, Option<String>) {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
     (no_color, std::env::var("COLORTERM").ok())
+}
+
+/// The person's shell, `SHELL`, or `None` when it is unset, empty or not text (#176).
+pub(crate) fn shell() -> Option<String> {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// `XDG_RUNTIME_DIR`, the directory for this user's sockets, or `None` when it is unset or empty
+/// (#176).
+pub(crate) fn runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// This process's user id.
+pub(crate) fn uid() -> u32 {
+    rustix::process::getuid().as_raw()
+}
+
+/// This process's id.
+pub(crate) fn pid() -> u32 {
+    std::process::id()
 }
 
 /// The socket of the person's ssh agent, as `SSH_AUTH_SOCK` names it, or `None` when it is unset
