@@ -36,6 +36,11 @@ const SANDBOX_TOOLS: &[&str] = &["sandbox-exec", "bwrap", "socat"];
 /// variable names (never values), runs a test's prelude, echoes every line typed, prints 4 MiB on
 /// `flood`, exits with the code typed after `exit`, and ends on `SIGHUP` as claude does (unless
 /// the prelude says otherwise). The idle timeout ends a leaked one on its own.
+///
+/// The lines are read by a subshell that traps no signal, while the script itself only waits for
+/// it, reports each size and ends with its exit code: macOS's `/bin/bash` (3.2) can drop the last
+/// character of the line `read` is reading when a trapped signal arrives, and the holder resizes
+/// the terminal (a `WINCH`) right before it types a client's input.
 const FAKE_CLAUDE: &str = r#"#!/bin/bash
 if [ "$1" = "--version" ]; then echo "VERSION"; exit 0; fi
 log="$ORCA_TERM_FAKE_CLAUDE_LOG"
@@ -47,15 +52,21 @@ trap 'echo "size=$(/bin/stty size)"' WINCH
 trap 'echo "got HUP"; exit 129' HUP
 PRELUDE
 echo "fake claude ready"
-while IFS= read -r -t 120 line; do
-  case "$line" in
-    exit*)  echo "bye"; exit "${line#exit }" ;;
-    flood*) x=x; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do x="$x$x"; done
-            for i in $(eval echo {1..1024}); do echo "$x"; done; echo "flooded" ;;
-    *)      echo "you said: $line" ;;
-  esac
-done
-exit 0
+(
+  trap - WINCH
+  while IFS= read -r -t 120 line; do
+    case "$line" in
+      exit*)  echo "bye"; exit "${line#exit }" ;;
+      flood*) x=x; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do x="$x$x"; done
+              for i in $(eval echo {1..1024}); do echo "$x"; done; echo "flooded" ;;
+      *)      echo "you said: $line" ;;
+    esac
+  done
+  exit 0
+) <&0 &
+reader=$!
+while kill -0 "$reader" 2>/dev/null; do wait "$reader"; done
+wait "$reader"
 "#;
 
 /// A repository, the isolated PATH and the fake claude's log files.
@@ -523,14 +534,30 @@ impl RawClient {
         self.output.lock().unwrap().len()
     }
 
-    /// Waits until `marker` was printed after the first `from` bytes of output.
+    /// Waits until `marker` was printed after the first `from` bytes of output, failing the test
+    /// with everything printed after them otherwise.
     pub(crate) fn wait_for_since(&self, from: usize, marker: &str) {
-        wait_until(&format!("`{marker}` after byte {from}"), || {
-            let out = self.output.lock().unwrap();
-            out[from.min(out.len())..]
-                .windows(marker.len())
-                .any(|window| window == marker.as_bytes())
-        });
+        let start = Instant::now();
+        while !self.printed_since(from, marker) {
+            assert!(
+                start.elapsed() < WAIT,
+                "`{marker}` after byte {from} never happened; the agent printed after it:\n{}",
+                self.output_since(from)
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn printed_since(&self, from: usize, marker: &str) -> bool {
+        let out = self.output.lock().unwrap();
+        out[from.min(out.len())..]
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    }
+
+    fn output_since(&self, from: usize) -> String {
+        let out = self.output.lock().unwrap();
+        String::from_utf8_lossy(&out[from.min(out.len())..]).into_owned()
     }
 
     /// The replay, the holder's first output frame, waiting for it.
