@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, its Lua client removed by 0014
 ---
 
 # orca-term is a terminal application, with the person's Neovim beside it as the editor
@@ -32,6 +32,11 @@ second map, [issue #165](https://github.com/marivaldo/orca-term/issues/165), dec
   ([#169](https://github.com/marivaldo/orca-term/issues/169)); Enter on a changed file opens its
   diff there. Claude Code's own editor protocol links the agent and Neovim through
   coder/claudecode.nvim, with claude started `--ide`.
+
+  > **Superseded in part by [ADR 0014](0014-orca-term-ships-no-neovim-plugin.md)** (2026-11-11,
+  > [#194](https://github.com/marivaldo/orca-term/issues/194)): the Lua client is removed whole,
+  > diff review and notes included. Enter on a changed file opens its diff through the core, which
+  > sends the Neovim its own Lua over the socket, under Neovim's built-in `:diffthis`.
 - **The multiplexer stays out of the architecture.** ADR 0001's rejection of tmux holds: "panels
   like tmux" means behaving like tmux, not running it.
 
@@ -66,5 +71,8 @@ change any other ruling of the core.
 - The parts of the Lua client the application takes over (the sidebar, the status strip, a tab per
   worktree, the agent's terminal inside Neovim) are frozen from 2026-11-06: fixes only, no new
   behaviour. They and their specs are removed once the application covers them.
+
+  > **Changed by [ADR 0014](0014-orca-term-ships-no-neovim-plugin.md)** (2026-11-11): the whole
+  > client is removed at once, not part by part.
 - ratatui and crossterm join `deny.toml`'s review; the application's screens are tested as
   snapshots on ratatui's `TestBackend`, and one live test runs it in a terminal.

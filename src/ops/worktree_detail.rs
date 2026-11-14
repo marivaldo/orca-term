@@ -1,5 +1,4 @@
-//! Ops: `worktree detail`, everything the Neovim client's detail float shows about a worktree
-//! (`domain/detail.rs`). Only reads: it runs git to count the drift and the changed files, and
+//! Ops: `worktree detail`, everything there is to say about one worktree (`domain/detail.rs`). Only reads: it runs git to count the drift and the changed files, and
 //! fetches nothing. The step of a rebase in progress is read from git's own files, with no git
 //! run.
 //!

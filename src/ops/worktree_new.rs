@@ -17,7 +17,7 @@ use crate::domain::include;
 use crate::domain::setup::SetupReport;
 use crate::domain::worktree::{self, Created, Target, WorktreeName};
 use crate::ops::agent_start::{self, Wanted};
-use crate::ops::{Approval, config_layers, lock_worktree, notify_changed, set_up, write_agent};
+use crate::ops::{Approval, config_layers, lock_worktree, set_up, write_agent};
 
 /// Creates the worktree `name` in the repository containing the current directory, echoing its
 /// setup's output to `echo`, with `agent` (`--agent`) recorded as its agent before the setup
@@ -123,8 +123,8 @@ pub(crate) fn start_agent(
     agent_start::run(&target, &wanted, approval).map(Some)
 }
 
-/// Locks the new worktree, records `agent` as its agent where given, tells the running Neovims it
-/// exists, copies the copy list and runs the setup (which tells them again as it starts and ends).
+/// Locks the new worktree, records `agent` as its agent where given, copies the copy list and
+/// runs the setup.
 /// Returns how many files were copied and what the setup did. The lock is taken before anything
 /// else touches the worktree and held until its setup ends, so nothing else may use the worktree
 /// before it is ready.
@@ -140,7 +140,6 @@ fn finish(
     if let Some(agent) = agent {
         write_agent(&lock, agent)?;
     }
-    notify_changed(lock.admin());
     let copied = copy_include_list(primary, worktree, &include_list(primary)?)?;
     let setup = set_up(&lock, primary, worktree, name.as_str(), approval, echo)?;
     Ok((copied, setup))

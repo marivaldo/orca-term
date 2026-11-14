@@ -21,8 +21,8 @@ use crate::ops::agent_start::{self, Wanted};
 use crate::ops::agent_stop::stop_holder;
 use crate::ops::agent_swap::{check_can_launch, check_not_in_turn};
 use crate::ops::{
-    Approval, change_status, find_agent, find_target_admin, lock_worktree, notify_changed,
-    read_fleet, read_sessions,
+    Approval, change_status, find_agent, find_target_admin, lock_worktree, read_fleet,
+    read_sessions,
 };
 
 /// Makes the session `id` of the worktree `target` names or locates in the repository containing
@@ -65,7 +65,6 @@ pub(crate) fn run(
         change_status(&admin, &worktree.name, |status| {
             session::make_current(status, chosen)
         })?;
-        notify_changed(&admin);
         running
     };
     let started = agent_start::start(&fleet, worktree, &admin, &lock, &wanted, approval)?;

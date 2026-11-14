@@ -1,5 +1,4 @@
-//! Ops: `worktree review`, which the Neovim sidebar runs before it opens a worktree's review in
-//! diffview.nvim (`domain/review.rs`). It finds the review's base, the commit where the worktree
+//! Ops: `worktree review`, for whoever reviews a worktree's changes (`domain/review.rs`). It finds the review's base, the commit where the worktree
 //! forked from the default branch, then marks the worktree seen exactly as `worktree seen` does.
 //! The base is found first, so a review that cannot start marks nothing.
 
@@ -12,7 +11,7 @@ use crate::domain::worktree::Target;
 use crate::ops::{find_target, read_fleet, worktree_seen};
 
 /// Finds the review's base for the worktree `target` names or locates in the repository
-/// containing the current directory, marks the worktree seen and tells the running Neovims.
+/// containing the current directory, and marks the worktree seen.
 /// The primary checkout is reviewed like any worktree. Refuses an unknown worktree and one whose
 /// directory is gone.
 pub(crate) fn run(target: &Target) -> Result<Reviewed> {

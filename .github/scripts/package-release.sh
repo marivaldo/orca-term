@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Packs one release asset the way the build hook (lua/orca-term/install.lua) unpacks it:
-# <out dir>/orca-term-<version>-<target>.tar.gz, holding only the binary `orca-term` and LICENSE,
-# and beside it <asset>.sha256, as `shasum -a 256` writes it (`<hex>  <asset>`). The release
-# workflow runs it once per target; the build hook's specs run it to make their fake release.
+# Packs one release asset: <out dir>/orca-term-<version>-<target>.tar.gz, holding only the binary
+# `orca-term` and LICENSE, and beside it <asset>.sha256, as `shasum -a 256` writes it
+# (`<hex>  <asset>`). The release workflow runs it once per target; README's install section
+# says how a person unpacks it.
 #
 # Usage: package-release.sh <binary> <version> <target> <out dir>
 set -euo pipefail

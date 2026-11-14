@@ -31,7 +31,7 @@ use crate::domain::turn;
 use crate::domain::worktree::{self, Target};
 use crate::ops::{
     Approval, config_layers, derive_state, ensure_trust_file, find_agent, find_target_admin,
-    is_approved, lock_worktree, notify_changed, read_fleet, write_agent,
+    is_approved, lock_worktree, read_fleet, write_agent,
 };
 
 /// What `agent start` is asked for.
@@ -138,7 +138,6 @@ pub(crate) fn start(
     };
     let pid = holder::spawn(&holder_args, launch::STRIPPED_VARS, &launched.vars)?;
     write_agent(lock, agent)?;
-    notify_changed(&admin);
     Ok(Started {
         worktree: refreshed(worktree, &admin)?,
         agent,

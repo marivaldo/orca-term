@@ -1,14 +1,17 @@
-//! Live sidebar updates (seam 1): a running Neovim registers its server address with `nvim
-//! register`, and after every write to a worktree's state the core sends it one msgpack-RPC
-//! request firing `User OrcaTermWorktreeChanged` with the worktree's path, and waits for the answer
-//! before it hangs up (Neovim drops a call still waiting to run when its connection closes).
+//! The registry of running Neovims and what the core sends them: a Neovim registers its server
+//! address with `nvim register` (the application registers each one it starts), and the core
+//! sends it one msgpack-RPC request at a time, waiting for the answer before it hangs up (Neovim
+//! drops a call still waiting to run when its connection closes). Only two things are sent: the
+//! `:checktime` at the end of an agent's turn (#177), and a changed file's diff (#194). Writing a
+//! worktree's state sends nothing: the worktree-changed notice went with the Neovim client.
 //!
 //! A test Neovim is a `UnixListener` the test binds at a short path under `/tmp` (a unix socket
 //! address holds about 100 bytes), registered like a real one. A live one answers each request as
 //! Neovim does, on a thread of its own, and checks the core was still there to read the answer; a
 //! deaf one never accepts, and its messages are read from its backlog once the core hung up. Each
 //! message is decoded from msgpack and compared whole. The agent fixture (fake claude on an isolated
-//! PATH, holders stopped at the end) is the one `tests/agent.rs` uses.
+//! PATH, holders stopped at the end) is the one `tests/agent.rs` uses. A real Neovim opening a
+//! diff is `tests/nvim_diff.rs`.
 
 #![expect(
     clippy::unwrap_used,
@@ -44,9 +47,6 @@ use std::time::{Duration, Instant};
 
 use fixture::AgentRepo;
 use serde_json::{Value, json};
-
-/// How long a test waits for a message that comes from another process (the holder).
-const WAIT: Duration = Duration::from_secs(15);
 
 /// One request a live test Neovim answered.
 struct Answered {
@@ -129,27 +129,6 @@ impl Neovim {
                 Err(err) => panic!("accept: {err}"),
             }
         }
-    }
-
-    /// The worktree paths of every message sent so far, each message checked whole.
-    fn paths(&self) -> Vec<String> {
-        self.messages().iter().map(path_of).collect()
-    }
-
-    /// Waits until at least `count` messages came, then returns all their paths.
-    fn wait_for_paths(&self, count: usize) -> Vec<String> {
-        let start = Instant::now();
-        let mut paths = Vec::new();
-        while paths.len() < count {
-            assert!(
-                start.elapsed() < WAIT,
-                "only {} of {count} messages came: {paths:?}",
-                paths.len()
-            );
-            paths.extend(self.paths());
-            thread::sleep(Duration::from_millis(20));
-        }
-        paths
     }
 }
 
@@ -274,25 +253,14 @@ fn take<'b>(bytes: &'b [u8], at: &mut usize, len: usize) -> Option<&'b [u8]> {
     Some(taken)
 }
 
-/// The worktree path a request carries, after checking the whole message is the call that fires
-/// `User OrcaTermWorktreeChanged`.
-fn path_of(message: &Value) -> String {
-    let path = message[3][1]["data"]["path"].as_str().unwrap_or_default();
-    assert_eq!(
-        message,
-        &json!([
-            0,
-            1,
-            "nvim_exec_autocmds",
-            ["User", {"pattern": "OrcaTermWorktreeChanged", "data": {"path": path}}]
-        ])
-    );
-    path.to_owned()
+/// The request that asks a Neovim to `:checktime`.
+fn checktime() -> Value {
+    json!([0, 1, "nvim_command", ["checktime"]])
 }
 
-/// `count` times the path `path`: the paths `count` requests about one worktree carry.
-fn times(path: &str, count: usize) -> Vec<String> {
-    vec![path.to_owned(); count]
+/// Whether `message` is a diff request (`nvim_exec_lua` of the core's own code) for `file`.
+fn is_diff_of(message: &Value, file: &str) -> bool {
+    message[2] == "nvim_exec_lua" && message[3][1][1] == file
 }
 
 /// The repository's registry of Neovims, in its git common dir.
@@ -322,17 +290,6 @@ fn commit_setup(fx: &AgentRepo, script: &str) {
     fx.repo
         .write("orca-term.yaml", &format!("scripts:\n  setup: {script}\n"));
     fx.repo.commit_all("setup");
-}
-
-/// Runs the handler the agent's settings register for `SessionStart`, as claude would: the
-/// command with its arguments, a payload on stdin, in the worktree.
-fn fire_session_start(worktree: &Path, admin: &Path) {
-    fire(
-        worktree,
-        admin,
-        "SessionStart",
-        &json!({"source": "startup"}),
-    );
 }
 
 /// Runs the handler the agent's settings register for `event`, as claude would, with a payload
@@ -371,6 +328,20 @@ fn fire(worktree: &Path, admin: &Path, event: &str, fields: &Value) {
         .write_all(payload.to_string().as_bytes());
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success() && out.stdout.is_empty() && out.stderr.is_empty());
+}
+
+/// A turn of the agent of the worktree at `worktree`, from its prompt to its end, as its hooks
+/// report it: what the Neovims are asked after the prompt, then after the end.
+fn a_turn(worktree: &Path, admin: &Path, neovim: &Neovim) -> (Vec<Value>, Vec<Value>) {
+    fire(
+        worktree,
+        admin,
+        "UserPromptSubmit",
+        &json!({"prompt": "write it"}),
+    );
+    let begun = neovim.messages();
+    fire(worktree, admin, "Stop", &json!({}));
+    (begun, neovim.messages())
 }
 
 #[test]
@@ -435,7 +406,7 @@ fn an_address_that_is_not_an_absolute_path_is_refused() {
 }
 
 #[test]
-fn a_hook_event_notifies_every_registered_neovim() {
+fn only_the_end_of_a_turn_asks_every_registered_neovim_to_checktime() {
     let fx = AgentRepo::new();
     let worktree = fx.new_worktree("fix");
     let admin = fx.admin_dir(&worktree);
@@ -444,71 +415,44 @@ fn a_hook_event_notifies_every_registered_neovim() {
     fx.ok(&["nvim", "register", &first.address()]);
     fx.ok(&["nvim", "register", &second.address()]);
 
-    fire_session_start(&worktree, &admin);
-
-    let path = listed_path(&fx, "fix");
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
+    let (begun, ended) = a_turn(&worktree, &admin, &first);
+    assert!(begun.is_empty(), "a turn begins: nothing is sent");
+    assert_eq!(ended, [checktime()], "a turn ends");
+    assert_eq!(second.messages(), [checktime()]);
 }
 
 #[test]
-fn the_end_of_a_turn_asks_every_registered_neovim_to_checktime() {
+fn the_end_of_a_turn_in_the_primary_checkout_asks_to_checktime() {
     let fx = AgentRepo::new();
-    let worktree = fx.new_worktree("fix");
-    let admin = fx.admin_dir(&worktree);
-    fx.ok(&["agent", "start", "fix"]);
-    let (first, second) = (Neovim::new(), Neovim::new());
-    fx.ok(&["nvim", "register", &first.address()]);
-    fx.ok(&["nvim", "register", &second.address()]);
-    let path = listed_path(&fx, "fix");
-    let changed = json!([
-        0,
-        1,
-        "nvim_exec_autocmds",
-        ["User", {"pattern": "OrcaTermWorktreeChanged", "data": {"path": path}}]
-    ]);
-    let checktime = json!([0, 1, "nvim_command", ["checktime"]]);
+    let root = fx.repo.root.clone();
+    let admin = fx.admin_dir(&root);
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
 
-    fire(
-        &worktree,
-        &admin,
-        "UserPromptSubmit",
-        &json!({"prompt": "write it"}),
-    );
-    assert_eq!(
-        first.messages(),
-        std::slice::from_ref(&changed),
-        "a turn begins"
-    );
-
-    fire(&worktree, &admin, "Stop", &json!({}));
-    for neovim in [&first, &second] {
-        let mut messages = neovim.messages();
-        if neovim.address() == second.address() {
-            // The second one heard the begin too.
-            assert_eq!(messages.remove(0), changed);
-        }
-        assert_eq!(
-            messages,
-            [changed.clone(), checktime.clone()],
-            "a turn ends"
-        );
-    }
+    fx.ok(&["agent", "start", "repo"]);
+    let (begun, ended) = a_turn(&root, &admin, &neovim);
+    assert!(begun.is_empty());
+    assert_eq!(ended, [checktime()]);
 }
 
 #[test]
 fn nvim_diff_asks_every_registered_neovim_to_open_the_files_diff() {
     let fx = AgentRepo::new();
-    fx.new_worktree("fix");
+    fx.repo.write("src/a.rs", "fn a() {}\n");
+    fx.repo.commit_all("a");
+    let worktree = fx.new_worktree("fix");
+    fs::write(worktree.join("src/a.rs"), "fn a() { 1 }\n").unwrap();
     let neovim = Neovim::new();
     fx.ok(&["nvim", "register", &neovim.address()]);
-    let (path, primary) = (listed_path(&fx, "fix"), listed_path(&fx, "repo"));
+    let path = listed_path(&fx, "fix");
+    let base = fx.repo.git(&["rev-parse", "--short=7", "main"]);
 
     let text = fx.ok(&["nvim", "diff", "fix", "src/a.rs"]);
     assert_eq!(
         text,
         "asked the Neovims of fix to open the diff of src/a.rs\n"
     );
+    // The code the core sends, then the worktree, the file, the merge base and the file there.
     assert_eq!(
         neovim.messages(),
         [json!([
@@ -516,8 +460,8 @@ fn nvim_diff_asks_every_registered_neovim_to_open_the_files_diff() {
             1,
             "nvim_exec_lua",
             [
-                "return require('orca-term.actions').diff_from_core(...)",
-                [path, primary, "src/a.rs"]
+                include_str!("../src/domain/nvim/open_diff.lua"),
+                [path, "src/a.rs", base.trim(), "fn a() {}\n"]
             ]
         ])]
     );
@@ -526,171 +470,31 @@ fn nvim_diff_asks_every_registered_neovim_to_open_the_files_diff() {
 }
 
 #[test]
-fn the_primary_checkouts_hooks_and_marks_notify_with_its_path() {
-    let fx = AgentRepo::new();
-    let root = fx.repo.root.clone();
-    let admin = fx.admin_dir(&root);
-    let path = listed_path(&fx, "repo");
-    assert_eq!(path, root.to_str().unwrap());
-    let neovim = Neovim::new();
-    fx.ok(&["nvim", "register", &neovim.address()]);
-
-    fx.ok(&["agent", "start", "repo"]);
-    assert_eq!(neovim.paths(), times(&path, 1));
-    fire_session_start(&root, &admin);
-    assert_eq!(neovim.paths(), times(&path, 1), "its hook");
-    fx.ok(&["worktree", "unseen", "repo"]);
-    assert_eq!(neovim.paths(), times(&path, 1));
-}
-
-#[test]
-fn worktree_new_setup_and_rm_notify_with_the_worktrees_path() {
+fn writing_a_worktrees_state_sends_nothing_to_the_neovims() {
+    // Only the Neovim client listened to the worktree-changed notice, and it is gone (#194).
     let fx = AgentRepo::new();
     commit_setup(&fx, "echo set up");
-    let (first, second) = (Neovim::new(), Neovim::new());
-    fx.ok(&["nvim", "register", &first.address()]);
-    fx.ok(&["nvim", "register", &second.address()]);
+    let neovim = Neovim::new();
+    fx.ok(&["nvim", "register", &neovim.address()]);
 
     fx.ok(&["worktree", "new", "fix", "--approve-setup"]);
-    let path = listed_path(&fx, "fix");
-    // Once the worktree exists, once its setup records itself running, once it ends.
-    assert_eq!(first.paths(), times(&path, 3));
-    assert_eq!(second.paths(), times(&path, 3));
-
     fx.ok(&["worktree", "setup", "fix"]);
-    assert_eq!(first.paths(), times(&path, 2), "running, then ended");
-    assert_eq!(second.paths(), times(&path, 2));
-
-    fx.ok(&["worktree", "rm", "fix"]);
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
-}
-
-#[test]
-fn a_setup_not_approved_notifies_once_it_is_recorded() {
-    let fx = AgentRepo::new();
-    commit_setup(&fx, "echo set up");
-    let nvim = Neovim::new();
-    fx.ok(&["nvim", "register", &nvim.address()]);
-
-    let out = fx.run(&["worktree", "new", "fix", "--json"]);
-    assert_eq!(out.status.code(), Some(8), "untrusted");
-    let path = listed_path(&fx, "fix");
-    assert_eq!(
-        nvim.paths(),
-        times(&path, 2),
-        "created, then recorded not approved"
-    );
-}
-
-#[test]
-fn a_setup_with_no_script_notifies_once() {
-    let fx = AgentRepo::new();
-    let nvim = Neovim::new();
-    fx.ok(&["nvim", "register", &nvim.address()]);
-    fx.ok(&["worktree", "new", "fix"]);
-    let path = listed_path(&fx, "fix");
-    assert_eq!(
-        nvim.paths(),
-        times(&path, 2),
-        "created, then no setup recorded"
-    );
-    fx.ok(&["worktree", "setup", "fix"]);
-    assert_eq!(nvim.paths(), times(&path, 1));
-}
-
-#[test]
-fn agent_start_stop_and_the_agents_own_exit_notify() {
-    let fx = AgentRepo::new();
-    fx.new_worktree("fix");
-    let path = listed_path(&fx, "fix");
-    let (first, second) = (Neovim::new(), Neovim::new());
-    fx.ok(&["nvim", "register", &first.address()]);
-    fx.ok(&["nvim", "register", &second.address()]);
-
-    fx.ok(&["agent", "start", "fix"]);
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
-
-    // `agent stop` once the holder is gone, and the holder itself once it removed its files.
-    fx.ok(&["agent", "stop", "fix"]);
-    assert_eq!(first.wait_for_paths(2), times(&path, 2));
-    assert_eq!(second.wait_for_paths(2), times(&path, 2));
-
-    fx.ok(&["agent", "start", "fix"]);
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
-    let mut attach = fx.attach("fix");
-    attach.wait_for("fake claude ready");
-    attach.send("exit 0\n");
-    attach.wait_ended();
-    assert_eq!(
-        first.wait_for_paths(1),
-        times(&path, 1),
-        "the holder, as the agent exits"
-    );
-    assert_eq!(second.wait_for_paths(1), times(&path, 1));
-    assert_eq!(fx.listed("fix")["holder"], false);
-}
-
-#[test]
-fn worktree_seen_and_unseen_notify_with_the_worktrees_path() {
-    let fx = AgentRepo::new();
-    fx.new_worktree("fix");
-    let path = listed_path(&fx, "fix");
-    let (first, second) = (Neovim::new(), Neovim::new());
-    fx.ok(&["nvim", "register", &first.address()]);
-    fx.ok(&["nvim", "register", &second.address()]);
-
     fx.ok(&["worktree", "unseen", "fix"]);
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
-
-    fx.ok(&["worktree", "seen", "fix", "--json"]);
-    assert_eq!(first.paths(), times(&path, 1));
-    assert_eq!(second.paths(), times(&path, 1));
-}
-
-#[test]
-fn worktree_review_notifies_with_the_worktrees_path() {
-    let fx = AgentRepo::new();
-    fx.new_worktree("fix");
-    let path = listed_path(&fx, "fix");
-    let neovim = Neovim::new();
-    fx.ok(&["nvim", "register", &neovim.address()]);
-
-    fx.ok(&["worktree", "review", "fix", "--json"]);
-    assert_eq!(neovim.paths(), times(&path, 1));
-}
-
-#[test]
-fn every_note_write_notifies_with_the_worktrees_path() {
-    let fx = AgentRepo::new();
-    fx.new_worktree("fix");
-    let path = listed_path(&fx, "fix");
-    let neovim = Neovim::new();
-    fx.ok(&["nvim", "register", &neovim.address()]);
-
+    fx.ok(&["worktree", "seen", "fix"]);
+    fx.ok(&["worktree", "review", "fix"]);
     fx.ok(&["note", "add", "fix", "a.txt", "--body", "one"]);
-    assert_eq!(neovim.paths(), times(&path, 1), "add");
-    fx.ok(&["note", "add", "fix", "b.txt", "--body", "two"]);
-    fx.ok(&["note", "edit", "fix", "1", "--body", "uno", "--json"]);
-    assert_eq!(neovim.paths(), times(&path, 2), "add, then edit");
-    fx.ok(&["note", "rm", "fix", "2"]);
-    assert_eq!(neovim.paths(), times(&path, 1), "rm");
-    fx.ok(&["note", "ls", "fix"]);
-    assert!(neovim.paths().is_empty(), "listing notes sends nothing");
-
+    fx.ok(&["note", "edit", "fix", "1", "--body", "uno"]);
+    fx.ok(&["note", "rm", "fix", "1"]);
     fx.ok(&["agent", "start", "fix"]);
-    fx.wait_for_output("fix", "fake claude ready");
-    neovim.paths();
-    fx.ok(&["note", "send", "fix"]);
-    assert_eq!(neovim.paths(), times(&path, 1), "send");
+    fx.ok(&["agent", "stop", "fix"]);
+    fx.ok(&["worktree", "rm", "fix"]);
+    assert!(neovim.messages().is_empty());
 }
 
 #[test]
 fn a_stale_address_is_pruned_and_the_command_still_succeeds() {
     let fx = AgentRepo::new();
+    fx.new_worktree("fix");
     let live = Neovim::new();
     // A socket file nobody listens on any more, as a Neovim that crashed leaves it.
     let crashed_dir = short_dir();
@@ -708,23 +512,24 @@ fn a_stale_address_is_pruned_and_the_command_still_succeeds() {
     }
     assert_eq!(registered(&fx).len(), 3);
 
-    let out = fx.run(&["worktree", "new", "fix", "--json"]);
+    let out = fx.run(&["nvim", "diff", "fix", "a.txt", "--json"]);
     assert_eq!(out.status.code(), Some(0));
-    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(doc["worktree"]["name"], "fix");
     assert!(out.stderr.is_empty());
 
     assert_eq!(registered(&fx), [live.address()]);
-    assert_eq!(live.paths().len(), 2);
+    let messages = live.messages();
+    assert_eq!(messages.len(), 1);
+    assert!(is_diff_of(&messages[0], "a.txt"));
     let _ = fs::remove_dir_all(crashed_dir);
 }
 
 #[test]
 fn an_address_too_long_for_a_socket_is_skipped_and_kept() {
     let fx = AgentRepo::new();
+    fx.new_worktree("fix");
     let long = format!("/tmp/{}/nvim.sock", "x".repeat(150));
     fx.ok(&["nvim", "register", &long]);
-    fx.ok(&["worktree", "new", "fix"]);
+    fx.ok(&["nvim", "diff", "fix", "a.txt"]);
     assert_eq!(registered(&fx), [long]);
 }
 
@@ -749,27 +554,28 @@ fn a_neovim_that_never_reads_or_never_accepts_does_not_hold_a_command_up() {
 
     for _ in 0..3 {
         let start = Instant::now();
-        fx.ok(&["worktree", "setup", "fix"]);
+        fx.ok(&["nvim", "diff", "fix", "a.txt"]);
         let took = start.elapsed();
         assert!(took < Duration::from_secs(1), "took {took:?}");
     }
     let mut both = vec![silent.address(), deaf.address()];
     both.sort();
     assert_eq!(registered(&fx), both, "neither is pruned: both are alive");
-    assert_eq!(deaf.paths().len(), 3);
+    assert_eq!(deaf.messages().len(), 3);
 }
 
 #[test]
 fn the_core_waits_for_the_answer_of_a_busy_neovim_before_hanging_up() {
     let fx = AgentRepo::new();
+    fx.new_worktree("fix");
     let busy = Neovim::answering_after(Duration::from_millis(50));
     fx.ok(&["nvim", "register", &busy.address()]);
 
-    fx.ok(&["worktree", "new", "fix"]);
+    fx.ok(&["nvim", "diff", "fix", "a.txt"]);
 
-    // `paths` fails if the core hung up before an answer was written: Neovim would have dropped
+    // `messages` fails if the core hung up before an answer was written: Neovim would have dropped
     // the call.
-    assert_eq!(busy.paths(), times(&listed_path(&fx, "fix"), 2));
+    assert_eq!(busy.messages().len(), 1);
 }
 
 #[test]

@@ -15,8 +15,7 @@ use crate::ops::agent_start::{self, Wanted, refreshed};
 use crate::ops::agent_stop::stop_holder;
 use crate::ops::agent_swap::{check_can_launch, check_not_in_turn};
 use crate::ops::{
-    Approval, change_status, find_target_admin, lock_worktree, notify_changed, read_fleet,
-    read_status,
+    Approval, change_status, find_target_admin, lock_worktree, read_fleet, read_status,
 };
 
 /// Discards the current session of the worktree `target` names or locates in the repository
@@ -48,7 +47,6 @@ pub(crate) fn run(
     }
     if discarded.is_some() {
         change_status(&admin, &worktree.name, session::discard)?;
-        notify_changed(&admin);
     }
     let started = if running {
         let wanted = Wanted {

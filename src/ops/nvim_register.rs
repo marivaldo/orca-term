@@ -1,6 +1,6 @@
-//! Ops: the hidden `nvim register <address>` command, which a running Neovim runs so the core
-//! tells it whenever a worktree changes: it records the Neovim's server address in the
-//! repository's registry (`domain/nvim.rs`). Registering an address twice changes nothing.
+//! Ops: the hidden `nvim register <address>` command, so the core can send a running Neovim
+//! `:checktime` and diffs: it records the Neovim's server address in the repository's registry
+//! (`domain/nvim.rs`). The application registers each Neovim it starts through `run_in`. Registering an address twice changes nothing.
 
 use std::path::Path;
 

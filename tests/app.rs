@@ -386,7 +386,10 @@ fn the_right_column_lists_the_changed_files_and_enter_opens_a_diff_in_the_worktr
     let args = fs::read_to_string(format!("{log}.nvim-args")).unwrap();
     let socket = PathBuf::from(args.lines().nth(1).unwrap());
     let text = first_request(&socket, "notes.txt");
-    assert!(text.contains("diff_from_core"), "{text}");
+    assert!(
+        text.contains("diffthis"),
+        "the core sends the code itself: {text}"
+    );
     assert!(
         text.contains(worktree.canonicalize().unwrap().to_str().unwrap()),
         "{text}"

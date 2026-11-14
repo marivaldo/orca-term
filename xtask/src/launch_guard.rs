@@ -1,7 +1,7 @@
 //! Launch guard lint: no launch of an agent ever bypasses permissions (ADR 0007). The flags and
 //! modes that would are listed in one place, `src/domain/launch.rs`, where the run-time guard
-//! refuses them; this lint rejects their literals anywhere else under `src/`, `lua/` and
-//! `plugin/`, so no other code can build a launch that carries them.
+//! refuses them; this lint rejects their literals anywhere else under `src/`, in its Rust
+//! and in the Lua the core sends to Neovim, so no other code can build a launch that carries them.
 //!
 //! The check is textual, like the other lints: comments are skipped, and a literal counts only as
 //! a whole token (`disableBypassPermissionsMode` is not `bypassPermissions`; `--autocomplete` is
@@ -24,7 +24,7 @@ const FORBIDDEN: &[&str] = &[
 ];
 
 /// The directories scanned, relative to the repository root, with the extension of their files.
-const SCANNED: &[(&str, &str)] = &[("src", "rs"), ("lua", "lua"), ("plugin", "lua")];
+const SCANNED: &[(&str, &str)] = &[("src", "rs"), ("src", "lua")];
 
 pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
@@ -128,7 +128,7 @@ mod tests {
             ]
         );
         let lua = "local args = { 'claude', '--auto' }\n";
-        assert_eq!(check_file("lua/orca-term/core.lua", lua).len(), 1);
+        assert_eq!(check_file("src/domain/nvim/open_diff.lua", lua).len(), 1);
         let opencode = "let argv = [\"opencode\", \"--yolo\"];\n";
         assert_eq!(check_file("src/ops/agent_start.rs", opencode).len(), 1);
     }

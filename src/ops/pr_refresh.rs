@@ -9,7 +9,7 @@
 //! takes about as long as its slowest answer. Each `pr.json` is replaced whole, the last write
 //! winning, holding only the shared lock that holds off a removal of the worktree meanwhile
 //! (`ops::guard_against_removal`): a worktree removed while gh answered is left out, and nothing is
-//! written for it. The running Neovims are told only about a worktree whose answer changed.
+//! written for it.
 //! gh missing, not logged in or not pointed at GitHub is an answer too (`unavailable`): the
 //! command itself fails only for a worktree it cannot find or write.
 
@@ -24,7 +24,7 @@ use crate::domain::fleet::Worktree;
 use crate::domain::pr::{self, Found, GhRun, PrFacts, Refreshed, RefreshedWorktree};
 use crate::domain::state::AdminDir;
 use crate::domain::worktree::Target;
-use crate::ops::{find_target, guard_against_removal, notify_changed, read_fleet, read_pr};
+use crate::ops::{find_target, guard_against_removal, read_fleet, read_pr};
 
 /// The GitHub CLI, as found on PATH. Only this file may name it.
 const GH: &str = "gh";
@@ -155,8 +155,7 @@ pub(crate) fn keep(worktree: &Worktree, facts: &PrFacts) -> Result<()> {
     Ok(())
 }
 
-/// Writes `facts` to the `pr.json` in `admin`, never over a newer schema, and tells the running
-/// Neovims when the answer changed. Returns `false`, writing nothing, when the worktree was
+/// Writes `facts` to the `pr.json` in `admin`, never over a newer schema. Returns `false`, writing nothing, when the worktree was
 /// removed meanwhile (`guard_against_removal`).
 fn keep_in(admin: &AdminDir, facts: &PrFacts) -> Result<bool> {
     let Some(still_there) = guard_against_removal(admin)? else {
@@ -167,10 +166,6 @@ fn keep_in(admin: &AdminDir, facts: &PrFacts) -> Result<bool> {
     // A worktree made by hand with git has no admin directory of ours yet.
     fs::create_dir_all(admin.path())?;
     fs::write_atomically(&admin.pr_file(), &pr::to_bytes(facts)?)?;
-    // Written: a removal may go ahead while the Neovims are told.
     drop(still_there);
-    if pr::changed(&before, &facts.found) {
-        notify_changed(admin);
-    }
     Ok(true)
 }

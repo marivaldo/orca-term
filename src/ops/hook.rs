@@ -18,9 +18,9 @@
 //! A status that fails to write after the ref moved leaves a ref that does not match the recorded
 //! tip, so the next snapshot starts the chain again.
 //!
-//! Once the status is written, and `hook.lock` released, it tells the running Neovims that the
-//! worktree changed (`ops::Changed::notify`), and, when the event ended a turn, asks them to
-//! `:checktime` (#177) so their buffers show what the agent wrote; both never fail and are
+//! Once the status is written, and `hook.lock` released, and only when the event ended a
+//! turn, it asks the repository's registered Neovims to `:checktime` (#177,
+//! `ops::ask_to_checktime`) so their buffers show what the agent wrote; that never fails and is
 //! bounded in time.
 //!
 //! When `ORCA_TERM_RECORD` names a file (the live checks set it, #44), the payload is first
@@ -38,7 +38,7 @@ use crate::domain::review::Commit;
 use crate::domain::snapshot::{self, Bounds, Identity};
 use crate::domain::state::AdminDir;
 use crate::domain::turn::{self, RecordKind, StatusRead};
-use crate::ops::{Changed, worktree_of};
+use crate::ops::{ask_to_checktime, worktree_of};
 
 /// How long a hook waits for another hook of the same worktree to finish.
 const LOCK_WAIT: Duration = Duration::from_secs(1);
@@ -67,15 +67,8 @@ pub(crate) fn run(agent: Option<&str>, event: Option<&str>, admin: Option<&Path>
         return;
     }
     match record(agent, event, &admin) {
-        Ok(Some(written)) => {
-            if let Some(changed) = Changed::of(&admin) {
-                changed.notify();
-                if written == Written::TurnEnded {
-                    changed.checktime();
-                }
-            }
-        }
-        Ok(None) => {}
+        Ok(Some(Written::TurnEnded)) => ask_to_checktime(&admin),
+        Ok(Some(Written::Status) | None) => {}
         Err(err) => log(&admin, &err),
     }
 }

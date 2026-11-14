@@ -12,7 +12,7 @@ use crate::domain::agent::{HolderRecord, StopOutcome, Stopped};
 use crate::domain::fleet::Worktree;
 use crate::domain::state::{AdminDir, LockStatus};
 use crate::domain::worktree::Target;
-use crate::ops::{derive_state, find_target_admin, notify_changed, read_fleet};
+use crate::ops::{derive_state, find_target_admin, read_fleet};
 
 /// How long `agent stop` waits for the holder to go: longer than the holder's own escalation.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,7 +30,6 @@ pub(crate) fn run(target: &Target) -> Result<Stopped> {
         });
     }
     stop_holder(&admin)?;
-    notify_changed(&admin);
     let derived = derive_state(&admin)?;
     Ok(Stopped {
         worktree: Worktree {

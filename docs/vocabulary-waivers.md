@@ -15,7 +15,7 @@ lint.
 - `tab`: Neovim's tabpage, which each worktree gets one of, and the application's tabs over a worktree's panels (`1 agent`, `2 nvim`, `3 shell`).
 - `unit`: unit tests.
 - `thread`: Rust's `std::thread`, never a session.
-- `plugin`: Neovim's `plugin/` directory, and the Lua plugin that is the Neovim client; never the core.
-- `server`: `lua-language-server`, the name of LuaLS's binary; never the core or a holder.
+- `plugin`: the opencode plugin orca-term ships, Neovim plugins the person installs (claudecode.nvim), and the Neovim plugin orca-term no longer ships (ADR 0014); never the core.
+- `server`: Neovim's server address (`v:servername`, `nvim --server`) and claudecode.nvim's server; never the core or a holder.
 - `assistant`: claude's hook payload field `last_assistant_message`, which the core reads; never the agent.
 - `chat`: opencode's plugin hook `chat.message`, which the plugin orca-term ships registers to see the person's prompt (#35); never a session.

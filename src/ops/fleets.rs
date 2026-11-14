@@ -1,5 +1,5 @@
-//! Ops: `fleets`, which reads the fleet of every project at once (#149), for the sidebar that
-//! groups worktrees by project, and the quicker read the application's side menu repeats (#174).
+//! Ops: `fleets`, which reads the fleet of every project at once (#149), and the quicker read the
+//! application's side menu repeats (#174), grouping the worktrees by project.
 //! Never writes.
 
 use std::path::{Path, PathBuf};

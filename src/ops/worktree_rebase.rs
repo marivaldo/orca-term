@@ -24,10 +24,10 @@ use crate::domain::operation::Operation;
 use crate::domain::rebase::{self, Aborted, Outcome, Rebased, RemoteBase};
 use crate::domain::worktree::Target;
 use crate::ops::agent_swap::check_not_in_turn;
-use crate::ops::{find_target, lock_worktree, notify_changed, read_fleet, read_operation};
+use crate::ops::{find_target, lock_worktree, read_fleet, read_operation};
 
 /// Rebases the branch of the worktree `target` names or locates in the repository containing the
-/// current directory onto the default branch on `origin`, then tells the running Neovims.
+/// current directory onto the default branch on `origin`.
 pub(crate) fn run(target: &Target) -> Result<Rebased> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
@@ -43,7 +43,6 @@ pub(crate) fn run(target: &Target) -> Result<Rebased> {
     let outcome = fetch_and_rebase(worktree, &base, &temp);
     // Whatever happened: the temporary ref is never left behind.
     let deleted = git::delete_ref(&fleet.primary.path, &temp);
-    notify_changed(lock.admin());
     let outcome = outcome?;
     deleted.with_context(|| {
         format!(
@@ -60,14 +59,15 @@ pub(crate) fn run(target: &Target) -> Result<Rebased> {
 }
 
 /// Aborts the rebase in progress in the worktree `target` names or locates (`git rebase
-/// --abort`), putting its branch back where it was, then tells the running Neovims. Refuses, as
-/// `no_rebase`, a worktree with no rebase in progress.
+/// --abort`), putting its branch back where it was. Refuses, as `no_rebase`, a worktree with no
+/// rebase in progress.
 pub(crate) fn abort(target: &Target) -> Result<Aborted> {
     let cwd = env::current_dir()?;
     let fleet = read_fleet(&cwd)?;
     let worktree = find_target(&fleet, &cwd, target)?;
     check_present(worktree)?;
-    let lock = lock_worktree(&worktree.name, &worktree.path)?;
+    // Held until the abort ends, so no other command changes the worktree meanwhile.
+    let _lock = lock_worktree(&worktree.name, &worktree.path)?;
     if worktree.operation != Some(Operation::Rebase) {
         return Err(TypedError::NoRebase {
             name: worktree.name.clone(),
@@ -77,7 +77,6 @@ pub(crate) fn abort(target: &Target) -> Result<Aborted> {
     }
     git::rebase_abort(&worktree.path)
         .with_context(|| format!("could not abort the rebase of worktree {}", worktree.name))?;
-    notify_changed(lock.admin());
     Ok(Aborted {
         name: worktree.name.clone(),
         path: worktree.path.clone(),

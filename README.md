@@ -41,101 +41,33 @@ A merged branch is deleted only at the tip that was checked: if the agent commit
 being stopped, the branch is kept with that commit, saying `kept branch <name>: it moved while the
 agent stopped`. `--force` still deletes the branch whatever its tip.
 
-In Neovim, `:OrcaTerm sidebar` shows the fleet in every tab, or every project's fleet under a
-header of its own once the project list has projects ([Projects](#projects)). Each worktree gets
-a tab of its own, pointed at it with `:tcd`: `<CR>` on a sidebar row goes there, `a` creates a worktree
-(in the project the cursor is in), `P` adds a project, `.` runs
-its setup again, copies its path or removes it (always asking first, and saying when its running
-agent will be stopped), `u` toggles its unseen
-mark `•`, which a worktree gets when its agent's turn ends, `d` opens its review, and `K` shows
-its detail in a float beside the sidebar: its state and agent, its branch and how far it is ahead
-of and behind the local default branch (`↑2 ↓1 main`, never fetched), the whole error when it has
-one, the tool calls the agent's permission rules denied in its latest turn (claude's deny rules,
-or the `deny` rules of opencode's `permission` config), and the end of its setup's log. The float
-closes when the cursor moves, on `K` again, or on `q` once you enter it. At the end of a row's
-second line, `⊘N` counts the tool calls denied in the worktree's latest turn and
-`✎N` its notes waiting to be sent. These icons (`≠ ⊘N ✎N PR`) sit there, right-aligned, after what
-the line says, which is cut with `…` to leave them room; a worktree with icons and nothing to say
-gets a second line holding only them.
-A row shows `≠` while its worktree is in the middle of a git merge, rebase, cherry-pick or revert,
-and the float names it (`rebase in progress (2/5)`); `worktree ls` adds it to the state
-(`idle, rebasing`). It is read from git's own files and is never a state.
-The end of a row's first line names its agent, `cc` for Claude Code or `oc` for opencode, and how
-long ago its current session was last active: `now`, `9m`, `3h` or `2d` (`cc 9m`), muted in the
-group `OrcaTermAge`, linked by default to `Comment`. Within a section, the most recently active
-worktree comes first, then the rest by name.
-When a worktree has no question, error or setup failure to show and is not working, its row's
-second line says how many files it changed against the default branch: `1 file changed`,
-`4 files changed`. The count covers committed and uncommitted changes and untracked files that are
-not ignored; `K` shows it under the branch too.
-`:OrcaTerm jump` picks a worktree, `:OrcaTerm worktree N` goes to the Nth, `:OrcaTerm review`
-opens the review of the worktree whose tab you are in, `:OrcaTerm notes` lists its notes and
-`:OrcaTerm turns` lists its turns, to review one; bind keys to `<Plug>(OrcaTermSidebar)`,
-`<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`, `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`,
-`<Plug>(OrcaTermSessions)` and `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)`, since the client sets no global
-key.
-
-### Session managers
-
-orca-term keeps no layout of its own: it finds a worktree's tab again by the tab's `:tcd`. So a
-session saved with `:mksession` (or by a session manager such as persistence.nvim) that holds
-`curdir` and `tabpages` in `'sessionoptions'` brings the worktree tabs back. After a restore,
-`<CR>` on a worktree, `:OrcaTerm worktree N` and `<Plug>(OrcaTermWorktreeN)` go to its restored
-tab instead of opening a second one, and the sidebar marks the current tab's worktree.
-
-The agent's terminal is not restored. Without `terminal` in `'sessionoptions'` (LazyVim's
-persistence.nvim leaves it out), its window is not saved, and the first `<CR>` on the worktree
-opens the agent's terminal in the restored tab. With `terminal` (Neovim's default), the session
-brings back a `term://` buffer that runs `orca-term` with no arguments: inside Neovim it prints
-the usage and ends, so it opens no application inside Neovim (see [Start](#start)) and starts no agent. `<CR>` then attaches the agent's terminal in the restored tab, with its
-scrollback replayed; the ended buffer goes with `:bwipeout`.
-
-With `blank` in `'sessionoptions'` (Neovim's default), a session saved while the sidebar is open
-keeps each sidebar window as an empty window named `orca-term://sidebar`. When the session is
-sourced, orca-term renames each of them as it comes, so no tab reports `E95: Buffer with this name
-already exists`. Once the session is loaded, it closes those empty windows and opens the sidebar
-in every tab, as it was when the session was saved. Your own blank windows stay. Without `blank`,
-or with the sidebar closed when saving, the session restores no sidebar, and `:OrcaTerm sidebar`
-opens it.
-
-This works with the sidebar already open when you source the session (or load it with a session
-manager's command): the sidebar's own buffer gives up the name `orca-term://sidebar` while the
-session loads, and the same sidebar comes back in every tab once it is loaded.
-
 ## Install
 
-orca-term runs on macOS and Linux and needs Neovim 0.11 or later. With
-[lazy.nvim](https://github.com/folke/lazy.nvim) it is one line:
+orca-term runs on macOS and Linux. It is one binary, `orca-term`; it ships no Neovim plugin
+(ADR 0014), and your own Neovim, whatever its config, is the editor beside each worktree.
 
-```lua
-{ 'marivaldo/orca-term', version = '*' }
+From a release: download the asset for your OS and architecture from the
+[releases](https://github.com/marivaldo/orca-term/releases) (the targets `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`), check it
+against the `.sha256` beside it, and put the binary on your `PATH`:
+
+```fish
+set version 0.1.0
+set target aarch64-apple-darwin
+set asset orca-term-$version-$target.tar.gz
+curl -fsSLO https://github.com/marivaldo/orca-term/releases/download/v$version/$asset
+curl -fsSLO https://github.com/marivaldo/orca-term/releases/download/v$version/$asset.sha256
+shasum -a 256 --check $asset.sha256
+tar -xzf $asset orca-term
+mkdir -p ~/.local/bin
+mv orca-term ~/.local/bin/
 ```
 
-`version = '*'` checks out the latest release tag. After installing or updating the plugin,
-lazy.nvim runs its build hook, `build.lua`, by itself. The hook downloads that release's core
-binary for your OS and architecture (macOS or Linux, arm64 or x86_64) from GitHub, checks its
-sha256 against the checksum the release publishes beside it, and installs it in the plugin's
-`bin/` directory. When the plugin is not at a release tag, the release has no binary for your
-machine, or the download or the check fails, the hook says which and builds the core with
-`cargo build --release` instead, which needs [Rust](https://rustup.rs). A binary whose checksum
-does not match is never installed.
+From the source, with [Rust](https://rustup.rs): `cargo install --path .` in a clone of this
+repository puts `orca-term` in `~/.cargo/bin`.
 
-Other plugin managers run the same hook as a shell command in the plugin's directory,
-`nvim -l build.lua`: `{ 'do': 'nvim -l build.lua' }` with vim-plug, `run = 'nvim -l build.lua'`
-with packer. Pin the plugin to a release tag for the download; any other commit is built with
-cargo.
-
-The client looks for the core binary in this order: `binary` from
-`require('orca-term').setup({ binary = '/path/to/orca-term' })`, the plugin's `bin/orca-term`,
-the plugin's `target/release/orca-term` and `target/debug/orca-term` (from cargo), then
-`orca-term` on `PATH`.
-
-To run the core from the shell too, `:OrcaTerm install-cli` (or `<Plug>(OrcaTermInstallCli)`)
-links the binary the client uses into `$XDG_BIN_HOME`, or `~/.local/bin` when that is not set,
-creating the directory, and says where:
-`orca-term: linked /home/you/.local/bin/orca-term -> /home/you/.local/share/nvim/lazy/orca-term/bin/orca-term`.
-It warns when that directory is not on your `PATH`, and refuses to replace anything there that is
-not a symlink.
+Then `orca-term doctor` says whether the rest is there: git, the agents and their sandbox
+([Doctor](#doctor)). Neovim is needed only for its tab in the application, 0.11 or later.
 
 ## Start
 
@@ -157,9 +89,9 @@ changing it after 2 seconds) never stops the application from opening: nothing i
 the application shows the problem. Nothing is added either when the application does not open:
 the usage, `orca-term app` without a terminal, git missing.
 
-`orca-term open`, which opened your own Neovim with `:OrcaTerm sidebar`, is gone, and
+`orca-term open`, which opened your own Neovim with the plugin's sidebar, is gone, and
 `orca-term` with no arguments no longer opens Neovim: the application runs your Neovim beside
-each worktree instead. Inside Neovim, `:OrcaTerm sidebar` still opens the sidebar.
+each worktree instead.
 
 ## Application
 
@@ -187,7 +119,8 @@ worktree's agent, Neovim and shell, and the open worktree's changed files and pu
   config, or the program `ORCA_TERM_NVIM` names) and its own shell (`$SHELL`), both started in
   the worktree the first time their tab shows, and kept while the application runs. Neovim
   listens on a socket of its own, under `$XDG_RUNTIME_DIR/orca-term/` or `/tmp/orca-term-<uid>/`,
-  and is registered as `orca-term nvim register` does, so it hears when a worktree changes.
+  and is registered as `orca-term nvim register` does, so the core can ask it to `:checktime`
+  and to open a diff.
   Quitting the application ends its Neovims (unsaved buffers are kept in Neovim's swap files) and
   its shells; agents keep running in their holders.
 - **Right column**, on the right at 150 columns and more: `changes` with how many files changed
@@ -198,9 +131,9 @@ worktree's agent, Neovim and shell, and the open worktree's changed files and pu
   behind the local default branch. `^a f` hides or shows it. Under 150 columns the centre's tab row
   shows the summary `4 files +55 −21` instead, and `^a f` lays the right column over the centre.
   With the focus on it, `j` and `k` move over the files and `enter` opens the file's diff in the
-  worktree's Neovim, through the Neovim client's review (diffview.nvim), and shows Neovim (zoomed,
-  from the overlay). A Neovim you run yourself in the worktree, in a window of its own, opens the
-  diff too; the application cannot raise that window. The changes are read again when the
+  worktree's Neovim and shows Neovim (zoomed, from the overlay): see [Diff](#diff). A Neovim you
+  run yourself in the worktree, in a window of its own and registered, opens the diff too; the
+  application cannot raise that window. The changes are read again when the
   worktree's agent works and every 5 s.
 - **`:checktime`**: when an agent ends a turn, every Neovim registered in the repository is asked
   to `:checktime`, so the buffers of the files it wrote show what it wrote, with or without the
@@ -260,7 +193,7 @@ go reversed and bold, titles bold and underlined, the open worktree between two 
 text dim. The 16 colours a panel's program uses are drawn with the theme's (red failed, green done,
 yellow waiting, blue and cyan working, magenta the accent).
 
-An agent attached from several places at once (the application, and an `agent attach` in Neovim)
+An agent attached from several places at once (the application, and an `agent attach` elsewhere)
 takes the size of the one you typed in last. A terminal attaching late also gets the agent's
 modes (its alternate screen, mouse, bracketed paste, keyboard protocol) put back before its
 screen. Keys reach the agent in the classic encoding, so Shift+Enter arrives as Enter, and the
@@ -275,8 +208,7 @@ At a terminal, orca-term prints the script and the file it comes from, then asks
 `run this setup script? [y/N]`; `y` approves it and runs it, anything else leaves the worktree
 *not ready* until you run `orca-term worktree setup <worktree>` again. Without a terminal, or with
 `--json`, nothing is asked: the command fails with the error `untrusted` (exit code 8) and the
-worktree stays not ready. `--approve-setup` approves the script without asking, and the Neovim
-client shows the script and asks `Run it` or `Cancel` before passing it. An approval is the sha256
+worktree stays not ready. `--approve-setup` approves the script without asking. An approval is the sha256
 of the script, kept in `.git/orca-term-trust.json`, outside every worktree and out of the agent's
 reach; any change to the script, in the primary checkout or on a branch, asks again. A script from
 `.git/orca-term.yaml` or from your global config file is yours and always runs.
@@ -285,7 +217,7 @@ The same goes for `sandbox.writable`, the extra paths claude's sandbox lets the 
 committed list widens the sandbox only once you have approved it. `agent start` prints the paths
 and their file, then asks `widen the sandbox with these writable paths? [y/N]`; without a terminal
 it fails with `untrusted` and starts nothing. `agent start --approve-sandbox` approves the list
-without asking, and in Neovim `<CR>` shows it and asks `Allow` or `Cancel`. A changed list asks
+without asking. A changed list asks
 again; a list from `.git/orca-term.yaml` or the global config file needs no approval.
 
 ## Signing
@@ -379,11 +311,11 @@ Neovim already runs in the worktree, but it starts the first time its tab shows,
 agent: show it (`^a 2`), then type `/ide` in the agent. Without claudecode.nvim, claude starts as
 before.
 
-`orca-term doctor` asks the Neovims registered with orca-term in the repository (the Lua client
-registers each Neovim that loads it) whether they have claudecode.nvim loaded: `ok` when they
-have, a `warn` line when one has not, and an `info` line saying it was not checked when none is
-registered or none answered. It never fails because of it. `:checkhealth orca-term` reads it in
-its own Neovim, which cannot answer the doctor while it waits for it.
+`orca-term doctor` asks the Neovims registered with orca-term in the repository (the application
+registers each Neovim it starts; one of your own registers with `orca-term nvim register`, see
+[Diff](#diff)) whether they have claudecode.nvim loaded: `ok` when they have, a `warn` line when
+one has not, and an `info` line saying it was not checked when none is registered or none
+answered. It never fails because of it.
 
 Limits:
 
@@ -413,7 +345,7 @@ cd (orca-term worktree ls --json | jq -r '.worktrees[] | select(.name == "ide-ch
 nvim README.md
 ```
 
-`:checkhealth orca-term` there shows `claudecode.nvim loaded`, and
+`:lua print(package.loaded.claudecode ~= nil)` there prints `true`, and
 `grep -l ide-check ~/.claude/ide/*.lock` in the first terminal names one lock file. Then, in the
 first terminal, start claude after that Neovim, so `--ide` links them:
 
@@ -435,7 +367,7 @@ orca-term worktree rm ide-check --force
 
 A worktree can run [opencode](https://opencode.ai) instead of claude:
 `orca-term agent start <worktree> --agent opencode`. The worktree records its agent, so the next
-`agent start` (and `<CR>` in Neovim) starts opencode again, resuming its session with
+`agent start` starts opencode again, resuming its session with
 `opencode -s <id>`; a worktree that records no agent gets claude-code. `orca-term worktree ls`
 shows `opencode (running)`. Asking for another agent while one runs is refused as `busy` (exit
 code 3), naming the agent that runs.
@@ -443,18 +375,16 @@ code 3), naming the agent that runs.
 `orca-term worktree new <name> --agent claude-code|opencode` creates the worktree and, once its
 setup succeeded, starts that agent, as `agent start --agent` would. A failed setup leaves the
 worktree *not ready* and starts nothing, but the agent stays recorded: once `orca-term worktree
-setup` succeeds (it starts nothing itself), `agent start` (and `<CR>` in Neovim) starts the agent
+setup` succeeds (it starts nothing itself), `agent start` starts the agent
 chosen at creation. When the start is refused (no sandbox,
 an unapproved `sandbox.writable` list, a missing or old agent), the worktree is still there and
-ready, with the agent recorded, and the command exits with the refusal's error. In Neovim, `a`
-asks for the name, then offers `claude-code`, `opencode` or `No agent`.
+ready, with the agent recorded, and the command exits with the refusal's error.
 
 `orca-term agent swap <worktree> <agent>` swaps a worktree's agent: it stops the one running and
 starts the other on the same worktree, which records it. It is refused as `busy` while the agent is
 in a turn, working or waiting for you; stop it with `agent stop` first if you mean to. The turns,
 the notes and the snapshots stay with the worktree. A session belongs to its agent: the new agent
-resumes the session it recorded itself, if any, and starts a new one otherwise. In Neovim, `.` then
-`Swap agent` asks which agent, swaps, and shows the new agent's terminal in the worktree's tab.
+resumes the session it recorded itself, if any, and starts a new one otherwise.
 
 opencode runs inside a sandbox orca-term generates for each launch, `sandbox-exec` on macOS and
 bubblewrap (`bwrap`) on Linux, with everything allowed inside it, as claude is. It reads anything
@@ -496,7 +426,7 @@ Limits:
   yours, which interrupts the turn; a message opencode adds on its own (a background subagent's
   result) starts no turn.
 - A recorded session opencode no longer has makes it exit at once with its own message on a cold
-  start (`agent start`, `<CR>`); start a new one with `orca-term agent start <worktree> --fresh`.
+  start (`agent start`); start a new one with `orca-term agent start <worktree> --fresh`.
   `session resume` asks opencode first (see Sessions).
 - On macOS, signing commits and pushing over SSH with a key only an agent holds (ssh-agent,
   gpg-agent) fail inside the sandbox unless `sandbox.agent_socket` is on (see Signing); a key in a
@@ -533,13 +463,6 @@ new one, and a running agent is restarted on a new session at once. The discarde
 its turns, and `session ls` still lists it, for `session resume` to bring back. Each command takes
 `--json`.
 
-In Neovim, `s` on a worktree in the sidebar lists its sessions, each as its agent, its turns, how
-long ago it was last active and its first prompt, the current one marked `*`; choosing another one
-resumes it and shows its agent's terminal in the worktree's tab. `.` then `New session` asks
-first, then starts a new session. `:OrcaTerm sessions` (or `<Plug>(OrcaTermSessions)`) opens the
-same list for the worktree under the cursor in the sidebar, or for the worktree whose tab (or
-review) you are in.
-
 A worktree moved with `git worktree move` keeps its sessions, as it keeps its turns and notes:
 the next `agent start` resumes the current one from the new path (measured with claude 2.1.318).
 
@@ -551,49 +474,56 @@ Limits:
   be resumed only while it is the current one; any other refuses as `session_gone`, no transcript
   recorded.
 
-## Review
+## Diff
 
-The review shows what a worktree changed since it forked from the default branch: the commit it
-forked from (`git merge-base <default branch> HEAD`) against its files on disk, so its commits and
-its uncommitted changes show together, and the right-hand side is the worktree's real files. Files
-git does not track yet are not listed. It needs
-[diffview.nvim](https://github.com/sindrets/diffview.nvim); without it, `d` only says so.
+`enter` on a changed file in the application's right column opens its diff in the worktree's
+Neovim: a new tab with the file's version at the merge base on the left and the file on disk on the
+right, both in Neovim's own diff mode (`:diffthis`). The merge base is the commit the worktree forked
+from (`git merge-base <default branch> HEAD`), the same the right column counts the changes
+against, so its commits and its uncommitted changes show together. A file new in the worktree has
+an empty left side. The left side is a scratch buffer named `orca-term://<base>/<file>`, never
+written anywhere; the right side is the file itself, which you can edit. Asking again for the same
+file replaces its earlier tab; close one with `:tabclose`.
 
-`d` on a worktree in the sidebar (or `:OrcaTerm review` in its tab) goes to the worktree's tab and
-opens the review from there, in a tab of its own where the sidebar is not shown; `d` again goes
-back to that tab and refreshes it. Opening the review clears the worktree's unseen mark. In the
-review, `gf` on a file (in the file list or in the diff) edits it in the worktree's tab, on the
-same line when the cursor is in the right-hand side; when that tab shows only the agent's
-terminal, the file opens beside it. Close the review with `:DiffviewClose`, or `:tabclose`.
+It needs no plugin. The core runs git, then sends every Neovim registered in the repository one
+msgpack-RPC request, `nvim_exec_lua` with a little Lua of its own and the file's content at the
+base; a Neovim with a tab whose directory is the worktree opens the diff, any other does nothing.
+The command behind it is `orca-term nvim diff <worktree> <file>`. A Neovim you start yourself
+takes part once it is registered:
+
+```fish
+nvim --listen /tmp/my-nvim.sock
+# in another terminal, in the repository:
+orca-term nvim register /tmp/my-nvim.sock
+orca-term nvim diff <worktree> src/main.rs
+```
+
+`orca-term nvim unregister <address>` takes it off; a Neovim that is gone is dropped from the
+registry the next time the core sends it something.
+
+`orca-term worktree review <worktree>` prints the commit a review compares against and clears the
+worktree's unseen mark.
 
 ## Notes
 
-A note is a remark for the worktree's agent on a line, a range of lines or a whole file of its
-review. Notes wait until you send them; sending types them into the agent as one prompt, in Orca's
-format (`File:`, then `Line:`, `Lines:` or `Scope: file`, then `User comment:`), and consumes them.
+A note is a remark for the worktree's agent on a line, a range of lines or a whole file. Notes wait
+until you send them; sending types them into the agent as one prompt, in Orca's format (`File:`,
+then `Line:`, `Lines:` or `Scope: file`, then `User comment:`), and consumes them. Until the
+application has notes of its own, they are added from the command line:
 
-In the review (and only there), on the right-hand side, the worktree's file:
+```fish
+orca-term note add <worktree> src/main.rs --line 12 --body 'rename this'
+orca-term note add <worktree> src/main.rs --lines 3-5 --body 'one function'
+orca-term note add <worktree> README.md --body 'explain the install'
+orca-term note ls <worktree>
+orca-term note send <worktree>
+```
 
-- `gn` adds a note on the cursor's line, asking what it says (`Note for the agent: `); in visual
-  mode, on the selected lines. `gn` on a file in the file list adds a note on the whole file. The
-  left-hand side is the review's base: `gn` there only says notes go on the right. Write the file
-  first: notes go on the file on disk, so a buffer with unsaved changes is refused.
-- Each note shows as `✎` beside its line (a range's other lines get `┆`), its text below it, at its
-  line in the file on disk now: when the agent adds lines above it, it moves down; when its line is
-  changed or deleted, it becomes a note on the whole file. A note on the whole file shows below
-  line 1, as `✎ file: <text>`. The file list shows `✎N` after each file with notes.
-- `gN` (or `:OrcaTerm notes`, also from the worktree's tab) lists the notes: `Send all (N)` first,
-  then each note, which you can send alone, edit or delete (deleting asks nothing, as in Orca).
-
-Sending needs the worktree's agent running; when it is not, press `<CR>` on the worktree in the
-sidebar to start it, then send again. The notes stay pending until then.
-
-Limits:
-
-- Notes show only in the review orca-term opens (`d`), not in a diffview opened by hand, nor when
-  the file is edited in the worktree's tab.
-- `gn` works on the files the review lists; a file git does not track is not listed, but a note
-  added on it with `orca-term note add` shows in the list and is sent with the others.
+A note follows its line in the file on disk: when the agent adds lines above it, it moves down
+(`note ls` says `(now line 15)`); when its line is changed or deleted, it becomes a note on the
+whole file. `note edit <worktree> <id> --body <text>` changes one, `note rm <worktree> <id>`
+deletes it, and `note send <worktree> <id>...` sends only those. Sending needs the worktree's agent
+running (`no_holder`, exit code 7, otherwise); the notes stay pending until then.
 
 ## Turns
 
@@ -635,16 +565,6 @@ another prompt, or the session ended) is *interrupted*, its end *not observed*: 
 snapshot taken by whatever told orca-term it was over, so its diff may include edits made after the
 interruption, and `turn diff` says so.
 
-In Neovim, `:OrcaTerm turns` in a worktree's tab (or its review) lists the worktree's turns, newest
-first, each as its number, how it ended and its prompt; bind a key to `<Plug>(OrcaTermTurns)` for
-it. Choosing one opens what that turn changed in diffview, its begin snapshot against its end
-snapshot, in a tab of its own where the sidebar is not shown; choosing it again goes back to that
-tab. An interrupted turn says that its end was not observed. An open turn, or one from before
-orca-term took snapshots, cannot be reviewed: choosing it says why and opens nothing. In a turn
-review, `gf` on a file edits it in the worktree's tab, as in the review. Notes are not added there:
-they go on the files on disk, so `gn` says to add them from the worktree's review (`d`), which `d`
-always opens, never a turn review.
-
 Limits:
 
 - A snapshot stores every untracked file `.gitignore` does not exclude in the repository's objects,
@@ -657,14 +577,12 @@ Limits:
   keeps it from rewriting the chain.
 - If orca-term fails to record a snapshot after taking it, the next snapshot starts the chain again,
   and blame gives the lines of the older turns to no turn.
-- In a turn review, `gf` from the right-hand side (the turn's end) lands on the same line number in
-  the file on disk, which later edits may have moved.
 
 ## Pull requests
 
 `orca-term pr refresh [<worktree>...]` asks the GitHub CLI about the pull request of each
-worktree's branch (every worktree when you name none) and its checks, and keeps the answer for the
-sidebar. It prints one line per worktree:
+worktree's branch (every worktree when you name none) and its checks, and keeps the answer for
+`worktree ls` and the application. It prints one line per worktree:
 
 ```text
 repo: no PR
@@ -687,8 +605,7 @@ the command still succeeds.
 orca-term runs gh only in `pr refresh`, `pr create` and `pr merge`, `git push` only in `pr
 create` and `worktree push` ([Push](#push)), and `git fetch` only in `worktree rebase`
 ([Rebase](#rebase)). No other command touches
-the network, `pr compose` included, and the Neovim client never
-runs gh at all.
+the network, `pr compose` included.
 
 `orca-term pr compose <worktree>` prints the message a new pull request of the worktree starts
 from, without writing anything: the title, a blank line, then the body. The title is the subject
@@ -770,41 +687,6 @@ branch, committed or not, untracked files that are not ignored included, or `nul
 be counted (no shared history, a broken worktree, one still setting up). The text
 `worktree detail` adds a line such as `3 files changed` when there are some.
 
-In the sidebar, a worktree whose branch has a pull request shows `PR` at the right of its row,
-after `✎N`: green, yellow or red by its checks while it is open (green with no checks), purple once
-merged, muted when closed or a draft. `K` adds its line to the detail float, such as `PR #12 open,
-checks passing (2 min ago)`, with its address. `R` refreshes the worktree under the cursor, and
-`:OrcaTerm pr-refresh` (`<Plug>(OrcaTermPrRefresh)`) every worktree. The client also refreshes on
-its own, through the core and without blocking: when the sidebar opens or Neovim gains focus with
-it open (each worktree at most once a minute), after a worktree's turn ends, and every minute while
-the sidebar is open and some checks are pending. The colours are the groups `OrcaTermPrOpen`,
-`OrcaTermPrMerged`, `OrcaTermPrClosed`, `OrcaTermPrDraft`, `OrcaTermPrPassing`, `OrcaTermPrFailing`
-and `OrcaTermPrPending`, linked by default to `DiagnosticOk`, `Constant`, `Comment` and
-`Diagnostic*`.
-
-To create a pull request from the sidebar, press `.` on a worktree and choose `Create pull
-request` or `Create draft pull request`. `:OrcaTerm pr-create` (`<Plug>(OrcaTermCreatePr)`) does
-the same for the worktree under the cursor in the sidebar, or for the worktree whose tab you are
-in, and creates a pull request that is not a draft. A buffer named `orca-term://pr/<worktree>`
-opens in a split, filled from `pr compose` and written like a commit message: the first line is the
-title, then a blank line, then the body, in Markdown. `:w` creates the pull request into the
-default branch through the core (`pr create`), without blocking Neovim. Once it is created the
-buffer closes, a message says `created PR #12: <url>` (and warns of the files with uncommitted
-changes left out, if any), and the row shows `PR`. When the core refuses, for example because the
-branch has no commits ahead or already has an open pull request, or when the push or gh fails, the
-buffer stays open with your text and the reason is shown. An empty first line is refused before
-anything runs. `:q!` closes the buffer and creates nothing.
-
-To merge a pull request from the sidebar, press `.` on a worktree whose pull request is open or a
-draft and choose `Merge pull request` (the entry is not offered otherwise). It asks `Merge PR #12
-of demo?` with `Squash and merge`, `Create a merge commit`, `Rebase and merge` and `Cancel`, then
-merges through the core (`pr merge`) without blocking Neovim. A message says `merged PR #12:
-<url>` and the row's `PR` turns purple; when GitHub still shows it open after gh accepted the merge,
-a warning says so and the row stays as it was; when the core refuses, for example because the pull
-request is a draft or needs an approving review, the reason is shown. `:OrcaTerm pr-merge`
-(`<Plug>(OrcaTermMergePr)`) does the same for the worktree under the cursor in the sidebar, or for
-the worktree whose tab you are in.
-
 ## Rebase
 
 `orca-term worktree rebase <worktree>` rebases the worktree's branch onto the default branch on
@@ -833,8 +715,9 @@ origin/main` and does nothing. With `--json` it prints the worktree's `name` and
 `base`, the `outcome` (`rebased` or `up_to_date`) and how many commits were `replayed`.
 
 A rebase that stops on conflicts stays in progress, as in Orca: the command fails as
-`rebase_conflict` (exit code 19), naming the files in conflict (`files` in the `--json` error), the
-row shows `≠` and `K` shows `rebase in progress (2/5)`. From there:
+`rebase_conflict` (exit code 19), naming the files in conflict (`files` in the `--json` error),
+`worktree ls` shows `idle, rebasing` and `worktree detail` shows `rebase in progress (2/5)`. From
+there:
 
 - `orca-term agent resolve <worktree>` types one prompt into the worktree's running agent, as
   `note send` does. It lists the files in conflict, tells the agent to resolve them, `git add`
@@ -847,12 +730,6 @@ row shows `≠` and `K` shows `rebase in progress (2/5)`. From there:
 Fetching the base is the only network use of `worktree rebase`, and no other command fetches.
 `worktree ls --json` names the base as `remote_base` (`origin/main`, or `null` when there is none),
 from the refs git already has.
-
-In the sidebar, `.` on a worktree offers `Rebase onto origin/main`, naming the real base, when no
-operation is in progress (not at all when the repository has no default branch on `origin`).
-During a rebase it offers `Resolve conflicts with the agent` and `Abort rebase` instead, and
-`Abort rebase` asks first. Each runs through the core without blocking Neovim, tells the result
-and reads the sidebar again; a rebase that stops on conflicts warns with the files in conflict.
 
 ## Push
 
@@ -867,8 +744,8 @@ demo: pushed to origin/demo
 
 When `origin` already has the branch as it is, it says `demo: origin/demo is already up to date`.
 Files with changes not committed do not stop it: they are left out, and a second line says how
-many. After a push it reads the worktree's pull request again, as `pr refresh` does, so the row's
-checks show the new run. With `--json` it prints the worktree's `name` and `path`, its `branch`,
+many. After a push it reads the worktree's pull request again, as `pr refresh` does, so
+`worktree ls` and the application show the new run's checks. With `--json` it prints the worktree's `name` and `path`, its `branch`,
 the `remote` (`origin/demo`), the `outcome` (`pushed` or `up_to_date`), `with_lease`,
 `uncommitted` and the `pr`.
 
@@ -889,13 +766,6 @@ orca-term never pushes the repository's default branch: `worktree push` of the p
 on `main` fails as `default_branch` (exit code 25), as `pr create` does there, and pushes
 nothing, with or without `--force-with-lease`. On any other branch the primary checkout pushes
 like any worktree. `worktree rebase` still updates the local default branch onto `origin/main`.
-
-In the sidebar, `.` on a worktree offers `Push` when the worktree is on a branch and the
-repository has `origin`. When git rejects the push because the branch diverged, it asks
-`Push rejected: demo diverged from origin/demo (after a rebase?)` with `Force push (with lease)`
-and `Cancel`. Each runs through the core without blocking Neovim, tells the result and reads the
-sidebar again. `:OrcaTerm push` (`<Plug>(OrcaTermPush)`) does the same for the worktree under the
-cursor in the sidebar, or for the worktree whose tab you are in.
 
 ## Projects
 
@@ -928,131 +798,8 @@ keeps the order projects were added in, and lives outside every repository, in
   command's error prints it. A gone or broken project has a `null` fleet and its error, and the
   others are still read.
 
-In Neovim, the sidebar shows every project on the list, as Orca's shows its repositories: one
-header per project, its name and the branch of its primary checkout, in the list's order, above
-that project's worktrees. Within a project the worktrees keep their sections and their order,
-the most recently active first:
-
-```
- ▾ app  main
-
- NEEDS YOU 1
- ╭────────────────────────────────╮
- │ ? pick-colour           cc now │
- │   Which colour?                │
- ╰────────────────────────────────╯
-
- QUIET 1
- · docs
-
- ▾ api  main
-   no worktrees yet
-
- ▾ old
-   the project's directory
-   /home/me/src/old is gone; take
-   it off the list with `orca-term
-   project rm /home/me/src/old`
-```
-
-- A project with no worktrees shows `no worktrees yet` under its header.
-- A project whose directory is gone, or is no longer a git repository, shows the core's reason
-  under its header, muted. The other projects are still shown.
-- Every key on a worktree (`<CR>`, `.`, `u`, `d`, `s`, `K`, `R`, and its pull request, rebase and
-  push from the `.` menu or their commands) acts on that worktree's own project: the core runs
-  from that project's primary checkout, never from Neovim's current directory. The sidebar is
-  the same from any directory, inside a repository or not.
-- `j` and `k` go from the last worktree of a project to the first of the next.
-- With no project on the list, the sidebar shows the repository of Neovim's current directory,
-  exactly as before.
-
-Three keys work on the projects themselves:
-
-- `a` creates a worktree in the project the cursor is in: on its header, on one of its
-  worktrees, or on any other line under its header, such as `no worktrees yet`. The core runs
-  from that project's primary checkout. On a project that is gone or broken, `a` only says why.
-  With no project on the list, `a` creates the worktree in the repository of Neovim's current
-  directory, as before.
-- `P` asks `Add project: `, completing directories, and adds the repository containing that
-  path, as `orca-term project add` does: `~` and a trailing slash are fine, a relative path is
-  taken from Neovim's current directory, and a path inside a repository adds its primary
-  checkout. It says `added project api at /home/me/src/api`, or that the project is already on
-  the list. A path the core refuses, such as a directory outside every git repository, shows the
-  core's error and adds nothing. `P` works with no project on the list too; the sidebar then
-  shows the list, so add the repository you are in as well (`P`, then `.`) to keep seeing it.
-- `.` on a project's header offers `Remove from list`. It asks first (`Remove` or `Cancel`),
-  then takes the project off the list as `orca-term project rm` does, and never touches the
-  disk: the directory, its worktrees, their branches and their running agents all stay. This is
-  also how a gone project leaves the sidebar.
-
-After each of the three the sidebar is read again and shows the result. `j` and `k` move between
-worktrees only, so reach a header with any other motion: `gg`, `G`, the arrow keys or a search.
-
-With projects on the list, everything that follows the fleet follows every project's:
-
-- **Live updates.** Neovim registers with every project's primary checkout, so a change in any
-  project (a worktree created or removed, an agent's turn) redraws the sidebar at once, from any
-  directory. The project list itself belongs to no repository, so adding or removing a project
-  from a terminal tells nobody: it shows at the next read (the next change in a project already
-  shown, or Neovim gaining focus), and Neovim then registers with the project added and
-  unregisters from the one removed. Quitting Neovim unregisters it from every project.
-- **The status strip** counts the worktrees of every project together
-  ([Status strip](#status-strip)).
-- **`:OrcaTerm jump` and `:OrcaTerm worktree N`** cover every project's worktrees, in the
-  sidebar's order: the first project's worktrees, then the next project's. `:OrcaTerm worktree 3`
-  is the third worktree from the top of the sidebar, whichever project it is in.
-- **The pull requests refreshed without being asked** (when the sidebar opens or Neovim gains
-  focus with it open, after a turn ends, while checks are pending) are every project's, each
-  project's asked for from its own primary checkout. `:OrcaTerm pr-refresh` still refreshes only
-  the repository of Neovim's current directory.
-- Each read of the sidebar runs the core once (`orca-term fleets`), whatever the number of
-  projects.
-
-## Status strip
-
-The status strip shows the fleet's health while the sidebar is closed: how many worktrees are in
-each state, then how many are unseen, such as `?1 ◐2 ●3 •2`. orca-term never adds it to your
-statusline, tabline or winbar: you place it, and pad it, where you want. It shows nothing when the
-repository has no worktree, outside a git repository and before the fleet is first read. It
-updates when the core says a worktree changed, as the sidebar does.
-
-With projects on the [project list](#projects), it counts the worktrees of every project
-together, from any directory, and updates on a change in any of them. With an empty list it
-counts those of the repository of Neovim's current directory.
-
-In a plain statusline, as an expression:
-
-```lua
-vim.o.statusline = "%f %= %{%v:lua.require'orca-term.strip'.statusline()%} %l:%c"
-```
-
-With [lualine](https://github.com/nvim-lualine/lualine.nvim), as the `orca-term` component (each
-count keeps the section's background):
-
-```lua
-require('lualine').setup({ sections = { lualine_x = { 'orca-term', 'filetype' } } })
-```
-
-With [LazyVim](https://www.lazyvim.org), add it to the front of `lualine_x` (orca-term must be on
-the runtimepath when lualine starts, so do not lazy-load it):
-
-```lua
-{
-  'nvim-lualine/lualine.nvim',
-  opts = function(_, opts)
-    table.insert(opts.sections.lualine_x, 1, 'orca-term')
-  end,
-}
-```
-
-The glyphs are the sidebar's, in the order of its attention: `?` waiting for you, `●` failed (in
-red), `●` interrupted (muted), `!` broken, `△` not ready, `◐` working, `◌` setting up, `●` finished
-(in green), `○` idle, `·` no agent, then `•` unseen. Each takes the colour of its
-`OrcaTermState*` group, and `•` of `OrcaTermUnseen`.
-
-To build a strip of your own, `require('orca-term.strip').counts()` gives the counts of the fleet
-last read (of every project's, with projects on the list): `{ states = { { state = 'waiting', count = 1 }, ... }, unseen = 2 }`, in the same order,
-leaving out the states no worktree is in.
+The application's side menu shows every project on the list, in its order, each with its
+worktrees ([Application](#application)).
 
 ## Doctor
 
@@ -1081,32 +828,15 @@ Every command that needs a missing or outdated program refuses with the same lin
 every command, claude or opencode for `agent start`, such as
 `orca-term: git 2.30.1: orca-term needs 2.38 or later; run orca-term doctor for the full report`.
 
-In Neovim, `:checkhealth orca-term` shows the core binary the client uses, the doctor's checks,
-whether the core speaks the client's contract, the Neovim version (0.11 or later), whether
-diffview.nvim is there for the review, and whether claudecode.nvim is loaded in that Neovim.
-
 ## Development
 
 Needs Rust 1.97 and [just](https://github.com/casey/just). `just check` runs every check CI runs;
 see `docs/harness.md` for the tools it expects and the rules it enforces. `just hooks` installs the
 local git hooks (needs [lefthook](https://github.com/evilmartians/lefthook)).
 
-### Tools for the Neovim client
-
-`just lua`, part of `just check`, formats, lints and type-checks the Lua and runs its specs in
-headless Neovim. It needs Neovim 0.11 or later, [StyLua](https://github.com/JohnnyMorganz/StyLua),
-[selene](https://github.com/Kampfkarren/selene),
-[lua-language-server](https://github.com/LuaLS/lua-language-server) and
-[LuaRocks](https://luarocks.org) with LuaJIT. Set them up once; on macOS with Homebrew:
-
-```sh
-brew install neovim luajit stylua selene lua-language-server luarocks
-just lua-rocks   # installs busted, nlua, lualine.nvim and diffview.nvim, pinned, into .rocks/ (ignored by git)
-```
-
-On Linux, CI shows the way: the tools come from their GitHub releases at the versions pinned in
-`.github/workflows/check.yml`, LuaRocks and the Lua 5.1 headers from the distribution
-(`luarocks liblua5.1-0-dev` on Ubuntu), then `just lua-rocks`.
+`tests/nvim_diff.rs` opens a diff in a real `nvim --clean --headless`, so it needs Neovim 0.11 or
+later on `PATH`; without one it says so and skips (CI's Linux job installs a pinned Neovim and sets
+`ORCA_TERM_REQUIRE_NVIM`, which makes it fail instead).
 
 ### Live checks
 
@@ -1182,7 +912,7 @@ exactly that, which `cargo xtask release-version <tag>` checks locally.
 ## Scope
 
 In: parallel agents in isolated worktrees, diff review that can feed comments back to the agent
-that wrote the code, Neovim integration over a standalone core.
+that wrote the code, the person's own Neovim beside each agent, over a standalone core.
 
 Out: mobile companion, cloud relay, screenshot-driven design mode, Linear integration,
 worktrees over SSH.

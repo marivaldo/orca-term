@@ -10,10 +10,10 @@ use crate::adapters::{env, fs, git};
 use crate::domain::fleet::Worktree;
 use crate::domain::seen::{self, Mark, Marked};
 use crate::domain::worktree::{self, Target};
-use crate::ops::{find_target, guard_against_removal, notify_changed, read_fleet, read_status};
+use crate::ops::{find_target, guard_against_removal, read_fleet, read_status};
 
 /// Marks the worktree `target` names or locates in the repository containing the current
-/// directory as seen or unseen, as `mark` says, then tells the running Neovims. Works on any
+/// directory as seen or unseen, as `mark` says. Works on any
 /// worktree still on disk, ready or not, with an agent or none, the primary checkout included.
 pub(crate) fn run(target: &Target, mark: Mark) -> Result<Marked> {
     let cwd = env::current_dir()?;
@@ -28,8 +28,7 @@ pub(crate) fn run(target: &Target, mark: Mark) -> Result<Marked> {
     })
 }
 
-/// Writes `mark` to the `seen.json` of `worktree`, which must still be on disk, then tells the
-/// running Neovims. Returns whether the worktree is unseen now. A worktree removed meanwhile is
+/// Writes `mark` to the `seen.json` of `worktree`, which must still be on disk. Returns whether the worktree is unseen now. A worktree removed meanwhile is
 /// refused, and nothing is written (`guard_against_removal`).
 pub(crate) fn mark(worktree: &Worktree, mark: Mark) -> Result<bool> {
     let admin = git::admin_dir(&worktree.path)?;
@@ -45,8 +44,6 @@ pub(crate) fn mark(worktree: &Worktree, mark: Mark) -> Result<bool> {
     // A worktree made by hand with git has no admin directory of ours yet.
     fs::create_dir_all(admin.path())?;
     fs::write_atomically(&path, &seen::to_bytes(&record)?)?;
-    // Written: a removal may go ahead while the Neovims are told.
     drop(still_there);
-    notify_changed(&admin);
     Ok(seen::is_unseen(record, ended))
 }

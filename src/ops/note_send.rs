@@ -13,11 +13,10 @@ use crate::domain::error::TypedError;
 use crate::domain::note::prompt::{self, Block};
 use crate::domain::note::{NotesSent, PendingNote};
 use crate::domain::worktree::Target;
-use crate::ops::{change_notes, find_noted, notify_changed, pending, read_notes};
+use crate::ops::{change_notes, find_noted, pending, read_notes};
 
 /// Sends the notes `ids` (every pending note when empty) of the worktree `target` names or locates
-/// in the repository containing the current directory to its agent, consumes them, then tells the
-/// running Neovims. Refuses an id with no note, a worktree with no pending notes, and, with the
+/// in the repository containing the current directory to its agent and consumes them. Refuses an id with no note, a worktree with no pending notes, and, with the
 /// typed `no_holder`, a worktree whose agent is not running.
 pub(crate) fn run(target: &Target, ids: &[u64]) -> Result<NotesSent> {
     let (worktree, admin) = find_noted(target)?;
@@ -54,7 +53,6 @@ pub(crate) fn run(target: &Target, ids: &[u64]) -> Result<NotesSent> {
     let sent: Vec<(u64, u64)> = selected.iter().map(|note| (note.id, note.rev)).collect();
     let kept = change_notes(&admin, &worktree.name, |notes| Ok(notes.consume(&sent)))
         .context("the notes were sent, but could not be consumed")?;
-    notify_changed(&admin);
     Ok(NotesSent {
         name: worktree.name,
         path: worktree.path,

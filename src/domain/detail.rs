@@ -1,4 +1,4 @@
-//! Domain: a worktree's detail (`worktree detail`), everything the client's detail float shows:
+//! Domain: a worktree's detail (`worktree detail`), everything there is to say about it:
 //! the worktree as `worktree ls` shows it, the whole text of why it is in its state, the tool
 //! calls its agent was denied in its latest turn, the end of its setup log, and how far it drifted
 //! from the repository's local default branch, with the step of a rebase in progress. All of it is

@@ -1,8 +1,7 @@
 //! Domain: a worktree's review (`worktree review`). The review shows everything the worktree
-//! changed since it forked from the repository's default branch, committed or not: the client
-//! compares the working tree with the review's base, the commit where the worktree's history
-//! leaves the default branch's (`git merge-base <default branch> HEAD`). The core finds that base,
-//! since the client runs no git itself.
+//! changed since it forked from the repository's default branch, committed or not: the working
+//! tree compared with the review's base, the commit where the worktree's history
+//! leaves the default branch's (`git merge-base <default branch> HEAD`). The core finds that base.
 
 use std::fmt;
 
@@ -22,7 +21,7 @@ pub(crate) struct Commit(String);
 
 impl Commit {
     /// The commit id in `text`, which git printed. Refuses anything that is not a full id, so a
-    /// surprise in git's output never reaches the client as a base.
+    /// surprise in git's output never reaches a caller as a base.
     pub(crate) fn parse(text: &str) -> Result<Self> {
         let is_hex = text
             .bytes()

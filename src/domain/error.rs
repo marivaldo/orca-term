@@ -18,7 +18,7 @@ pub(crate) const FAILURE_EXIT: u8 = 1;
 /// The `error.kind` of a failure that is not typed.
 pub(crate) const OTHER_KIND: &str = "other";
 
-/// A failure the client reacts to on its own, rather than only showing its message.
+/// A failure a caller reacts to on its own, rather than only showing its message.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TypedError {
     /// The worktree is in use, as `reason` says, so a command that changes it must wait.

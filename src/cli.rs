@@ -117,10 +117,11 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         args: Vec<String>,
     },
-    /// What a running Neovim runs so the core tells it whenever a worktree changes: `nvim
-    /// register <address>` as it starts, `nvim unregister <address>` as it exits; and `nvim diff
-    /// <worktree> <file>`, which asks the worktree's Neovims to open a file's diff, as the
-    /// application does.
+    /// The registry of running Neovims the core sends `:checktime` and diffs to:
+    /// `nvim register <address>`, which the application runs for each Neovim it starts and a
+    /// person may run for their own, and `nvim unregister <address>`; and
+    /// `nvim diff <worktree> <file>`, which asks the worktree's Neovims to open a file's diff, as
+    /// the application does.
     #[command(hide = true)]
     Nvim {
         #[command(subcommand)]
@@ -226,7 +227,7 @@ enum PrCommand {
 
 #[derive(Debug, Subcommand)]
 enum NvimCommand {
-    /// Record a running Neovim's server address in the repository, to be told of every change.
+    /// Record a running Neovim's server address in the repository, for `:checktime` and diffs.
     Register {
         /// The Neovim's server address (`v:servername`): the absolute path of its unix socket.
         // Parsed by clap through `Address`'s `FromStr`: anything else is refused here.
@@ -243,7 +244,7 @@ enum NvimCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Ask the Neovims working in a worktree to open a changed file's diff in its review.
+    /// Ask the Neovims working in a worktree to open a changed file beside its merge base.
     Diff {
         /// The worktree's name, or its path when several worktrees share the name.
         worktree: Target,

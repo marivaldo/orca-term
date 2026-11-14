@@ -626,7 +626,7 @@ struct ErrorView<'a> {
 
 /// An error: its `kind` and `message`; `untrusted` also carries `what` was not approved
 /// (`setup` or `sandbox`), the setup `script` or the `writable` paths as written, and the
-/// committed file they come from (`source`), so the client can show them. A `dirty` refusal of
+/// committed file they come from (`source`), so a caller can show them. A `dirty` refusal of
 /// `worktree rebase` and a `rebase_conflict` carry the `files` they name (#141), and an
 /// `ambiguous_project` the paths of the projects sharing the name (`candidates`, #149).
 #[derive(Debug, Serialize)]
@@ -1240,7 +1240,7 @@ pub(crate) fn done() -> serde_json::Result<String> {
     document(DoneView {})
 }
 
-/// A failure as one JSON document, with the kind the client tells failures apart by.
+/// A failure as one JSON document, with the kind a caller tells failures apart by.
 pub(crate) fn error(err: &anyhow::Error) -> serde_json::Result<String> {
     document(ErrorView {
         error: error_body(err),
