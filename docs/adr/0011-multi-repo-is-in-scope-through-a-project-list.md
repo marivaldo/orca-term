@@ -51,4 +51,9 @@ groups worktrees by project is [issue #150](https://github.com/marivaldo/orca-te
   ([issue #152](https://github.com/marivaldo/orca-term/issues/152)). A project list that cannot
   be changed never stops the launch: nothing is added, and the sidebar shows the problem when it
   reads the same list through `fleets`.
+
+  > **Changed by [#193](https://github.com/marivaldo/orca-term/issues/193)** (2026-11-11): the
+  > application, opened by `orca-term app` or by `orca-term` with no arguments, adds the
+  > repository as it opens (`ops::project_add::add_current_repository`), never failing for it, and
+  > `orca-term open` is removed.
 - The Neovim client registers with every project's primary checkout for live updates (#150).

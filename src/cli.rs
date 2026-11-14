@@ -9,13 +9,14 @@ use anyhow::Result;
 use clap::{CommandFactory as _, Parser, Subcommand};
 
 use crate::adapters::holder::HolderArgs;
-use crate::adapters::stdin;
 use crate::adapters::terminal::{self, DetachKey};
+use crate::adapters::{env, stdin};
 use crate::app;
 use crate::domain::agent::{Agent, Size, StartMode};
 use crate::domain::branch::Branch;
 use crate::domain::note::{Anchor, LineRange};
 use crate::domain::nvim::Address;
+use crate::domain::open;
 use crate::domain::pr::create::Readiness;
 use crate::domain::pr::merge::Method;
 use crate::domain::project::ProjectTarget;
@@ -27,7 +28,7 @@ use crate::domain::worktree::{Removal, Target, WorktreeName};
 use crate::ops::{
     Approval, agent_attach, agent_holder, agent_resolve, agent_start, agent_stop, agent_swap,
     check_git, doctor, fleets, hook, note_add, note_edit, note_ls, note_rm, note_send, nvim_diff,
-    nvim_register, nvim_unregister, open, pr_compose, pr_create, pr_merge, pr_refresh, project_add,
+    nvim_register, nvim_unregister, pr_compose, pr_create, pr_merge, pr_refresh, project_add,
     project_ls, project_rm, session_ls, session_new, session_resume, turn_blame, turn_diff,
     turn_ls, worktree_detail, worktree_ls, worktree_new, worktree_prune, worktree_push,
     worktree_rebase, worktree_review, worktree_rm, worktree_seen, worktree_setup,
@@ -41,8 +42,8 @@ use crate::output::{self, Format};
     about = "A fleet of parallel CLI coding agents"
 )]
 pub struct Cli {
-    /// The command; with none, `orca-term` opens Neovim with the sidebar at a terminal outside
-    /// Neovim, and prints the usage otherwise (#148).
+    /// The command; with none, `orca-term` opens the terminal application, as `orca-term app`
+    /// does, at a terminal outside Neovim, and prints the usage otherwise (#148, #193).
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -81,12 +82,11 @@ enum Command {
         #[command(subcommand)]
         command: PrCommand,
     },
-    /// Open the terminal application in this terminal: every project's worktrees in the side menu,
-    /// the open worktree's agent in the centre. `Ctrl-a q` quits, and the agents keep running.
+    /// Open the terminal application in this terminal, as `orca-term` with no arguments does:
+    /// every project's worktrees in the side menu, the open worktree's agent in the centre. The
+    /// repository of the current directory joins the project list first. `Ctrl-a q` quits, and the
+    /// agents keep running.
     App,
-    /// Open Neovim in the current directory with the orca-term sidebar showing, as `orca-term`
-    /// with no arguments does at a terminal. Works without a terminal too; refused inside Neovim.
-    Open,
     /// Work with the project list: the repositories whose worktrees orca-term shows, in the order
     /// they were added. It lives outside every repository, in orca-term's state directory.
     Project {
@@ -700,7 +700,7 @@ impl Cli {
                 | ProjectCommand::Rm { json, .. } => *json,
             },
             Command::Fleets { json } | Command::Doctor { json } => *json,
-            Command::Hook { .. } | Command::Open | Command::App => false,
+            Command::Hook { .. } | Command::App => false,
             Command::Nvim { command } => command.json(),
         };
         Format::from_json_flag(json)
@@ -709,12 +709,11 @@ impl Cli {
     /// Whether the command runs git, and so checks git first. `doctor` reports on git instead,
     /// the hook must stay fast and silent, and the holder is started by `agent start`, which
     /// checked. `project ls` reads only the project list, and `project rm` needs git only to
-    /// match a path inside a project, which it then skips. The launcher (`open` and no command)
-    /// asks git for the repository to add to the project list, and opens Neovim without it when
-    /// git is missing (#152).
+    /// match a path inside a project, which it then skips. No command checks git only once it
+    /// opens the application, since the usage it prints otherwise needs none (`run`).
     fn runs_git(&self) -> bool {
         match &self.command {
-            None | Some(Command::Doctor { .. } | Command::Hook { .. } | Command::Open) => false,
+            None | Some(Command::Doctor { .. } | Command::Hook { .. }) => false,
             Some(Command::Agent { command }) => !matches!(command, AgentCommand::Holder { .. }),
             Some(Command::Project { command }) => matches!(command, ProjectCommand::Add { .. }),
             Some(
@@ -733,18 +732,16 @@ impl Cli {
 
 /// Runs the command `cli` names and returns the process's exit code: 1 when a setup failed,
 /// although the command itself did its job. A command that runs git first refuses, as the typed
-/// `prerequisite`, when git is missing or too old. With no command, it opens Neovim or prints the
-/// usage.
+/// `prerequisite`, when git is missing or too old. With no command, it opens the application or
+/// prints the usage.
 pub fn run(cli: &Cli) -> Result<ExitCode> {
     if cli.runs_git() {
         check_git()?;
     }
     let Some(command) = &cli.command else {
-        open::run_with_no_arguments()?;
-        return Ok(usage());
+        return run_with_no_arguments();
     };
     match command {
-        Command::Open => match open::run()? {},
         Command::App => {
             app::run()?;
             Ok(ExitCode::SUCCESS)
@@ -769,8 +766,23 @@ pub fn run(cli: &Cli) -> Result<ExitCode> {
     }
 }
 
+/// Runs `orca-term` with no arguments: at a terminal and outside Neovim it opens the application,
+/// checking git first as `orca-term app` does (#193). Otherwise it prints the usage, so a restored
+/// session's `term://` buffer and a script never open the application.
+fn run_with_no_arguments() -> Result<ExitCode> {
+    if !open::opens_with_no_arguments(
+        env::inside_nvim(),
+        terminal::stdin_and_stdout_are_terminals(),
+    ) {
+        return Ok(usage());
+    }
+    check_git()?;
+    app::run()?;
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Prints the usage as `orca-term` with no arguments always printed it, from before it could open
-/// Neovim: the help, on stderr, exiting 2.
+/// anything: the help, on stderr, exiting 2.
 fn usage() -> ExitCode {
     let parsed = Cli::command()
         .subcommand_required(true)

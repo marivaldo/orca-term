@@ -55,8 +55,8 @@ pub(crate) fn inside_nvim() -> bool {
     std::env::var_os("NVIM").is_some_and(|value| !value.is_empty())
 }
 
-/// The Neovim the person asks `orca-term` to open (`ORCA_TERM_NVIM`), or `None` when it is unset
-/// or not text (#148).
+/// The Neovim the person asks the application to run (`ORCA_TERM_NVIM`), or `None` when it is
+/// unset or not text (#148, #176).
 pub(crate) fn nvim_override() -> Option<String> {
     std::env::var(NVIM_VAR).ok()
 }

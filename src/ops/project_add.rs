@@ -1,5 +1,6 @@
-//! Ops: `project add`, which puts a repository on the project list (#149). It writes only the
-//! project list, and only when the repository was not on it.
+//! Ops: `project add`, which puts a repository on the project list (#149), and the same step the
+//! application takes as it opens (#193). It writes only the project list, and only when the
+//! repository was not on it.
 
 use std::path::Path;
 
@@ -26,11 +27,24 @@ pub(crate) fn run(path: Option<&Path>) -> Result<ProjectAdded> {
     }
 }
 
+/// Adds the repository containing the current directory to the project list, as `project add`
+/// does, so that the repository the person opens the application in is listed (#152, #193). The
+/// application calls it as it opens, from `orca-term app` and from `orca-term` with no arguments.
+/// It says nothing, whether it added it, it was already there or the directory is outside every
+/// repository. A project list that cannot be changed (a broken `projects.json`, a newer schema,
+/// its lock held, git missing) never stops the application: nothing is added, and the application
+/// shows the problem when it reads the same list through `fleets`.
+pub(crate) fn add_current_repository() {
+    let Ok(dir) = env::current_dir() else {
+        return;
+    };
+    // Whatever happened, the application opens: the result is ignored on purpose.
+    let _ = add_repository_of(&dir);
+}
+
 /// Adds the repository containing the directory `dir` to the project list, by its primary
 /// checkout, and says what it did; `None`, adding nothing, when `dir` is not inside a git
-/// repository. The launcher (`orca-term` with no arguments and `orca-term open`, `ops/open.rs`)
-/// calls this with the current directory before it opens Neovim, so that a repository the person
-/// works in is listed (#152).
+/// repository.
 pub(crate) fn add_repository_of(dir: &Path) -> Result<Option<ProjectAdded>> {
     let Some(primary) = git::repository_of(dir)? else {
         return Ok(None);

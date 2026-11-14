@@ -59,6 +59,10 @@ change any other ruling of the core.
   attach.
 - `orca-term` with no arguments keeps opening Neovim with the sidebar until the application covers
   what the sidebar does; then it opens the application, and `orca-term open` keeps opening Neovim.
+
+  > **Changed by [#193](https://github.com/marivaldo/orca-term/issues/193)** (2026-11-11): with
+  > no arguments `orca-term` opens the application already, and `orca-term open` is removed
+  > rather than kept: the application runs the person's Neovim beside each worktree.
 - The parts of the Lua client the application takes over (the sidebar, the status strip, a tab per
   worktree, the agent's terminal inside Neovim) are frozen from 2026-11-06: fixes only, no new
   behaviour. They and their specs are removed once the application covers them.
