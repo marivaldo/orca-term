@@ -85,7 +85,7 @@ impl App {
 
     /// Enter on a changed file: its diff opens in the worktree's Neovim, shown with the focus, and
     /// zoomed when the right column was an overlay.
-    fn open_diff(&mut self) -> Vec<Effect> {
+    pub(super) fn open_diff(&mut self) -> Vec<Effect> {
         let Some(worktree) = self.open.clone() else {
             return Vec::new();
         };

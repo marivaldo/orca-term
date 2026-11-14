@@ -30,7 +30,7 @@ fn draw_card(p: &mut Painter<'_>, app: &App, card: &Card) {
     let focused = app.focus == Focus::Centre && app.view.tab == card.tab;
     p.card(area, BG, CANVAS, 0);
     let (tabs, right) = header(app, card.tab);
-    let after_tabs = tab_row(p, area, &tabs, card.tab, focused);
+    let after_tabs = tab_row(p, app, area, &tabs, card.tab, focused);
     let end = area.right() - 2;
     if after_tabs + 2 + segs_width(&right) <= end {
         p.rsegs(end, area.y + 1, &right);
@@ -77,7 +77,14 @@ fn summary(app: &App) -> Vec<Seg> {
 
 /// Draws `tabs` on the card's tab row, `active` as a pill, and the accent's stroke over it when
 /// `focused`. Returns the column after the last tab.
-fn tab_row(p: &mut Painter<'_>, area: Rect, tabs: &[Tab], active: Tab, focused: bool) -> u16 {
+fn tab_row(
+    p: &mut Painter<'_>,
+    app: &App,
+    area: Rect,
+    tabs: &[Tab],
+    active: Tab,
+    focused: bool,
+) -> u16 {
     let y = area.y + 1;
     let mut x = area.x + 2;
     for (at, tab) in tabs.iter().enumerate() {
@@ -85,6 +92,10 @@ fn tab_row(p: &mut Painter<'_>, area: Rect, tabs: &[Tab], active: Tab, focused: 
             x += 1;
         }
         let label = tab.label();
+        let hit = Rect::new(x, y, width(label) + 2, 1);
+        app.hits
+            .borrow_mut()
+            .push((hit, crate::app::proto::Hit::Tab(*tab)));
         if *tab != active {
             x = p.text(x, y, &format!(" {label} "), fg(TEXT_2));
             continue;

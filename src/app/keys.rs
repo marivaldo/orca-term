@@ -2,7 +2,7 @@
 //! program reads for it, the way xterm sends them. The application reads keys as events to find
 //! its own (the prefix), so the agent's panel gets each other key encoded again.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
 /// The control code Ctrl and `c` send.
 pub(crate) fn ctrl_byte(c: char) -> Option<u8> {
@@ -96,6 +96,72 @@ fn special(code: KeyCode, m: u8, application_cursor: bool) -> Vec<u8> {
         KeyCode::F(n @ 1..=4) => letter(b'P' + n - 1, true),
         KeyCode::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][usize::from(n - 5)]),
         _ => Vec::new(),
+    }
+}
+
+/// PROTOTYPE (#203): a mouse event at `col`, `row` of the panel (0-based) as the program asked
+/// to read it: its mode says which events it wants, its encoding how. `None` when it did not ask
+/// for this one.
+pub(crate) fn mouse(
+    kind: MouseEventKind,
+    mods: KeyModifiers,
+    col: u16,
+    row: u16,
+    mode: vt100::MouseProtocolMode,
+    encoding: vt100::MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    use vt100::MouseProtocolMode as M;
+    let button = |b: MouseButton| match b {
+        MouseButton::Left => 0u16,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    };
+    // (button code, release, wanted)
+    let (code, release, wanted) = match kind {
+        MouseEventKind::Down(b) => (button(b), false, mode != M::None),
+        MouseEventKind::Up(b) => (
+            button(b),
+            true,
+            matches!(mode, M::PressRelease | M::ButtonMotion | M::AnyMotion),
+        ),
+        MouseEventKind::Drag(b) => (
+            button(b) + 32,
+            false,
+            matches!(mode, M::ButtonMotion | M::AnyMotion),
+        ),
+        MouseEventKind::Moved => (3 + 32, false, mode == M::AnyMotion),
+        MouseEventKind::ScrollUp => (64, false, mode != M::None),
+        MouseEventKind::ScrollDown => (65, false, mode != M::None),
+        MouseEventKind::ScrollLeft => (66, false, mode != M::None),
+        MouseEventKind::ScrollRight => (67, false, mode != M::None),
+    };
+    if !wanted {
+        return None;
+    }
+    let code = code
+        + 4 * u16::from(mods.contains(KeyModifiers::SHIFT))
+        + 8 * u16::from(mods.contains(KeyModifiers::ALT))
+        + 16 * u16::from(mods.contains(KeyModifiers::CONTROL));
+    let (x, y) = (u32::from(col) + 1, u32::from(row) + 1);
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            let end = if release { 'm' } else { 'M' };
+            Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes())
+        }
+        vt100::MouseProtocolEncoding::Default | vt100::MouseProtocolEncoding::Utf8 => {
+            // Legacy: a release is button 3, whichever button it was.
+            let code = if release { (code & !3) | 3 } else { code };
+            let mut out = b"\x1b[M".to_vec();
+            let utf8 = encoding == vt100::MouseProtocolEncoding::Utf8;
+            for value in [u32::from(code) + 32, x + 32, y + 32] {
+                if utf8 {
+                    out.extend(char::from_u32(value)?.encode_utf8(&mut [0; 4]).bytes());
+                } else {
+                    out.push(u8::try_from(value).ok()?);
+                }
+            }
+            Some(out)
+        }
     }
 }
 

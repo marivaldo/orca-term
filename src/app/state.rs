@@ -12,11 +12,13 @@
 //! 1.5 s) disarms it. While the picker or help floats over the screen, every key goes to it.
 
 mod failure;
+mod navigation;
 mod picker;
 mod programs;
 mod right_column;
 mod side_menu;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -31,6 +33,7 @@ pub(crate) use crate::app::state::side_menu::Typing;
 use crate::app::layout::{self, Layout};
 use crate::app::panel::{Panel, Status};
 use crate::app::program::{Kind, Program, ProgramId};
+use crate::app::proto::{self, Hit, Palette, Proto};
 use crate::app::view::{Tab, View};
 use crate::app::{keys, menu};
 use crate::domain::agent::{Size, StartMode};
@@ -105,6 +108,8 @@ pub(crate) enum Overlay {
     Picker(Picker),
     /// `^a ?`: the keys; any key closes it.
     Help,
+    /// PROTOTYPE (#203): `⌘p`, the command palette.
+    Palette(Palette),
 }
 
 /// Everything the application shows and remembers.
@@ -151,6 +156,10 @@ pub(crate) struct App {
     area: Rect,
     /// The worktree to open first, when the fleets come: the one the application was started in.
     start_in: Option<PathBuf>,
+    /// PROTOTYPE (#203): the navigation schemes and the probe.
+    pub(crate) proto: Proto,
+    /// PROTOTYPE (#203): what the last frame drew that a click acts on.
+    pub(crate) hits: RefCell<Vec<(Rect, Hit)>>,
 }
 
 impl App {
@@ -180,6 +189,8 @@ impl App {
             to_open: None,
             area,
             start_in,
+            proto: Proto::new(),
+            hits: RefCell::new(Vec::new()),
         }
     }
 
@@ -307,28 +318,64 @@ impl App {
     }
 
     fn press(&mut self, key: KeyEvent, now: Instant) -> Vec<Effect> {
+        if let Some(effects) = self.proto_key(key, now) {
+            return effects;
+        }
         if let Some(overlay) = self.overlay.take() {
+            self.proto.did("to the overlay");
             return match overlay {
                 Overlay::Picker(picker) => self.picker_key(picker, key),
+                Overlay::Palette(palette) => self.palette_key(palette, key, now),
                 // Any key closes help, and does nothing else.
                 Overlay::Help => Vec::new(),
             };
+        }
+        let cmd = self.proto.scheme.cmd();
+        if cmd && key.modifiers.contains(KeyModifiers::SUPER) {
+            return self.cmd_key(key, now);
+        }
+        if cmd && let Some(tab) = proto::alt_digit(key) {
+            self.show(tab);
+            self.proto
+                .did(format!("ours: alt+digit the {} tab", tab.name()));
+            return Vec::new();
         }
         let armed = self
             .prefix
             .take()
             .is_some_and(|at| now.duration_since(at) < PREFIX_FOR);
         if armed {
+            self.proto.did("ours: after the prefix");
+            if cmd && let Some(effects) = self.prefix_extra(key, now) {
+                return effects;
+            }
             return self.command(key, now);
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char(PREFIX) {
             self.prefix = Some(now);
+            self.proto.did("ours: the prefix");
             return Vec::new();
         }
         match self.focus {
-            Focus::SideMenu => self.side_menu_key(key, now),
-            Focus::Centre => self.centre_key(key),
-            Focus::RightColumn => self.right_column_key(key),
+            Focus::SideMenu => {
+                self.proto.did("ours: side menu");
+                if cmd && let Some(effects) = self.bare_side_menu_key(key) {
+                    return effects;
+                }
+                self.side_menu_key(key, now)
+            }
+            Focus::Centre => {
+                self.proto
+                    .did(format!("to the {} panel", self.view.tab.name()));
+                self.centre_key(key)
+            }
+            Focus::RightColumn => {
+                self.proto.did("ours: right column");
+                if cmd && let Some(effects) = self.bare_right_column_key(key) {
+                    return effects;
+                }
+                self.right_column_key(key)
+            }
         }
     }
 

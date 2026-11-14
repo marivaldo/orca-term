@@ -38,6 +38,42 @@ const ARMED_KEYS: &[(&str, &str)] = &[
     ("esc", "cancel"),
 ];
 
+/// PROTOTYPE (#203): the fallback prefix's keys in the ruled scheme.
+const CMD_ARMED_KEYS: &[(&str, &str)] = &[
+    ("e", "menu"),
+    ("1 2 3", "tab"),
+    ("j k", "worktree"),
+    ("p", "palette"),
+    ("?", "help"),
+    ("esc", "cancel"),
+];
+
+/// PROTOTYPE (#203): the three or four keys that work where the focus is (#202).
+fn focus_keys(app: &App) -> Vec<(String, &'static str)> {
+    let fixed = |keys: &[(&str, &'static str)]| -> Vec<(String, &'static str)> {
+        keys.iter().map(|(k, w)| ((*k).to_owned(), *w)).collect()
+    };
+    match (&app.overlay, app.focus) {
+        (Some(Overlay::Palette(_) | Overlay::Picker(_)), _) => {
+            fixed(&[("↑↓", "move"), ("enter", "run"), ("esc", "close")])
+        }
+        (Some(Overlay::Help), _) => fixed(&[("any key", "close")]),
+        (None, Focus::SideMenu) => fixed(&[
+            ("enter", "open"),
+            ("n", "new"),
+            ("/", "filter"),
+            ("?", "help"),
+        ]),
+        (None, Focus::RightColumn) => fixed(&[
+            ("enter", "diff"),
+            ("esc", "back"),
+            ("h", "menu"),
+            ("?", "help"),
+        ]),
+        (None, Focus::Centre) => app.proto.panel_keys(),
+    }
+}
+
 /// From this width the counts carry their words.
 const WORDS_FROM: u16 = 150;
 
@@ -47,10 +83,16 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App) {
     let armed = app.prefix.is_some();
     let bar = if armed { FOCUS_BG } else { CANVAS };
     p.fill(area, bar);
+    let scheme = app.proto.scheme;
+    let badge_text = if scheme.cmd() {
+        format!("{} · {}", scheme.badge(), app.proto.spelling.name())
+    } else {
+        scheme.badge().to_owned()
+    };
     let badge = if armed {
         pill("^A", ACCENT, BG, bar)
     } else {
-        pill("orca", SELECTION, TEXT, bar)
+        pill(&badge_text, SELECTION, TEXT, bar)
     };
     let mut x = p.line(1, y, &badge) + 2;
     x = p.line(x, y, &where_keys_go(app, bar)) + 4;
@@ -60,7 +102,23 @@ pub(crate) fn draw(p: &mut Painter<'_>, app: &App) {
         .as_ref()
         .filter(|_| !armed)
         .map(|(text, _)| format!("{text} "));
-    let keys = if armed { ARMED_KEYS } else { KEYS };
+    let owned = if armed && scheme.cmd() {
+        CMD_ARMED_KEYS
+            .iter()
+            .map(|(k, w)| ((*k).to_owned(), *w))
+            .collect()
+    } else if armed {
+        ARMED_KEYS
+            .iter()
+            .map(|(k, w)| ((*k).to_owned(), *w))
+            .collect()
+    } else if scheme.cmd() {
+        focus_keys(app)
+    } else {
+        KEYS.iter().map(|(k, w)| ((*k).to_owned(), *w)).collect()
+    };
+    let keys: Vec<(&str, &str)> = owned.iter().map(|(k, w)| (k.as_str(), *w)).collect();
+    let keys = &keys[..];
     let right_width = message
         .as_deref()
         .map_or_else(|| segs_width(&hints(keys, armed)), width);
@@ -96,6 +154,7 @@ fn where_keys_go(app: &App, bar: Tok) -> Vec<Seg> {
     let focus = match (&app.overlay, app.focus) {
         (Some(Overlay::Picker(_)), _) => "picker",
         (Some(Overlay::Help), _) => "help",
+        (Some(Overlay::Palette(_)), _) => "palette",
         (None, Focus::SideMenu) => "worktrees",
         (None, Focus::Centre) => app.view.tab.name(),
         (None, Focus::RightColumn) => "files",

@@ -12,7 +12,7 @@ use crate::app::program::{Kind, Program, ProgramId, Status};
 
 impl App {
     /// The open worktree's `kind` of program.
-    fn program_id(&self, kind: Kind) -> Option<ProgramId> {
+    pub(super) fn program_id(&self, kind: Kind) -> Option<ProgramId> {
         let worktree = self.open.clone()?;
         Some(ProgramId { worktree, kind })
     }

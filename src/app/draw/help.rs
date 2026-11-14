@@ -5,6 +5,7 @@
 use ratatui::layout::Rect;
 
 use crate::app::paint::{Painter, bold, fg, italic, key, trunc, width};
+use crate::app::state::App;
 use crate::app::theme::{ACCENT, CANVAS, PANEL, TEXT_2};
 
 /// The card's title.
@@ -48,14 +49,56 @@ const ROWS: &[(&str, &str)] = &[
     ("panels", "take every other key"),
 ];
 
-pub(crate) fn draw(p: &mut Painter<'_>, screen: Rect) {
-    let rows = u16::try_from(ROWS.len()).unwrap_or(u16::MAX) + 6;
+/// PROTOTYPE (#203): the ruled scheme's keys.
+const CMD_ROWS: &[(&str, &str)] = &[
+    ("⌘e   ^a e", "leave the panel to the side menu"),
+    (
+        "⌘1-3 ⌥1-3",
+        "agent / nvim / shell tab (kitty takes ⌘1-3 by default)",
+    ),
+    ("⌘[ ⌘]", "previous / next tab"),
+    ("⌘j ⌘d ^a j", "next worktree"),
+    (
+        "⌘k ⌘u ^a k",
+        "previous worktree (kitty takes ⌘k by default)",
+    ),
+    (
+        "⌘p   ^a p",
+        "command palette: draft PR, new worktree, split, zoom, quit…",
+    ),
+    ("⌘/   ?", "this help (⌘? opens kitty's website by default)"),
+    ("", ""),
+    (
+        "side menu",
+        "j k move, enter opens, n new, / filter, 1-9 worktree",
+    ),
+    ("", "w picker, l into the panel, tab the files, ? help"),
+    (
+        "right column",
+        "j k move, enter diff, esc centre, h side menu",
+    ),
+    (
+        "mouse",
+        "first click on a panel focuses it; then clicks go in",
+    ),
+    ("", "shift-drag is kitty's own selection"),
+    ("^a …", "today's prefix keys still work: h l z | f w P q a"),
+    ("prototype", "F12 scheme · F9 key spelling · F10 key probe"),
+];
+
+pub(crate) fn draw(p: &mut Painter<'_>, app: &App, screen: Rect) {
+    let rows_list = if app.proto.scheme.cmd() {
+        CMD_ROWS
+    } else {
+        ROWS
+    };
+    let rows = u16::try_from(rows_list.len()).unwrap_or(u16::MAX) + 6;
     let card = p.floating(screen, WIDTH, rows);
     p.card(card, PANEL, CANVAS, width(TITLE));
     p.text(card.x + 2, card.y + 1, TITLE, bold(ACCENT));
     let last = card.bottom().saturating_sub(2);
     let room = card.width.saturating_sub(WORDS_AT + 2);
-    for (row, (keys, what)) in (card.y + 3..last).zip(ROWS) {
+    for (row, (keys, what)) in (card.y + 3..last).zip(rows_list) {
         if !keys.is_empty() {
             p.line(card.x + 2, row, &[key(keys, false)]);
         }

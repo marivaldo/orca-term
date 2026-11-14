@@ -254,6 +254,10 @@ fn draw_part(p: &mut Painter<'_>, menu: &Menu<'_>, part: &Part<'_>, row: u16) {
 /// One worktree's lines.
 fn item(p: &mut Painter<'_>, menu: &Menu<'_>, worktree: &Worktree, row: u16) {
     let (x, w) = (menu.card.x, menu.card.width);
+    menu.app.hits.borrow_mut().push((
+        Rect::new(x, row, w, menu.lines),
+        crate::app::proto::Hit::Worktree(worktree.path.clone()),
+    ));
     let open = menu.app.open.as_ref() == Some(&worktree.path);
     let cursor = menu.focused && menu.app.cursor.as_ref() == Some(&worktree.path);
     if cursor || open {

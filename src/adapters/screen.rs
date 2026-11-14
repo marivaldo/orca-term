@@ -12,9 +12,13 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::crossterm::{cursor, execute};
 use ratatui::layout::Rect;
@@ -25,6 +29,9 @@ use signal_hook::iterator::Signals;
 /// The application's terminal, from entering it until it is dropped.
 pub(crate) struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// PROTOTYPE (#203): what `supports_keyboard_enhancement` answered on entering (`None`: an
+    /// error or no answer in time).
+    pub(crate) probe: Option<bool>,
 }
 
 impl std::fmt::Debug for Screen {
@@ -44,9 +51,12 @@ impl Screen {
             restore();
             return Err(err).context("could not switch to the alternate screen");
         }
+        // PROTOTYPE (#203): does the terminal speak the kitty keyboard protocol? Asked before the
+        // reader thread starts, since the answer comes on stdin.
+        let probe = supports_keyboard_enhancement().ok();
         let terminal = Terminal::new(CrosstermBackend::new(io::stdout()));
         match terminal {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self { terminal, probe }),
             Err(err) => {
                 restore();
                 Err(err).context("could not draw on the terminal")
@@ -72,6 +82,55 @@ impl Screen {
     }
 }
 
+impl Screen {
+    /// PROTOTYPE (#203): pushes or pops the kitty keyboard protocol (flag 1, disambiguate) and
+    /// captures the mouse or not, as `kkp` and `mouse` say. Returns what changed, for the log.
+    pub(crate) fn set_modes(&mut self, kkp: bool, mouse: bool) -> Vec<&'static str> {
+        let mut changed = Vec::new();
+        let mut stdout = io::stdout();
+        if kkp != PUSHED.load(Ordering::SeqCst) {
+            let done = if kkp {
+                execute!(
+                    stdout,
+                    PushKeyboardEnhancementFlags(
+                        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    )
+                )
+            } else {
+                execute!(stdout, PopKeyboardEnhancementFlags)
+            };
+            if done.is_ok() {
+                PUSHED.store(kkp, Ordering::SeqCst);
+                changed.push(if kkp {
+                    "pushed kitty keyboard flags 1"
+                } else {
+                    "popped kitty keyboard flags"
+                });
+            }
+        }
+        if mouse != MOUSE.load(Ordering::SeqCst) {
+            let done = if mouse {
+                execute!(stdout, EnableMouseCapture)
+            } else {
+                execute!(stdout, DisableMouseCapture)
+            };
+            if done.is_ok() {
+                MOUSE.store(mouse, Ordering::SeqCst);
+                changed.push(if mouse {
+                    "mouse capture on"
+                } else {
+                    "mouse capture off"
+                });
+            }
+        }
+        changed
+    }
+}
+
+/// PROTOTYPE (#203): whether the kitty keyboard flags are pushed, and the mouse captured.
+static PUSHED: AtomicBool = AtomicBool::new(false);
+static MOUSE: AtomicBool = AtomicBool::new(false);
+
 impl Drop for Screen {
     fn drop(&mut self) {
         restore();
@@ -89,6 +148,12 @@ fn restore() {
         return;
     }
     let mut stdout = io::stdout();
+    if PUSHED.swap(false, Ordering::SeqCst) {
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+    }
+    if MOUSE.swap(false, Ordering::SeqCst) {
+        let _ = execute!(stdout, DisableMouseCapture);
+    }
     let _ = execute!(
         stdout,
         DisableBracketedPaste,

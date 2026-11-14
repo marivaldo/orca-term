@@ -7,6 +7,7 @@ pub(crate) mod centre;
 pub(crate) mod failure;
 pub(crate) mod help;
 pub(crate) mod picker;
+pub(crate) mod proto;
 pub(crate) mod right_column;
 pub(crate) mod side_menu;
 pub(crate) mod status;
@@ -22,6 +23,7 @@ use crate::app::view::Tab;
 /// terminal that shows colours as `mode` says.
 pub(crate) fn frame(frame: &mut Frame<'_>, app: &App, now_ms: u64, mode: Mode) {
     let area = frame.area();
+    app.hits.borrow_mut().clear();
     {
         let mut p = Painter {
             buf: frame.buffer_mut(),
@@ -39,9 +41,13 @@ pub(crate) fn frame(frame: &mut Frame<'_>, app: &App, now_ms: u64, mode: Mode) {
                 right_column::draw(&mut p, app, right.area);
             }
             status::draw(&mut p, app);
+            if app.proto.show_probe {
+                proto::probe(&mut p, app, area);
+            }
             match &app.overlay {
                 Some(Overlay::Picker(picker)) => picker::draw(&mut p, app, picker, area, now_ms),
-                Some(Overlay::Help) => help::draw(&mut p, area),
+                Some(Overlay::Help) => help::draw(&mut p, app, area),
+                Some(Overlay::Palette(palette)) => proto::palette(&mut p, palette, area),
                 None => {}
             }
         }

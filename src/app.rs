@@ -34,6 +34,7 @@ pub(crate) mod menu;
 pub(crate) mod paint;
 pub(crate) mod panel;
 pub(crate) mod program;
+pub(crate) mod proto;
 pub(crate) mod state;
 pub(crate) mod theme;
 pub(crate) mod view;
@@ -45,7 +46,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use ratatui::crossterm::event::{Event, KeyEventKind};
+use std::fs::File;
+use std::io::Write as _;
+
+use ratatui::crossterm::event::{Event, KeyEventKind, MouseEventKind};
 
 use crate::adapters::holder::client::{Client, Heard};
 use crate::adapters::pty::Printed;
@@ -107,19 +111,46 @@ pub(crate) fn run() -> Result<()> {
     let mode = Mode::detect(no_color, colorterm.as_deref());
     let (sender, messages) = mpsc::channel();
     let mut programs = Running::default();
+    let (log, log_path) = open_log();
     let served = Screen::enter().and_then(|mut screen| {
         let mut app = App::new(screen.area()?, start_in);
-        listen(&sender)?;
+        app.proto.probe = screen.probe;
+        app.proto.log_path.clone_from(&log_path);
         let mut parts = Parts {
             link: Link::default(),
             programs: &mut programs,
             sender: &sender,
             watch: watch::start(sender.clone()),
             watched: None,
+            log,
+            started: Instant::now(),
         };
+        parts.log_line(&format!(
+            "start: probe supports_keyboard_enhancement = {:?}; TERM={:?} TERM_PROGRAM={:?} TERM_PROGRAM_VERSION={:?} KITTY_WINDOW_ID={:?} TMUX={:?}; scheme = {}",
+            screen.probe,
+            std::env::var("TERM").ok(),
+            std::env::var("TERM_PROGRAM").ok(),
+            std::env::var("TERM_PROGRAM_VERSION").ok(),
+            std::env::var("KITTY_WINDOW_ID").ok(),
+            std::env::var("TMUX").ok(),
+            app.proto.scheme.name(),
+        ));
+        listen(&sender)?;
         serve(&mut screen, &mut app, &mut parts, &messages, mode)
     });
     programs.end_all();
+    if let Some(path) = log_path {
+        #[expect(
+            clippy::print_stderr,
+            reason = "prototype: where the key probe's log is"
+        )]
+        {
+            eprintln!(
+                "orca-term prototype #203: key probe log at {}",
+                path.display()
+            );
+        }
+    }
     served
 }
 
@@ -132,9 +163,21 @@ struct Parts<'a> {
     watch: Sender<Watched>,
     /// What it was told last.
     watched: Option<Watched>,
+    /// PROTOTYPE (#203): the key probe's log.
+    log: Option<File>,
+    started: Instant,
 }
 
 impl Parts<'_> {
+    /// PROTOTYPE (#203): one line in the key probe's log.
+    fn log_line(&mut self, line: &str) {
+        if let Some(log) = self.log.as_mut() {
+            let ms = self.started.elapsed().as_millis();
+            let _ = writeln!(log, "{ms:>8} {line}");
+            let _ = log.flush();
+        }
+    }
+
     /// Tells the reader of the changes which worktree is open, when that or its entry in the
     /// fleets changed.
     fn watch_open(&mut self, app: &App) {
@@ -163,6 +206,13 @@ fn serve(
     mode: Mode,
 ) -> Result<()> {
     loop {
+        let changed = screen.set_modes(app.proto.scheme.kkp(), app.proto.mouse);
+        for change in changed {
+            parts.log_line(&format!(
+                "terminal: {change} (scheme {})",
+                app.proto.scheme.name()
+            ));
+        }
         for effect in app.fit(screen.area()?) {
             apply(app, parts, effect);
         }
@@ -222,9 +272,17 @@ fn listen(sender: &Sender<Msg>) -> Result<()> {
 fn handle(app: &mut App, parts: &mut Parts<'_>, message: Msg) -> Vec<Effect> {
     let now = Instant::now();
     match message {
-        Msg::Event(Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key, now),
-        Msg::Event(Event::Paste(text)) => app.paste(&text),
-        Msg::Event(_) => Vec::new(),
+        Msg::Event(event) => {
+            app.proto.last = None;
+            let effects = match event.clone() {
+                Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key, now),
+                Event::Paste(text) => app.paste(&text),
+                Event::Mouse(mouse) => app.mouse(mouse),
+                _ => Vec::new(),
+            };
+            log_event(app, parts, &event);
+            effects
+        }
         Msg::Fleets(Ok(fleets)) => app.set_fleets(fleets),
         Msg::Fleets(Err(why)) => {
             app.say(why, now);
@@ -258,6 +316,47 @@ fn handle(app: &mut App, parts: &mut Parts<'_>, message: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Quit => vec![Effect::Quit],
+    }
+}
+
+/// PROTOTYPE (#203): the key probe's log, in `$ORCA_PROTO_LOG` or the temporary directory's
+/// `orca-term-proto203/`.
+fn open_log() -> (Option<File>, Option<PathBuf>) {
+    let path = std::env::var_os("ORCA_PROTO_LOG").map_or_else(
+        || {
+            std::env::temp_dir()
+                .join("orca-term-proto203")
+                .join(format!("events-{}.log", std::process::id()))
+        },
+        PathBuf::from,
+    );
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match File::options().create(true).append(true).open(&path) {
+        Ok(file) => (Some(file), Some(path)),
+        Err(_) => (None, None),
+    }
+}
+
+/// PROTOTYPE (#203): every event crossterm read and what the application made of it, in the log
+/// and (but the mouse's motion) in the probe's overlay.
+fn log_event(app: &mut App, parts: &mut Parts<'_>, event: &Event) {
+    let what = app.proto.last.take().unwrap_or_else(|| "-".to_owned());
+    let short = match event {
+        Event::Key(key) => format!("key {}  {:?}", proto::describe(*key), key.kind),
+        Event::Mouse(mouse) => format!(
+            "mouse {:?} {:?} at {},{}",
+            mouse.kind, mouse.modifiers, mouse.column, mouse.row
+        ),
+        Event::Paste(text) => format!("paste {} chars", text.chars().count()),
+        other => format!("{other:?}"),
+    };
+    let line = format!("[{}] {short}  =>  {what}", app.proto.scheme.badge());
+    parts.log_line(&format!("{line}\n         raw: {event:?}"));
+    let moved = matches!(event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Moved);
+    if !moved {
+        app.proto.remember(line);
     }
 }
 

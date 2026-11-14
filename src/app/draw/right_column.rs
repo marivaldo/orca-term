@@ -126,6 +126,12 @@ fn files(
         .take(usize::from(room))
     {
         let under_cursor = focused && index == cursor;
+        if row < column.bottom {
+            app.hits.borrow_mut().push((
+                Rect::new(card.x + 1, row, card.width - 2, 1),
+                crate::app::proto::Hit::File(index),
+            ));
+        }
         if under_cursor && row < column.bottom {
             p.tint(Rect::new(card.x + 1, row, card.width - 2, 1), FOCUS_SEL);
             p.text(card.x + 1, row, "▎", fg(ACCENT).bg(FOCUS_SEL.color()));

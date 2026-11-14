@@ -119,6 +119,15 @@ impl Emulator {
         self.parser.screen().application_cursor()
     }
 
+    /// PROTOTYPE (#203): which mouse events the program asked for, and in which encoding.
+    pub(crate) fn mouse(&self) -> (vt100::MouseProtocolMode, vt100::MouseProtocolEncoding) {
+        let screen = self.parser.screen();
+        (
+            screen.mouse_protocol_mode(),
+            screen.mouse_protocol_encoding(),
+        )
+    }
+
     /// Whether the program asked for pastes inside the bracketed-paste marks.
     pub(crate) fn bracketed_paste(&self) -> bool {
         self.parser.screen().bracketed_paste()
