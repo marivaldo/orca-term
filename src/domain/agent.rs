@@ -23,7 +23,7 @@ pub(crate) enum Agent {
 }
 
 impl Agent {
-    /// Every agent, in the order the reports and the client list them.
+    /// Every agent, in the order the reports list them.
     pub(crate) const ALL: [Self; 2] = [Self::ClaudeCode, Self::OpenCode];
 
     /// The agent's name in `worktree.json` and in every report: `claude-code` or `opencode`.

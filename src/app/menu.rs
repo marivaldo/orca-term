@@ -115,8 +115,8 @@ pub(crate) fn any_working(fleets: &[ProjectFleet]) -> bool {
 
 /// The state the application shows for `worktree`: the one the core read, except that an agent
 /// whose holder recorded a failed end (#178) shows as failed. Its hooks may never say so: an
-/// agent can die between two turns, or before its first, and the core's own state, which the
-/// Neovim client and `worktree ls` read too, stays as it was.
+/// agent can die between two turns, or before its first, and the core's own state, which
+/// `worktree ls` reads too, stays as it was.
 pub(crate) fn state(worktree: &Worktree) -> &State {
     if failed_end(worktree).is_some() {
         &State::Failed
@@ -185,7 +185,7 @@ pub(crate) fn message(worktree: &Worktree) -> String {
 }
 
 /// How long ago `then_ms` was at `now_ms` (both in milliseconds since the Unix epoch), short:
-/// `now` under a minute, then `9m`, `3h`, `2d`, as the Neovim client's sidebar says it.
+/// `now` under a minute, then `9m`, `3h`, `2d`.
 pub(crate) fn age(then_ms: u64, now_ms: u64) -> String {
     let minutes = now_ms.saturating_sub(then_ms) / 60_000;
     match minutes {

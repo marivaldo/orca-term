@@ -1,9 +1,10 @@
-//! Domain: the running Neovims of a repository, and what the core tells them. Each Neovim
-//! registers its server address (`v:servername`, the path of a unix socket) in the registry,
-//! `<git common dir>/orca-term/nvim/`, one file per Neovim; after every write to a worktree's
-//! state the core sends each one a msgpack-RPC request that fires `User OrcaTermWorktreeChanged`
-//! there, with the worktree's path, so its sidebar redraws. When an agent's turn ends the core
-//! also asks each one to `:checktime` (#177), so open buffers show what the agent wrote.
+//! Domain: the running Neovims of a repository, and what the core asks of them. Each Neovim the
+//! application starts is registered with its server address (`v:servername`, the path of a unix
+//! socket) in the registry, `<git common dir>/orca-term/nvim/`, one file per Neovim; a Neovim
+//! started by hand may register itself with `orca-term nvim register`. The core sends them plain
+//! msgpack-RPC requests, which need no plugin in Neovim: when an agent's turn ends, `:checktime`
+//! (#177), so open buffers show what the agent wrote; and on enter on a changed file in the
+//! application, the Lua that opens its diff (#194, `nvim/open_diff.lua`).
 //!
 //! A registry file is named after its address: the address's 64-bit FNV-1a hash in 16 lowercase
 //! hex digits, so the name is short, the same for the same address every time (registering is
@@ -24,9 +25,6 @@ use crate::domain::state::ADMIN_DIR_NAME;
 
 /// The registry's directory, inside the repository's `orca-term` directory in the git common dir.
 const REGISTRY_DIR_NAME: &str = "nvim";
-
-/// The `User` autocommand pattern the request fires in Neovim.
-pub(crate) const EVENT: &str = "OrcaTermWorktreeChanged";
 
 /// The registry of the repository whose git common dir is `common`: one file per running Neovim.
 pub(crate) fn registry_dir(common: &Path) -> PathBuf {
@@ -115,36 +113,16 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// The id of the one request the core sends on each connection.
 pub(crate) const REQUEST_ID: u64 = 1;
 
-/// The msgpack-RPC request that tells a Neovim the worktree at `path` changed:
-/// `[0, REQUEST_ID, "nvim_exec_autocmds", ["User", {"pattern": EVENT, "data": {"path": path}}]]`.
-/// Type 0 is a request, which Neovim answers once the call has run. It is a request and not a
-/// notification (type 2, never answered) because Neovim drops a call still waiting to run when
-/// its connection closes: the core must wait for the answer before it hangs up. `path` is the
-/// worktree's path as `worktree ls` prints it, so the client can compare the two.
-pub(crate) fn worktree_changed(path: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    push_array(&mut out, 4);
-    push_uint(&mut out, 0);
-    push_uint(&mut out, REQUEST_ID);
-    push_str(&mut out, "nvim_exec_autocmds");
-    // The call's arguments: the event, then its options.
-    push_array(&mut out, 2);
-    push_str(&mut out, "User");
-    push_map(&mut out, 2);
-    push_str(&mut out, "pattern");
-    push_str(&mut out, EVENT);
-    push_str(&mut out, "data");
-    push_map(&mut out, 1);
-    push_str(&mut out, "path");
-    push_str(&mut out, path);
-    out
-}
-
 /// The msgpack-RPC request that asks a Neovim to `:checktime`: `[0, REQUEST_ID, "nvim_command",
 /// ["checktime"]]`. Neovim then reads again every buffer whose file changed on disk and that has no
 /// change of its own ('autoread', on by default), and asks about one that has. Only the buffers
 /// whose file changed are touched, so a Neovim with none of the worktree's files open sees
-/// nothing. A request, for the reason [`worktree_changed`] gives.
+/// nothing.
+///
+/// Type 0 is a request, which Neovim answers once the call has run. Every message the core sends
+/// is a request and not a notification (type 2, never answered) because Neovim drops a call still
+/// waiting to run when its connection closes: the core must wait for the answer before it hangs
+/// up (`adapters/nvim.rs`).
 pub(crate) fn checktime() -> Vec<u8> {
     let mut out = Vec::new();
     push_array(&mut out, 4);
@@ -156,28 +134,39 @@ pub(crate) fn checktime() -> Vec<u8> {
     out
 }
 
-/// The Lua a diff request runs: the Neovim client's entry point for it, given the worktree, the
-/// primary checkout and the file.
-pub(crate) const OPEN_DIFF_LUA: &str = "return require('orca-term.actions').diff_from_core(...)";
+/// The Lua a diff request runs in a Neovim (`nvim/open_diff.lua`, which explains itself): it
+/// opens the file beside its version at the merge base in a new tab, in Neovim's built-in diff
+/// mode. The core sends the code itself, so the Neovim needs no plugin of orca-term's (#194).
+pub(crate) const OPEN_DIFF_LUA: &str = include_str!("nvim/open_diff.lua");
+
+/// A changed file's version at the merge base, as a diff request carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct BaseVersion {
+    /// The merge base's short commit id; empty when the worktree has no merge base.
+    pub(crate) commit: String,
+    /// The file's content there; empty when the file is not there (a new file).
+    pub(crate) text: String,
+}
 
 /// The msgpack-RPC request that asks a Neovim to open the diff of `file` (relative to the
-/// worktree) in the review of the worktree at `worktree`, whose primary checkout is `primary`
-/// (#177): `[0, REQUEST_ID, "nvim_exec_lua", [OPEN_DIFF_LUA, [worktree, primary, file]]]`. The
-/// client decides there whether that Neovim works in the worktree, and opens the review only then,
-/// once it answered, so the core never waits for the review. A Neovim without the client answers
-/// with an error, and nothing happens there.
-pub(crate) fn open_diff(worktree: &str, primary: &str, file: &str) -> Vec<u8> {
+/// worktree at `worktree`) against `base` (#177, #194):
+/// `[0, REQUEST_ID, "nvim_exec_lua", [OPEN_DIFF_LUA, [worktree, file, base.commit, base.text]]]`.
+/// The code decides there whether that Neovim works in the worktree, and opens the diff only
+/// then, once it answered, so the core never waits for the diff.
+pub(crate) fn open_diff(worktree: &str, file: &str, base: &BaseVersion) -> Vec<u8> {
     let mut out = Vec::new();
     push_array(&mut out, 4);
     push_uint(&mut out, 0);
     push_uint(&mut out, REQUEST_ID);
     push_str(&mut out, "nvim_exec_lua");
+    // The call's arguments: the code, then the arguments it is given.
     push_array(&mut out, 2);
     push_str(&mut out, OPEN_DIFF_LUA);
-    push_array(&mut out, 3);
+    push_array(&mut out, 4);
     push_str(&mut out, worktree);
-    push_str(&mut out, primary);
     push_str(&mut out, file);
+    push_str(&mut out, &base.commit);
+    push_str(&mut out, &base.text);
     out
 }
 
@@ -191,11 +180,6 @@ fn push_array(out: &mut Vec<u8>, len: u16) {
         out.push(0xdc);
         out.extend(len.to_be_bytes());
     }
-}
-
-/// A msgpack map of `len` pairs follows, as a fixmap: the core never sends more than 15 pairs.
-fn push_map(out: &mut Vec<u8>, len: u8) {
-    out.push(0x80 | (len & 0x0f));
 }
 
 /// A msgpack positive integer in the fewest bytes: a positive fixint up to 127, else a uint 8,
@@ -252,61 +236,33 @@ mod tests {
         out
     }
 
-    /// The request's bytes up to the path's string, which each test appends.
-    fn head() -> Vec<u8> {
-        let mut out = vec![0x94, 0x00, 0x01];
-        out.extend(fixstr("nvim_exec_autocmds"));
-        out.push(0x92);
-        out.extend(fixstr("User"));
-        out.push(0x82);
-        out.extend(fixstr("pattern"));
-        out.extend(fixstr("OrcaTermWorktreeChanged"));
-        out.extend(fixstr("data"));
-        out.push(0x81);
-        out.extend(fixstr("path"));
+    /// `text` as [`push_str`] encodes it.
+    fn encoded_str(text: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_str(&mut out, text);
         out
     }
 
     #[test]
-    fn the_request_is_the_exact_msgpack_of_the_autocommand_call() {
-        let mut expected = head();
-        expected.extend(fixstr("/w/fix"));
-        assert_eq!(worktree_changed("/w/fix"), expected);
-        // The whole message, byte by byte, for a reader without msgpack at hand.
-        assert_eq!(
-            worktree_changed("/a")[..23],
-            [
-                0x94, 0x00, 0x01, 0xb2, b'n', b'v', b'i', b'm', b'_', b'e', b'x', b'e', b'c', b'_',
-                b'a', b'u', b't', b'o', b'c', b'm', b'd', b's', 0x92,
-            ]
-        );
-        assert!(
-            worktree_changed("/a").ends_with(&[0xa4, b'p', b'a', b't', b'h', 0xa2, b'/', b'a'])
-        );
+    fn a_string_of_31_bytes_or_fewer_is_a_fixstr() {
+        assert_eq!(encoded_str("/a"), [0xa2, b'/', b'a']);
+        assert_eq!(encoded_str(&"x".repeat(31))[0], 0xa0 | 31);
     }
 
     #[test]
-    fn a_path_of_32_to_255_bytes_is_a_str8() {
-        let path = format!("/{}", "x".repeat(39));
-        let mut expected = head();
-        expected.extend([0xd9, 40]);
-        expected.extend_from_slice(path.as_bytes());
-        assert_eq!(worktree_changed(&path), expected);
-        let path = format!("/{}", "x".repeat(30));
-        assert_eq!(
-            worktree_changed(&path)[head().len()],
-            0xa0 | 31,
-            "31 bytes is a fixstr"
-        );
+    fn a_string_of_32_to_255_bytes_is_a_str8() {
+        let text = "x".repeat(40);
+        let mut expected = vec![0xd9, 40];
+        expected.extend_from_slice(text.as_bytes());
+        assert_eq!(encoded_str(&text), expected);
     }
 
     #[test]
-    fn a_path_of_256_bytes_or_more_is_a_str16() {
-        let path = format!("/{}", "y".repeat(299));
-        let mut expected = head();
-        expected.extend([0xda, 0x01, 0x2c]);
-        expected.extend_from_slice(path.as_bytes());
-        assert_eq!(worktree_changed(&path), expected);
+    fn a_string_of_256_bytes_or_more_is_a_str16() {
+        let text = "y".repeat(300);
+        let mut expected = vec![0xda, 0x01, 0x2c];
+        expected.extend_from_slice(text.as_bytes());
+        assert_eq!(encoded_str(&text), expected);
     }
 
     #[test]
@@ -332,21 +288,32 @@ mod tests {
     }
 
     #[test]
-    fn the_diff_request_calls_the_clients_review_with_the_worktree_and_the_file() {
+    fn the_diff_request_runs_the_cores_own_lua_with_the_worktree_the_file_and_its_base() {
+        // The code is longer than 255 bytes, so it goes as a str 16.
+        let code_len = u16::try_from(OPEN_DIFF_LUA.len()).unwrap();
         let mut expected = vec![0x94, 0x00, 0x01];
         expected.extend(fixstr("nvim_exec_lua"));
         expected.push(0x92);
-        expected.extend([0xd9, u8::try_from(OPEN_DIFF_LUA.len()).unwrap()]);
+        expected.push(0xda);
+        expected.extend(code_len.to_be_bytes());
         expected.extend_from_slice(OPEN_DIFF_LUA.as_bytes());
-        expected.push(0x93);
+        expected.push(0x94);
         expected.extend(fixstr("/w/fix"));
-        expected.extend(fixstr("/w/repo"));
         expected.extend(fixstr("src/a b.rs"));
-        assert_eq!(open_diff("/w/fix", "/w/repo", "src/a b.rs"), expected);
-        assert_eq!(
-            OPEN_DIFF_LUA,
-            "return require('orca-term.actions').diff_from_core(...)"
-        );
+        expected.extend(fixstr("0123abc"));
+        expected.extend(fixstr("one\ntwo\n"));
+        let base = BaseVersion {
+            commit: "0123abc".to_owned(),
+            text: "one\ntwo\n".to_owned(),
+        };
+        assert_eq!(open_diff("/w/fix", "src/a b.rs", &base), expected);
+    }
+
+    #[test]
+    fn the_diff_requests_lua_loads_no_plugin() {
+        // The core's own code, on Neovim's own API: it loads no module, orca-term's or anyone's.
+        assert!(!OPEN_DIFF_LUA.contains("require"));
+        assert!(OPEN_DIFF_LUA.contains("diffthis"));
     }
 
     #[test]

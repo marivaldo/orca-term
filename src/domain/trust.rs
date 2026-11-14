@@ -201,7 +201,7 @@ impl Subject {
 }
 
 /// What a committed `orca-term.yaml` asks for that the person has not approved yet, as the prompt,
-/// the error `untrusted` and the client show it.
+/// the error `untrusted` and a caller show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Unapproved {
     /// The worktree it is for, by name.

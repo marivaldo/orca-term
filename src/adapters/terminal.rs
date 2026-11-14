@@ -32,8 +32,8 @@ const MODE_RESET: &[u8] =
 pub(crate) enum DetachKey {
     /// Ctrl-\ detaches.
     CtrlBackslash,
-    /// No key detaches: closing the terminal does. The Neovim client asks for this, since Ctrl-\
-    /// is Neovim's own prefix inside a terminal.
+    /// No key detaches: closing the terminal does. For an attach inside a Neovim terminal, where
+    /// Ctrl-\ is Neovim's own prefix.
     None,
 }
 

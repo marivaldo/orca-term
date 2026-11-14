@@ -30,7 +30,7 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    /// How the contract and the client name it: `merge`, `rebase`, `cherry-pick`, `revert`.
+    /// How the contract names it: `merge`, `rebase`, `cherry-pick`, `revert`.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Merge => "merge",

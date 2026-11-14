@@ -9,11 +9,11 @@ use anyhow::{Result, bail};
 use crate::adapters::{env, fs};
 use crate::domain::note::{self, Anchor, Draft, NotePath, Noted, PendingNote};
 use crate::domain::worktree::Target;
-use crate::ops::{change_notes, find_noted, keep_copy, notify_changed};
+use crate::ops::{change_notes, find_noted, keep_copy};
 
 /// Adds a note with `body` on `anchor` of the file at `path` (relative to the worktree's root) of
-/// the worktree `target` names or locates in the repository containing the current directory,
-/// then tells the running Neovims. Refuses an empty body, a path outside the worktree, and lines
+/// the worktree `target` names or locates in the repository containing the current directory.
+/// Refuses an empty body, a path outside the worktree, and lines
 /// outside the file or on a file that is not there.
 pub(crate) fn run(target: &Target, path: &str, anchor: Anchor, body: &str) -> Result<Noted> {
     let body = note::parse_body(body)?;
@@ -36,7 +36,6 @@ pub(crate) fn run(target: &Target, path: &str, anchor: Anchor, body: &str) -> Re
             created: env::now_millis(),
         }))
     })?;
-    notify_changed(&admin);
     Ok(Noted {
         name: worktree.name,
         path: worktree.path,

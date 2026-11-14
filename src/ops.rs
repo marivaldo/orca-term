@@ -1,8 +1,9 @@
 //! Ops: one module per command, each a short sequence of adapter and domain calls. This file holds
 //! what several commands share: reading the fleet, finding the worktree a command names, locking
 //! a worktree, writing its state, probing its holder, running its setup, reading and changing its
-//! notes, reading its turns and its sessions, changing its current session, telling the running Neovims that a worktree changed and checking the
-//! programs a command needs (git, the agents), and reading and changing the project list.
+//! notes, reading its turns and its sessions, changing its current session, sending a request to
+//! the repository's registered Neovims and checking the programs a command needs (git, the
+//! agents), and reading and changing the project list.
 
 pub(crate) mod agent_attach;
 pub(crate) mod agent_holder;
@@ -109,7 +110,7 @@ pub(crate) fn read_fleet(dir: &Path) -> Result<Fleet> {
 ///
 /// Each worktree is counted on a thread of its own, all at once: most of the time goes to
 /// waiting for git's two processes, so counting ten worktrees takes about as long as one, which
-/// keeps `worktree ls`, the sidebar's read, fast. Every thread writes only its own worktree, and
+/// keeps `worktree ls` fast. Every thread writes only its own worktree, and
 /// all of them end before this returns.
 pub(crate) fn count_fleet_changes(fleet: &mut Fleet) {
     let start = git::start_point(&fleet.primary).ok();
@@ -587,7 +588,6 @@ pub(crate) fn set_up(
     let layers = config_layers(primary, worktree, &env::config_env())?;
     let Some(script) = config::resolve_setup(&layers) else {
         write_state(lock, None)?;
-        notify_changed(lock.admin());
         let derived = derive_state(lock.admin())?;
         return Ok(SetupReport {
             outcome: SetupOutcome::NoScript,
@@ -612,18 +612,15 @@ pub(crate) fn set_up(
         };
         if !is_approved(primary, worktree, &unapproved, approval)? {
             write_state(lock, Some(SetupRecord::NotApproved))?;
-            notify_changed(lock.admin());
             return Err(unapproved.refused().into());
         }
     }
     write_state(lock, Some(SetupRecord::Running))?;
-    notify_changed(lock.admin());
     let log_path = lock.admin().setup_log();
     let mut log = fs::create_truncated(&log_path)?;
     let vars = setup::environment(&primary.path, worktree);
     let outcome = script::run_setup(&script.value, worktree, &vars, &mut log, echo)?;
     write_state(lock, outcome.record())?;
-    notify_changed(lock.admin());
     let derived = derive_state(lock.admin())?;
     Ok(SetupReport {
         outcome,
@@ -764,52 +761,30 @@ pub(crate) fn nvim_registry_of(dir: &Path) -> Result<PathBuf> {
     Ok(nvim::registry_dir(&git::common_dir(&primary)?))
 }
 
-/// A worktree whose state was just written, as the running Neovims are told about it: the git
-/// common dir of its repository, which holds their registry, and the worktree's path as
-/// `worktree ls` prints it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Changed {
-    common: PathBuf,
-    worktree: PathBuf,
+/// Asks every Neovim registered in the repository of the worktree whose admin directory is
+/// `admin` to `:checktime`, after the worktree's agent ended a turn (#177), so the buffers of the
+/// files it wrote show what it wrote. Every Neovim of the repository is asked, not only the
+/// worktree's: the registry does not say which worktree a Neovim works in, and `:checktime`
+/// touches only buffers whose file changed on disk. A Neovim that is gone has its file removed
+/// from the registry. It never fails, and all the Neovims together take a bounded time
+/// (`adapters/nvim.rs`), so a hook is never held up.
+pub(crate) fn ask_to_checktime(admin: &AdminDir) {
+    if let Some(common) = common_dir_of(admin) {
+        send_to_registered(&nvim::registry_dir(&common), &nvim::checktime());
+    }
 }
 
-impl Changed {
-    /// The worktree whose admin directory is `admin`, found from git's own files beside it
-    /// (`commondir` and `gitdir`) without running git, so that a hook stays fast; for the primary
-    /// checkout, whose admin directory sits in the common dir itself, from where it is. `None`
-    /// when they cannot be read: then nobody is told, which is never an error.
-    pub(crate) fn of(admin: &AdminDir) -> Option<Self> {
-        let common = if let Some(common) = admin.common_dir() {
-            common.to_owned()
-        } else {
-            let commondir = admin.commondir_file()?;
-            let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
-            state::common_dir_from(&commondir, &commondir_text)?
-        };
-        Some(Self {
-            common,
-            worktree: worktree_of(admin)?,
-        })
+/// The git common dir of the repository of the worktree whose admin directory is `admin`, which
+/// holds the registry of its Neovims: found from git's own `commondir` file beside the admin
+/// directory, without running git, so that a hook stays fast; for the primary checkout, whose
+/// admin directory sits in the common dir itself, from where it is. `None` when it cannot be read.
+fn common_dir_of(admin: &AdminDir) -> Option<PathBuf> {
+    if let Some(common) = admin.common_dir() {
+        return Some(common.to_owned());
     }
-
-    /// Tells every Neovim registered in the repository that this worktree changed, firing
-    /// `User OrcaTermWorktreeChanged` there with its path. A Neovim that is gone has its file
-    /// removed from the registry; any other failure is skipped. It never fails, and all the
-    /// Neovims together take a bounded time (`adapters/nvim.rs`), so the write that came before is
-    /// never held up.
-    pub(crate) fn notify(&self) {
-        let message = nvim::worktree_changed(&self.worktree.to_string_lossy());
-        send_to_registered(&nvim::registry_dir(&self.common), &message);
-    }
-
-    /// Asks every Neovim registered in the repository to `:checktime`, after the worktree's agent
-    /// ended a turn (#177), so the buffers of the files it wrote show what it wrote. Every
-    /// Neovim of the repository is asked, not only the worktree's: the registry does not say which
-    /// worktree a Neovim works in, and `:checktime` touches only buffers whose file changed on
-    /// disk. Never fails, as [`Changed::notify`].
-    pub(crate) fn checktime(&self) {
-        send_to_registered(&nvim::registry_dir(&self.common), &nvim::checktime());
-    }
+    let commondir = admin.commondir_file()?;
+    let commondir_text = fs::read_text_optional(&commondir).ok().flatten()?;
+    state::common_dir_from(&commondir, &commondir_text)
 }
 
 /// Sends `message` to every Neovim in the registry `registry`, all at once and bounded in time
@@ -857,14 +832,6 @@ pub(crate) fn worktree_of(admin: &AdminDir) -> Option<PathBuf> {
     let gitdir = admin.gitdir_file()?;
     let gitdir_text = fs::read_text_optional(&gitdir).ok().flatten()?;
     state::worktree_path_from(&gitdir, &gitdir_text)
-}
-
-/// Tells the running Neovims that the worktree whose admin directory is `admin` changed: what
-/// every command does after it writes a worktree's state. Never fails.
-pub(crate) fn notify_changed(admin: &AdminDir) {
-    if let Some(changed) = Changed::of(admin) {
-        changed.notify();
-    }
 }
 
 /// How long a note command waits for another one to finish changing the same worktree's notes.

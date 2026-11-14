@@ -434,15 +434,6 @@ pub(crate) fn check_overwrite(read: &PrRead) -> Result<()> {
     Ok(())
 }
 
-/// Whether `found` says something other than what the file held, `before`: the running Neovims
-/// are told only then, so a refresh that changes nothing makes no one read the fleet again.
-pub(crate) fn changed(before: &PrRead, found: &Found) -> bool {
-    match before {
-        PrRead::Usable(facts) => facts.found != *found,
-        PrRead::Missing | PrRead::NewerSchema(_) | PrRead::Unreadable(_) => true,
-    }
-}
-
 /// One worktree `pr refresh` asked about, and what it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RefreshedWorktree {
@@ -767,16 +758,5 @@ mod tests {
                 found: Found::NoPr
             })
         );
-    }
-
-    #[test]
-    fn only_a_different_finding_is_a_change() {
-        let before = PrRead::Usable(PrFacts {
-            fetched_at: 1,
-            found: Found::NoPr,
-        });
-        assert!(!changed(&before, &Found::NoPr));
-        assert!(changed(&before, &Found::Unavailable("x".to_owned())));
-        assert!(changed(&PrRead::Missing, &Found::NoPr));
     }
 }

@@ -726,6 +726,13 @@ pub(crate) fn has_file(dir: &Path, commit: &str, file: &str) -> Result<bool> {
     Ok(probe(dir, &["cat-file", "-e", &format!("{commit}:{file}")])?.is_some())
 }
 
+/// The content of the file `file` (relative to the root, `/`-separated) in the commit `commit`:
+/// `git cat-file blob <commit>:<file>`, the bytes as git stores them. `None` when the commit does
+/// not hold the file. Writes nothing.
+pub(crate) fn file_at(dir: &Path, commit: &str, file: &str) -> Result<Option<Vec<u8>>> {
+    probe(dir, &["cat-file", "blob", &format!("{commit}:{file}")])
+}
+
 /// The patch from the commit `begin` to the commit `end`, as `git diff <begin> <end>` prints it,
 /// with no colour, external diff or text conversion a config may set. Writes nothing.
 pub(crate) fn patch(dir: &Path, begin: &str, end: &str) -> Result<Vec<u8>> {

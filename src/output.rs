@@ -43,7 +43,7 @@ use crate::domain::worktree::{BranchOutcome, Created, Removed, Target, WorktreeN
 pub enum Format {
     /// Text for a person.
     Text,
-    /// One JSON document carrying `contract` and `version`, for the client (`--json`).
+    /// One JSON document carrying `contract` and `version`, for a program to read (`--json`).
     Json,
 }
 
@@ -299,7 +299,7 @@ fn state_cell(worktree: &Worktree) -> String {
     cell
 }
 
-/// The detail's line for a git operation in progress, as the client's float says it too:
+/// The detail's line for a git operation in progress:
 /// `merge in progress`, `rebase in progress (2/5)` when git records the rebase's step.
 fn operation_line(operation: Operation, step: Option<RebaseStep>) -> String {
     match step {
