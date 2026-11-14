@@ -1,10 +1,12 @@
 //! Ops: `worktree push`, which pushes a worktree's branch to `origin` from the core, outside any
 //! agent's sandbox, as Orca's **Push** does, or with a lease as its **Force push with lease**
-//! does (#146, `domain/push.rs`). One of the two ops that push, with `pr create` (`cargo xtask
-//! gh-guard`).
+//! does (#146, `domain/push.rs`). One of the two ops that push, with `pr create`, and the only file
+//! that starts a push: `pr create` pushes through [`send_to_origin`] too (`cargo xtask gh-guard`).
 //!
 //! It refuses first, pushing nothing: a worktree whose directory is gone, a worktree in the middle
-//! of a rebase or on no branch, and a repository with no `origin`. Then it runs `git push -u origin
+//! of a rebase or on no branch, a repository with no `origin`, and the repository's default
+//! branch, as the typed `default_branch` (#195): pull requests go into it, and orca-term never
+//! pushes it, so the primary checkout on it is never pushed. Then it runs `git push -u origin
 //! <branch>`, which never forces: a branch that diverged from `origin/<branch>` is the typed
 //! `push_diverged`. With a lease it runs `git push --force-with-lease=<branch>:<sha> -u origin
 //! <branch>`, `<sha>` being what `refs/remotes/origin/<branch>` holds, so git refuses when someone
@@ -37,7 +39,7 @@ pub(crate) fn run(target: &Target, with_lease: bool) -> Result<Pushed> {
     check_origin(&fleet.primary, worktree)?;
     let uncommitted = create::count_uncommitted(&git::uncommitted_status(&worktree.path)?);
 
-    let outcome = push_to_origin(worktree, branch, with_lease)?;
+    let outcome = push_to_origin(&fleet.primary, worktree, branch, with_lease)?;
     let default = git::default_branch(&fleet.primary).ok();
     let facts = pr_refresh::refresh(worktree, default.as_ref()).with_context(|| {
         format!(
@@ -90,7 +92,12 @@ fn check_origin(primary: &PrimaryCheckout, worktree: &Worktree) -> Result<()> {
 
 /// Pushes `branch` of `worktree` to `origin`, with a lease on what git last saw there when
 /// `with_lease`. A diverged branch is the typed `push_diverged`; any other refusal `push_failed`.
-fn push_to_origin(worktree: &Worktree, branch: &Branch, with_lease: bool) -> Result<Outcome> {
+fn push_to_origin(
+    primary: &PrimaryCheckout,
+    worktree: &Worktree,
+    branch: &Branch,
+    with_lease: bool,
+) -> Result<Outcome> {
     let seen = if with_lease {
         git::read_ref(&worktree.path, &push::tracking_ref(branch))?
     } else {
@@ -103,7 +110,7 @@ fn push_to_origin(worktree: &Worktree, branch: &Branch, with_lease: bool) -> Res
     } else {
         PushMode::Plain
     };
-    match git::push_branch(&worktree.path, branch, mode)? {
+    match send_to_origin(primary, worktree, branch, mode)? {
         PushRun::Pushed => Ok(Outcome::Pushed),
         PushRun::UpToDate => Ok(Outcome::UpToDate),
         PushRun::Diverged(_) if !with_lease => Err(TypedError::PushDiverged {
@@ -120,4 +127,19 @@ fn push_to_origin(worktree: &Worktree, branch: &Branch, with_lease: bool) -> Res
             .into())
         }
     }
+}
+
+/// Sends `branch` of `worktree` to `origin` as `mode` says, saying what git did. Every push
+/// orca-term makes goes through here, `pr create`'s too (`cargo xtask gh-guard`), so the
+/// repository's default branch is refused here, as the typed `default_branch`, before git runs:
+/// pull requests go into it, and orca-term never pushes it (#195, ADR 0013).
+pub(crate) fn send_to_origin(
+    primary: &PrimaryCheckout,
+    worktree: &Worktree,
+    branch: &Branch,
+    mode: PushMode,
+) -> Result<PushRun> {
+    let default = git::default_branch(primary).ok();
+    create::check_not_default_branch(&worktree.name, branch, default.as_ref())?;
+    git::push_branch(&worktree.path, branch, mode)
 }
