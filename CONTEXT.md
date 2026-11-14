@@ -92,8 +92,9 @@ _Avoid_: comment, annotation, review comment
 
 **Core**:
 The orchestrator itself: a library plus a CLI, invoked per action, running no daemon of its own.
-It keeps each running agent alive through that agent's holder. The application and Neovim are
-clients of the core, never its host.
+It keeps each running agent alive through that agent's holder. The application is a client of
+the core, never its host. The person's Neovim is no client: it is the editor, with no plugin of
+orca-term's in it, which the core only sends plain RPC requests (ADR 0014).
 _Avoid_: daemon, server, engine, plugin
 
 **Holder**:

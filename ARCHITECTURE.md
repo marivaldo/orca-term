@@ -1,7 +1,7 @@
 # Architecture
 
-This file is the map of `orca-term`, its core and its Neovim client: where each concept lives and the
-rules the code keeps.
+This file is the map of `orca-term`, its core and its terminal application: where each concept
+lives and the rules the code keeps. orca-term ships no Neovim plugin (ADR 0014; "Neovim" below).
 Read it before changing the code; update it when a module moves. The words follow the glossary in
 `CONTEXT.md`, and the decision behind the shape is ADR 0010 (`docs/adr/`).
 
@@ -10,7 +10,7 @@ Read it before changing the code; update it when a module moves. The words follo
 `orca-term` gives a person a fleet of git worktrees, each on its own branch, for parallel coding
 agents. The core is a Rust command-line program: each command reads the repository through git and
 the file system, decides what to do with pure rules, does it, and prints the result as text for a
-person or as JSON for the Neovim client. A worktree's agent (claude or opencode) runs inside a
+person or as JSON for any program that reads it. A worktree's agent (claude or opencode) runs inside a
 detached process of the core, its holder, which keeps the agent's terminal and screen so that any
 terminal can attach to it and detach again (ADR 0009), under claude's native sandbox, or the
 sandbox the core generates for opencode (ADR 0007, #35).
@@ -44,19 +44,20 @@ the adapters, and returns a domain value that `output` prints.
 ### edge
 
 - `cli.rs`: the clap types for every command and flag (`worktree ls|new|setup|rm|prune`, the
-  person's marks `worktree seen|unseen`, `worktree review`, which the sidebar runs before it
-  opens a review, `worktree detail`, what the detail float shows,
+  person's marks `worktree seen|unseen`, `worktree review`, the base a review compares against,
+  `worktree detail`, everything about one worktree,
   `agent start|attach|stop` (`agent start --agent claude-code|opencode`), `agent swap <worktree>
   <agent>`, `note add|ls|edit|rm|send`, `turn ls|diff|blame`, `session ls|resume|new` (#41), the hidden `agent holder`, the holder process itself (`--events <agent>` for an agent
   that reports its events through a pipe), and the
   hidden `hook claude`, which claude runs for every hook event (and `hook opencode`, which the
   holder runs for every line opencode's plugin writes), and the hidden
-  `nvim register|unregister <address>`, which a running Neovim runs), the
+  `nvim register|unregister <address>`, which registers a running Neovim, and `nvim diff
+  <worktree> <file>`, which asks the registered Neovims to open a file's diff), the
   dispatch to `ops`, and the exit code of a command that did its job (1 when a setup failed).
   No command at all opens the application, as `app` does (#148, #193), or prints the usage
   (clap's help on stderr, exit 2) when it runs inside Neovim or without a terminal
   (`domain::open::opens_with_no_arguments`); `orca-term open`, which opened Neovim with the
-  sidebar, is gone (#193).
+  plugin's sidebar, is gone (#193).
   `doctor [--json]` needs no repository; every other command but the hidden `hook` and
   `agent holder` first checks git once (`runs_git`, then `ops::check_git`), refusing a missing or too old
   git as the typed `prerequisite` before anything else runs. No command checks git only once it
@@ -210,9 +211,9 @@ everything else under `app/` is pure and tested without a terminal.
   most). Each batch of messages becomes effects from the state, which the loop carries
   out (`Link` keeps the one connection to the open worktree's holder, `Running` the Neovims and
   shells), and the loop draws the next frame. Once the loop ends and the terminal is restored,
-  every Neovim and shell is hung up, given 1 s, then killed. Live updates poll rather than
-  listen: the core pushes changes only to registered Neovims, in Neovim's own protocol, and the
-  read costs a listing of the worktrees by git per project and a few small files a second.
+  every Neovim and shell is hung up, given 1 s, then killed. Live updates poll: the core pushes
+  no change to anyone, and the read costs a listing of the worktrees by git per project and a
+  few small files a second.
 - `app/running.rs` (#176): the run loop's side of the Neovims and shells: their processes, and
   each Neovim's socket, a fresh path per Neovim (`program::socket_path`) in a directory of this
   user's alone (`fs::create_private_dir`). A Neovim is registered (`ops::nvim_register::run_in`,
@@ -315,7 +316,7 @@ everything else under `app/` is pure and tested without a terminal.
   what the picker or the filter was given (#178). The state it shows is the core's, except that
   a worktree whose holder recorded a failed end (`AgentEnd`) shows and counts as failed, with
   `agent stopped (exit N)` and its end's age: its hooks may never say so, an agent dying between
-  turns or before its first, and the core's own state (`worktree ls`, the Neovim client) stays.
+  turns or before its first, and the core's own state (`worktree ls`) stays.
 - `app/draw.rs` and `app/draw/`: one frame: the side menu (`side_menu.rs`: `Projects`, each
   project's initial and name, its worktrees in three lines, or two under 40 rows, the primary
   checkout first as the fleet lists it, with the ` primary ` tag (TEXT_2 on RAISED) after its name
@@ -370,11 +371,10 @@ everything else under `app/` is pure and tested without a terminal.
   (`nvim_registry`), the notes' shared steps (`find_noted`, `read_notes`, `change_notes`, which
   holds off a removal and holds `notes.lock` from the read to the write and then removes the kept contents no note refers
   to, `keep_copy` and `pending`, which translates a note's anchor to the file now through
-  `git diff --no-index` of its kept content), and telling them a worktree changed: `Changed` finds the common dir and the
-  worktree's path from git's `commondir` and `gitdir` files beside the admin dir (no git run),
-  and `notify_changed`, which every command calls after it writes a worktree's state; `Changed`
-  also asks them to `:checktime` after a turn's end (#177), and `send_to_registered` sends any one
-  request to every Neovim of a registry, pruning the gone ones. The turn
+  `git diff --no-index` of its kept content), `ask_to_checktime`, which a hook calls after a
+  turn's end (#177), finding the registry from git's `commondir` file beside the admin dir (no git
+  run), and `send_to_registered`, which sends any one request to every Neovim of a registry,
+  pruning the gone ones. The turn
   commands share `find_turned` (refusing a worktree whose directory is gone) and `read_history`
   (the whole `turns.jsonl` and `status.json`, read with no lock: the hook only appends to the one
   and replaces the other whole). The prerequisites: `check_program` finds a program on PATH as a
@@ -402,7 +402,7 @@ everything else under `app/` is pure and tested without a terminal.
   `<git common dir>/orca-term-trust.json`, else the person's `Approval` (`Given` by
   `--approve-setup`, `Ask` at a terminal through the function `cli` hands down, `Unavailable`
   otherwise). Approving records it under `<git common dir>/orca-term/trust.lock`; refusing writes
-  `not_approved` to `worktree.json`, notifies, and returns the typed `untrusted`.
+  `not_approved` to `worktree.json` and returns the typed `untrusted`.
 - `ops/worktree_ls.rs`: `worktree ls`: the fleet of the current repository, with each worktree's
   changed files counted (`ops::count_fleet_changes`, #92): the start point found once, then per
   worktree `git diff --name-only --merge-base <start point>` and `git ls-files --others`, two
@@ -412,8 +412,8 @@ everything else under `app/` is pure and tested without a terminal.
 - `ops/worktree_seen.rs`: `worktree seen` and `worktree unseen`: find the target (the primary
   checkout included), read the latest ended turn as `worktree ls` does, replace `seen.json` whole
   (not under the worktree's lock, so never `busy`; only holding off a removal while it writes,
-  refused once the worktree is removed; never over a newer schema), notify. Doing either twice changes
-  nothing more. `mark` writes the mark and notifies; `worktree review` marks through it too.
+  refused once the worktree is removed; never over a newer schema). Doing either twice changes
+  nothing more. `mark` writes the mark; `worktree review` marks through it too.
 - `ops/worktree_review.rs`: `worktree review`: find the target (refusing a worktree whose
   directory is gone; the primary checkout is reviewed against the default branch like any), resolve the default branch as `worktree new` resolves
   its start point, find the review's base with `git merge-base <default branch> HEAD` in the
@@ -490,12 +490,12 @@ everything else under `app/` is pure and tested without a terminal.
 - `ops/agent_holder.rs`: the hidden `agent holder`: the holder process, `adapters/holder/process.rs`.
 - `ops/hook.rs`: the hidden `hook claude --admin <dir> <event>` (and `hook opencode --admin <dir>`,
   whose stdin is one line of opencode's plugin, read as claude's payload by
-  `domain/hook/opencode.rs`; a line that changes nothing writes and notifies nothing; the turn
+  `domain/hook/opencode.rs`; a line that changes nothing writes nothing; the turn
   and the end snapshot belong to `opencode`): read the payload from stdin,
   take `hook.lock` (waiting at most a second, never the worktree's lock), apply the event, take
   the snapshot when the event opened or closed a turn, fill its id into the records, append to
-  `turns.jsonl`, replace `status.json`, tell the running Neovims, and, when the event ended a turn,
-  ask them to `:checktime` (#177), and exit 0 without printing whatever happens; what went
+  `turns.jsonl`, replace `status.json`, and, when the event ended a turn, ask the registered
+  Neovims to `:checktime` (#177, `ops::ask_to_checktime`), and exit 0 without printing whatever happens; what went
   wrong is appended to `hook.log`, emptied first once past 256 KiB. The snapshot: copy the real
   index (`git rev-parse --git-path index`) to `snapshot.index` in the admin directory, `git add -A`
   and `git write-tree` through the copy (`GIT_INDEX_FILE`), `git commit-tree` with the identities
@@ -507,15 +507,15 @@ everything else under `app/` is pure and tested without a terminal.
 - `ops/note_add.rs`: `note add`: check the body and the path, find the target (the primary
   checkout included; refusing a worktree whose directory is gone), refuse a path that leaves the worktree
   through a symlink, read the file for a note on lines and check the lines fit, then, under
-  `notes.lock`, keep the file's content under its blob id and record the note; notify.
+  `notes.lock`, keep the file's content under its blob id and record the note.
 - `ops/note_ls.rs`: `note ls`: the pending notes, each with its anchor translated to the file now.
   Only reads.
 - `ops/note_edit.rs`, `ops/note_rm.rs`: `note edit` (a new body, the revision bumped) and `note rm`,
-  each under `notes.lock`; notify.
+  each under `notes.lock`.
 - `ops/note_send.rs`: `note send`: read the notes to send (all, or the ids given), refuse with no
   pending notes and, as the typed `no_holder`, with no live holder; translate each anchor, build
   Orca's prompt, type it into the agent through the holder (the paste, 50 ms, then Enter), and only
-  then, under `notes.lock`, consume the notes sent whose revision did not change; notify.
+  then, under `notes.lock`, consume the notes sent whose revision did not change.
 - `ops/turn_ls.rs`: `turn ls`: the worktree's turns from its turn log. Only reads.
 - `ops/session_ls.rs`: `session ls` (#41): the worktree's sessions from its turn log and its live
   status (`ops::read_sessions`, `domain/session.rs`), with the time now for their ages. Only reads.
@@ -527,11 +527,11 @@ everything else under `app/` is pure and tested without a terminal.
   worktree, not holding it; a list that cannot be had or read checks nothing), then, with a holder
   alive, refuse as `busy` an agent in a turn and check the session's agent's sandbox and program
   (`agent_swap`'s checks) and stop the holder; make the session current in `status.json`
-  (`ops::change_status`, under `hook.lock`), notify, and start its agent with `agent_start::start`,
+  (`ops::change_status`, under `hook.lock`), and start its agent with `agent_start::start`,
   which resumes it and records the agent. The report is `agent swap`'s, with the session.
 - `ops/session_new.rs`: `session new` (#41): find the target, lock it; with a holder alive, refuse
   as `busy` an agent in a turn, check its sandbox and program and stop the holder; clear the
-  current session in `status.json` (`ops::change_status`), notify, and restart a running agent
+  current session in `status.json` (`ops::change_status`), and restart a running agent
   with `--fresh`'s mode. Every session keeps its turns.
 - `ops/turn_diff.rs`: `turn diff`: the turn's begin and end snapshots from the turn log (refusing
   a turn that does not exist, one not ended, one without snapshots), then `git diff <begin>
@@ -545,10 +545,12 @@ everything else under `app/` is pure and tested without a terminal.
   registry (idempotent; creating the file is the only write, so no lock). `run_in` does the same
   for the repository of a given directory: the application registers each Neovim it starts so
   (#176).
-- `ops/nvim_diff.rs` (#177): the hidden `nvim diff <worktree> <file>`: send every Neovim of the
-  repository the request that opens the file's diff in the worktree's review; the Neovim client
-  decides there whether that Neovim works in the worktree (`diff_from_core` in
-  `lua/orca-term/actions.lua`). `run_in` is what the application does on enter on a changed file.
+- `ops/nvim_diff.rs` (#177, #194): the hidden `nvim diff <worktree> <file>`: find the merge base
+  of the worktree with the start point (`git::merge_base`, the base the right column counts
+  against) and the file's content there (`git::file_at`, empty for a new file or no merge base),
+  then send every Neovim of the repository the request that opens the diff (`nvim::open_diff`, the
+  core's own Lua); that code decides there whether that Neovim works in the worktree. `run_in` is
+  what the application does on enter on a changed file. See "Neovim".
 - `ops/nvim_unregister.rs`: the hidden `nvim unregister <address>`: remove the address's file;
   one not recorded is not an error. `run_in` does it for a given directory's repository (#176).
 - `ops/pr_refresh.rs`: `pr refresh` (#87): find the targets (every worktree still on disk when
@@ -558,7 +560,7 @@ everything else under `app/` is pure and tested without a terminal.
   `program::run_within`, 10 s each), turn each answer into a finding (`domain/pr.rs`), then write
   each `pr.json` whole, holding off a removal of that worktree while it writes (never over a newer
   schema; a worktree removed while gh answered is left out and nothing is written for it, its
-  admin directory found before gh is asked), and notify only for a worktree whose finding changed. A worktree on no branch, or on the default branch (#175, `pr::branch_to_ask`),
+  admin directory found before gh is asked). A worktree on no branch, or on the default branch (#175, `pr::branch_to_ask`),
   has no pull request and runs no gh. With
   `ops/pr_create.rs`, the only file that names gh; `pr create` finds gh, asks about a branch and
   keeps the answer through its `find_gh`, `ask` and `keep`.
@@ -579,7 +581,7 @@ everything else under `app/` is pure and tested without a terminal.
   unable to say (`prerequisite`, with its reason); then `git push -u origin <branch>`
   (`worktree_push::send_to_origin`, never forced; a failure is `push_failed` with git's words), then `gh pr
   create --base --head --title --body-file <file>|--body "" [--draft]` (60 s at most), then ask gh
-  again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`, notifying);
+  again as `pr refresh` does and keep that answer in `pr.json` (`pr_refresh::keep`);
   when gh does not show the new pull request yet, the record is made from the address `gh pr
   create` printed. One of the two ops that push, with `worktree push` (`cargo xtask gh-guard`).
 - `ops/pr_merge.rs`: `pr merge` (#136): find the target (refusing a worktree whose directory is
@@ -588,7 +590,7 @@ everything else under `app/` is pure and tested without a terminal.
   and refuse what `merge::check_mergeable` refuses, then `gh pr merge <number>
   --squash|--merge|--rebase` (60 s at most, never `--delete-branch`; a failure is gh's first
   line), then ask gh again as `pr refresh` does (`pr_refresh::ask`) and keep what `merged_pr`
-  chooses in `pr.json` (`pr_refresh::keep`, notifying). The worktree and its branch are not
+  chooses in `pr.json` (`pr_refresh::keep`). The worktree and its branch are not
   touched.
 - `ops/worktree_rebase.rs`: `worktree rebase` (#141): find the target (refusing a worktree whose
   directory is gone), take its lock, then refuse an agent in a turn (`agent_swap::check_not_in_turn`
@@ -598,10 +600,10 @@ everything else under `app/` is pure and tested without a terminal.
   `git::fetch_into` the base into `rebase::temp_ref`, leave a branch that already holds it alone
   (`up_to_date`), find the fork point against `refs/remotes/origin/<default>`
   (`git::fork_point`) and `git::rebase_onto` the temporary ref, count what was replayed
-  (`git::count_ahead_of`), delete the temporary ref whatever happened and notify. A rebase git
+  (`git::count_ahead_of`) and delete the temporary ref whatever happened. A rebase git
   stops with a rebase left in progress (`read_operation`) is `rebase_conflict`, naming
   `git::conflicted_files`; any other stop is git's words. `abort` refuses a worktree with no
-  rebase in progress (`no_rebase`), then `git::rebase_abort` and notify. The only code that
+  rebase in progress (`no_rebase`), then `git::rebase_abort`. The only code that
   fetches (`cargo xtask gh-guard`); `ops/worktree_ls.rs` also reads the base, from the local refs
   only, into `Fleet::remote_base`.
 - `ops/worktree_push.rs`: `worktree push` (#146): find the target, then refuse a worktree whose
@@ -800,10 +802,10 @@ everything else under `app/` is pure and tested without a terminal.
 - `domain/nvim.rs`: the running Neovims of a repository: the registry,
   `<git common dir>/orca-term/nvim/`, one file per Neovim named by the 64-bit FNV-1a hash of its
   address in 16 lowercase hex digits and holding the address; `Address` (the absolute path of a
-  unix socket, `v:servername`); and the msgpack-RPC requests, encoded by hand (arrays, maps,
-  strings, positive integers of any size, #177): the one that fires `User OrcaTermWorktreeChanged`
-  with the worktree's path, `checktime`, and `open_diff`, which calls the Neovim client's
-  `diff_from_core` with the worktree, the primary checkout and the file (#177).
+  unix socket, `v:servername`); and the msgpack-RPC requests, encoded by hand (arrays, strings,
+  positive integers of any size, #177): `checktime`, and `open_diff` (#194), `nvim_exec_lua` of
+  `OPEN_DIFF_LUA` (`nvim/open_diff.lua`, compiled in) with the worktree, the file and its
+  `BaseVersion` (the merge base's short id and the file's content there).
 - `domain/nvim/claudecode.rs` (#179): the doctor's question to a registered Neovim, whether
   coder/claudecode.nvim is loaded (`nvim_exec_lua` of `return package.loaded['claudecode'] ~= nil`,
   which only reads), the 5-byte answer read as `Loaded`, `NotLoaded` or `NoAnswer`, and the
@@ -1137,10 +1139,10 @@ validate"):
   did not stop for a removal), `NoSandbox` (naming whose sandbox), `Dirty` (a worktree
   `worktree rm` keeps because it has modified or untracked files, saying when its agent was
   stopped before they were found), `SessionGone` and `NoHolder`
-  (a worktree whose agent is not running, so `note send` has nowhere to paste: the client can offer
+  (a worktree whose agent is not running, so `note send` has nowhere to paste: a caller can offer
   to start it), `Prerequisite` (a program the command needs is missing or too old, as the
   doctor's lines say) and `Untrusted` (a setup script or writable list from a committed
-  `orca-term.yaml` not approved, with its `Subject` and file, which the client shows before
+  `orca-term.yaml` not approved, with its `Subject` and file, which a caller shows before
   approving it). Since #175 also `PrimaryNotRemovable` (kind `primary_checkout`, exit 24: `worktree
   rm` of the primary checkout) and `OnDefaultBranch` (kind `default_branch`, exit 25: `pr create`
   or `pr compose` of a worktree on the default branch, which has no pull request; since #195
@@ -1187,7 +1189,7 @@ validate"):
   ends; `worktree setup` and `worktree rm` take it without waiting and fail as `busy` when it is
   held.
 - **Nothing writes into a worktree's admin directory while git deletes it.** The writes made
-  outside the worktree's lock that the person or the client start at any time (`pr.json` from
+  outside the worktree's lock that the person or the application start at any time (`pr.json` from
   `pr refresh`, `pr create`, `pr merge` and `worktree push`; `seen.json` from `worktree seen`,
   `unseen` and `review`; the notes) hold a shared `flock` on git's `gitdir` file of the worktree
   while they write (`ops::guard_against_removal`), and `worktree rm` holds it alone while git
@@ -1290,7 +1292,7 @@ validate"):
   `agent.sock`: it writes one JSON line per event to the pipe the holder handed opencode
   (`ORCA_TERM_EVENTS_FD`), and the holder, outside the sandbox, runs `orca-term hook opencode
   --admin <dir>` for each line, in order, which applies it through `domain/hook.rs` exactly as a
-  claude hook: the same states, turn log, snapshots and notifications.
+  claude hook: the same states, turn log, snapshots and `:checktime`.
 - **A session belongs to its agent** (#35). `status.json` records which agent's hooks named the
   current session; a cold start resumes it only for that agent, and after `agent swap` the other
   agent's session reads `idle` and a turn it left open `interrupted`. Turns, notes and snapshots
@@ -1355,29 +1357,22 @@ validate"):
   no lock but the one holding off a removal, the last write winning, and never over a newer schema; a file the core cannot use
   reads as nothing seen and no mark. Hooks never touch it. `worktree ls` derives the mark on
   read, independent of the state.
-- **Every write to a worktree's state tells the running Neovims.** After a hook, a setup (as it
-  starts and as it ends, or once with no script), `agent start`, `agent stop`, the agent's own
-  exit (the holder, once its files are gone), `worktree rm` and every note write (`note add`,
-  `edit`, `rm`, `send`), the command calls
-  `ops::notify_changed`, which sends every address in the registry the request firing
-  `User OrcaTermWorktreeChanged` with the worktree's path, and waits for its answer before hanging
-  up: Neovim drops a queued call whose caller has already gone (measured on 0.11 on Linux). All
-  Neovims are told at once, one thread each, within 200 ms in all, so one that never accepts,
-  reads or answers cannot hold the command up (it misses that change); notifying never fails the
-  write before it. A Neovim that is gone has its file pruned; any other failure
-  is skipped and the file kept. `worktree ls` sends nothing. A hook whose event ended a turn then
-  asks every registered Neovim to `:checktime` the same way (#177), with or without the
-  application: every Neovim of the repository, since the registry does not say which worktree a
-  Neovim works in, and `:checktime` only touches buffers whose file changed on disk.
+- **The core sends a registered Neovim only `:checktime` and a diff, never a notice.** Writing a
+  worktree's state sends nothing (ADR 0014). A hook whose event ended a turn asks every registered
+  Neovim to `:checktime` (#177), with or without the application: every Neovim of the repository,
+  since the registry does not say which worktree a Neovim works in, and `:checktime` only touches
+  buffers whose file changed on disk. `nvim diff` sends the diff request (#194). Each request waits
+  for its answer before hanging up: Neovim drops a queued call whose caller has already gone
+  (measured on 0.11 on Linux). All Neovims are asked at once, one thread each, within 200 ms in
+  all, so one that never accepts, reads or answers cannot hold the command up; sending never fails
+  the command. A Neovim that is gone has its file pruned; any other failure is skipped and the file
+  kept. `worktree ls` sends nothing.
 - **gh runs only from `pr refresh`, and its answer is a cache** (#87). Only `ops/pr_refresh.rs`
-  names the GitHub CLI (`cargo xtask gh-guard`); the Neovim client never runs it, only asks the
-  core. gh runs with an empty stdin, in the worktree, at most 10 s; gh missing, not logged in or
+  names the GitHub CLI (`cargo xtask gh-guard`). gh runs with an empty stdin, in the worktree, at most 10 s; gh missing, not logged in or
   not pointed at GitHub is recorded as `unavailable`, never a failure of the command. `pr.json` is
   written only by `pr refresh`, whole and with no lock but the one holding off a removal, the last
   write winning, never over a newer
-  schema; `worktree ls` and `worktree detail` only read it. `pr refresh` tells the running Neovims
-  only about a worktree whose finding changed (`fetched_at` aside), so a refresh that changes
-  nothing makes no one read the fleet.
+  schema; `worktree ls` and `worktree detail` only read it.
 - **Notes are the person's, kept until sent.** Only the note commands write `notes.json`, each
   under `notes.lock` (waiting at most 2 s for another), replacing it whole; reading takes no lock.
   Ids are never reused and every edit bumps `rev`. A note on lines keeps a copy of its file's
@@ -1404,7 +1399,7 @@ validate"):
   namespace of its own (bwrap `--unshare-user`), and is refused the same way.
 - **Errors** are `anyhow` errors with context, written for a person. Domain parsers return small
   `thiserror` enums (`WorktreeNameError`, `BranchNameError`) whose messages a person can read.
-  Failures the client must tell apart are `TypedError` cases (`domain/error.rs`), carried inside
+  Failures a caller must tell apart are `TypedError` cases (`domain/error.rs`), carried inside
   the `anyhow` error and found again by downcasting. Without `--json` an error is printed on
   stderr as `orca-term: <message>`; with `--json` it is a JSON document on stdout:
   `{"contract": 1, "version": "...", "error": {"kind": "...", "message": "..."}}`, where `kind` is
@@ -1509,7 +1504,7 @@ A file of a newer schema is refused, for reading too, since the list's shape cou
 - **The application encodes keys the old way**: it reads keys as events to find its prefix and
   sends each again as xterm would without the kitty keyboard protocol, so Shift+Enter reaches the
   agent as Enter. It takes no mouse: the wheel and clicks stay with the person's terminal.
-- **The agent's size follows the client typed in last**: an `agent attach` in Neovim and the
+- **The agent's size follows the client typed in last**: an `agent attach` elsewhere and the
   application see the agent laid out for whichever was used last, and the other draws a screen
   of another size until the person types in it. A panel's screen (`vt100`) cuts or pads its rows
   on a width change rather than reflowing them; the agent redraws on the resize anyway.
@@ -1530,15 +1525,14 @@ A file of a newer schema is refused, for reading too, since the list's shape cou
   approval before the tool's end.
 - **The hook path is baked at launch**: moving the orca-term binary stops the status until the
   agent is started again.
-- **A full socket backlog reads as gone on macOS**: a Neovim suspended through about 128 events
-  refuses the connection, so its address is pruned; it updates again once it regains focus with
-  the sidebar open, which registers it again.
-- **A holder killed outright notifies nobody**: the sidebar shows the change on the next focus.
-- **A Neovim that does not answer within 200 ms misses that change** (suspended, or busy in a
-  blocking command): the core hangs up and Neovim drops the call. The next change or focus reads
-  the fleet again. Every hook of a worktree then waits those 200 ms.
-- **Viewing the agent's terminal does not clear the unseen mark**, unlike Orca: only `u` and
-  opening the review ([#39](https://github.com/marivaldo/orca-term/issues/39)) do, because
+- **A full socket backlog reads as gone on macOS**: a Neovim suspended through about 128 requests
+  refuses the connection, so its address is pruned; it is registered again only by running `nvim
+  register` (the application registers each Neovim once, as it starts).
+- **A Neovim that does not answer within 200 ms misses that request** (suspended, or busy in a
+  blocking command): the core hangs up and Neovim drops the call, so it skips that `:checktime`
+  or that diff. A hook ending a turn then waits those 200 ms.
+- **Viewing the agent's terminal does not clear the unseen mark**, unlike Orca: only `worktree
+  seen` and `worktree review` ([#39](https://github.com/marivaldo/orca-term/issues/39)) do, because
   Unseen means "not reviewed" (`CONTEXT.md`), and watching an agent is not reviewing its work.
 - **`•` is ambiguous-width**: with `ambiwidth=double` a marked row is one cell wider.
 - **A `status.json` written before #66 records no transcript**, so the first cold start of such
@@ -1627,18 +1621,20 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
 - `cargo xtask launch-guard` (`xtask/src/launch_guard.rs`) rejects the literals
   `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--auto`, `--yolo`
   (opencode's) and
-  `bypassPermissions`, as whole tokens outside comments, in every file under `src/`, `lua/` and
-  `plugin/` but `src/domain/launch.rs`, where the run-time guard lists them.
+  `bypassPermissions`, as whole tokens outside comments, in every `.rs` and `.lua` file under
+  `src/` but `src/domain/launch.rs`, where the run-time guard lists them.
+- `cargo xtask nvim-lua` (`xtask/src/nvim_lua.rs`, #194) rejects a `.lua` file anywhere but
+  `src/domain/nvim/`, and in those a `require` or a call that starts a process, outside `--`
+  comments: the only Lua is the code the core sends to Neovim, and it needs no plugin.
 - `cargo xtask gh-guard` (`xtask/src/gh_guard.rs`, #87) rejects the string literal `"gh"`, outside
-  comments, in every file under `src/` but `src/ops/pr_refresh.rs`, and `"gh"` or `'gh'` anywhere
-  in `lua/`, `plugin/` and `build.lua`. Since #141 it also rejects the literal `"fetch"` outside
+  comments, in every `.rs` file under `src/` but `src/ops/pr_refresh.rs` (and, since #132,
+  `src/ops/pr_create.rs`). Since #141 it also rejects the literal `"fetch"` outside
   `src/adapters/git.rs` and a call of `fetch_into` outside `src/ops/worktree_rebase.rs`: only
   `worktree rebase` fetches. Since #146 a call of `push_branch` is allowed in
   `src/ops/worktree_push.rs` too, and since #195 only there (in `send_to_origin`, which `pr
   create` pushes through, so the default branch is refused for every push); the string literal `--force` (either quote) is rejected in every
   file scanned, and a literal starting with `--force-with-lease` outside `src/adapters/git.rs`;
-  `src/output/json.rs` and `lua/orca-term/core.lua`, which name orca-term's own `worktree rm
-  --force` and `worktree push --force-with-lease`, are left out of both.
+  `src/output/json.rs`, which names orca-term's own `worktree rm --force`, is left out of both.
 - `cargo xtask schema-fixtures` (`xtask/src/schema_fixtures.rs`, #118) reads every
   `const *_SCHEMA: u64` under `src/` and rejects a value with no `tests/fixtures/schema-<n>/`, or
   finding no constant at all ("State and schema").
@@ -1660,8 +1656,8 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
 ## Tests
 
 - **Seam 1, black box**: `tests/worktree_*.rs` and `tests/agent.rs` run the binary against
-  throwaway git repositories built by `tests/support/mod.rs`, and check what a person or the
-  client sees. `tests/agent.rs` runs it with `PATH` set to one directory
+  throwaway git repositories built by `tests/support/mod.rs`, and check what a person or a
+  program reading `--json` sees. `tests/agent.rs` runs it with `PATH` set to one directory
   (`tests/support/agent.rs`) holding a fake `claude` (a bash script that records its arguments,
   directory and environment variable names, echoes what is typed and exits on request), symlinks
   to the real `git` and `bash`, and fake `sandbox-exec`, `bwrap` and `socat`; attaches over
@@ -1692,8 +1688,13 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   through the fake's pipe, then lists, resumes (reading the fakes' command lines), discards and
   swaps across agents; the fake opencode answers `session list` with what the test wrote.
   `tests/notify.rs` registers fake Neovims (unix sockets the
-  test listens on) and checks every write notifies them, a stale address is pruned, a Neovim that
-  never reads holds nothing up, and `worktree ls` sends nothing.
+  test listens on) and checks the end of a turn asks them to `:checktime`, `nvim diff` sends the
+  diff request whole, writing a worktree's state sends nothing, a stale address is pruned, a
+  Neovim that never reads holds nothing up, and `worktree ls` sends nothing. `tests/nvim_diff.rs`
+  (#194) opens diffs in a real `nvim --clean --headless --listen <socket>` through `nvim diff`
+  and asks it back over `nvim --server --remote-expr` what it shows: two windows in diff mode,
+  the base on the left, the file on the right, in the worktree's Neovim only; it skips without
+  `nvim` on PATH, unless `ORCA_TERM_REQUIRE_NVIM` is set (CI's Linux `rust` job sets it).
   `tests/recordings.rs` replays every version of every live scenario's recording
   (`tests/live/*.scenario`, recordings in `tests/fixtures/claude-hooks/` and
   `tests/fixtures/opencode-events/`) through the real `orca-term hook` and checks the outcome of
@@ -1733,68 +1734,6 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   PTY for its own unit tests. The holder's side is in `tests/agent.rs`, through a
   client that speaks the protocol itself (`RawClient`): the size of the client typed in last, and
   a replay starting with the modes switched on before the bytes it keeps.
-- **Seam 2, the Neovim client against the real core**: `spec/*_spec.lua` run busted via nlua in
-  headless Neovim against the binary `cargo build` makes, in throwaway git repositories built by
-  `spec/support.lua`. The sidebar's text and highlights are compared with
-  `spec/golden/sidebar.txt` (`UPDATE_GOLDEN=1 just lua-test` rewrites it). The person's answers
-  and the notifications go through `support.stub_ui` (stubs of `vim.ui.input`, `vim.ui.select` and
-  `vim.notify`), and a command that runs a setup is awaited with `vim.wait`. `spec/live_spec.lua`
-  starts child Neovims to check the registration, the live updates across tabs and Neovims, a
-  stale address and a burst of events; `spec/live_store_spec.lua` starts one to check that the
-  live fleet hands one read to every subscriber. `spec/strip_spec.lua` compares the status strip,
-  as a statusline expression and as Neovim draws it, with `spec/golden/strip.txt`, and starts
-  child Neovims to check its live update and its lualine component, with lualine.nvim pinned in
-  `.rocks/lualine.nvim` by `just lua-rocks`. `spec/review_spec.lua` opens real reviews in
-  diffview.nvim, pinned in `.rocks/diffview.nvim` by `just lua-rocks` and added to the runtimepath
-  for that file only, which closes every view and review tab it opens; `spec/notes_spec.lua` does
-  the same to add, draw, list, send, edit and delete notes there, its fake claude recording every
-  line it reads (`support.claude_input`); `spec/turn_review_spec.lua` the same to review single
-  turns, made by running the real `orca-term hook claude` with claude's payloads on stdin.
-  `spec/detail_spec.lua` opens the detail float with `K` on
-  worktrees whose denials are replayed from a recording, whose setup failed and whose branch
-  drifted, and fires `CursorMoved` itself, since headless Neovim runs no main loop between a spec's
-  calls. `spec/install_spec.lua` runs the build hook against a fake release packed by the release
-  workflow's own script and served through a `file://` base URL, with a fake `cargo` first on
-  PATH, checks the workflow's verification script on tampered, missing and extra assets, and links
-  `install-cli` into temporary directories only. `spec/swap_spec.lua` swaps a worktree's fake
-  claude for a fake opencode from the `.` menu (#35), with fake sandbox tools that run what they
-  wrap. `spec/sessions_spec.lua` (#41) lists and resumes sessions with `s`, across agents too
-  (opencode's lines recorded by running `orca-term hook opencode` itself), and starts a new one
-  from the `.` menu. `support.isolate()` sets the XDG base directories inside the fixture's `HOME`. See
-  "Neovim client" below. Every fixture puts a fake `gh` first on PATH (#87), so opening the sidebar,
-  which refreshes the pull requests, never runs the real GitHub CLI; `spec/pr_spec.lua` makes it
-  answer pull requests (`support.gh_answer`) and checks the `PR` icon and its colours, `R`, `K`,
-  `:OrcaTerm pr-refresh`, the refresh on opening, after a turn ends and on the timer.
-  `spec/projects_spec.lua` (#154) puts two repositories of one fixture on the project list
-  (`support.sibling_repo` makes the second beside the first, `support.add_project` runs `project
-  add`; the list lives in the fixture's `XDG_STATE_HOME`, never the developer's) and checks the
-  sidebar grouped by project: the headers in the list's order, `j` and `k` across projects, every
-  key pressed on a worktree of the second project while Neovim sits in the first (`u`, `K`, `s`,
-  `R`, `.` to remove it, `<CR>` starting its fake claude; `d` only as far as what it hands
-  `actions.review`, the review being `spec/review_spec.lua`'s; the menu's entries and `:OrcaTerm
-  push`, `pr-create` and `pr-merge` against a bare `origin` only the second project has), a
-  project with no worktrees, a gone one, a list that cannot be read, and the empty list, where
-  the sidebar is `render.fleet`'s.
-  `spec/project_keys_spec.lua` (#155) covers the sidebar's project keys on the same fixtures: `a`
-  on the header and on a worktree of each of two projects, pressed while Neovim sits in the other
-  project (the worktree is listed by the cursor's project only, its tab opens and its row is under
-  that header), under the header of a project with no worktrees, and on a gone project; `P`
-  (the question and its `dir` completion, a path with `~` and a trailing slash, a path inside a
-  project, one already on the list, the two paths the core refuses, a cancelled question, and an
-  empty project list); and `.` on a header (`Remove from list` confirmed, with the directory, the
-  worktree and its branch checked on disk, cancelled at the question and at the menu, a gone
-  project, a line that is neither a header nor a worktree, and a worktree's own menu). It reads
-  the list back through `project ls --json`.
-  `spec/projects_live_spec.lua` (#156) checks what follows every project. In child Neovims, as
-  `spec/live_spec.lua` runs them, reading the registry of each repository (`support.registry`):
-  the registration with both projects, from inside one and from outside every repository, a
-  write in either shown, `:qa` unregistering from both, a project added after the sidebar opened
-  and then taken off the list, and the status strip of a Neovim that never opened the sidebar.
-  In its own Neovim: the strip's count over two projects, `:OrcaTerm jump` and `:OrcaTerm
-  worktree N` across them, the pull requests of the second project refreshed on opening, on the
-  timer and after a turn of its fake claude ends, and the number of reads, counted by wrapping
-  `core.fleets` and `core.worktree_ls` (one `fleets` and no `worktree ls` with projects on the
-  list, one of each with an empty list).
 - **Lints** have their own unit tests in `xtask/src/`.
 - **The project list, seam 1** (#149): `tests/projects.rs` runs `project add|ls|rm` and `fleets`
   against several throwaway repositories, with `XDG_STATE_HOME` set to a temporary directory of
@@ -1813,618 +1752,24 @@ Each invariant above is checked, not just written down (see `docs/harness.md`):
   and without a terminal, the `prerequisite` without git, nothing added by any of them, and
   `open` no longer a command.
 
-## Neovim client
+## Neovim
 
-The Neovim client is Lua at the repository root, beside the crate (ADR 0008), laid out as a
-Neovim plugin: Neovim runs `plugin/` at startup and `require` finds the modules in `lua/`. It needs
-Neovim 0.11 or later. The client is thin: it runs the core's commands with `--json` and shows
-what they print.
+orca-term ships no Neovim plugin (ADR 0014): the person's own Neovim is the editor, run by the
+application in each worktree's `2 nvim` tab, or by the person in a window of its own. The core
+only sends registered Neovims plain msgpack-RPC requests over their sockets
+(`domain/nvim.rs`, `adapters/nvim.rs`), one request per connection, waiting for the answer:
 
-- `plugin/orca-term.lua`: defines the `:OrcaTerm <subcommand>` command (`sidebar`, `jump`,
-  `review`, `notes`, `turns`, `install-cli`, `worktree N`), with completion of the subcommands,
-  and the `<Plug>(OrcaTermSidebar)`, `<Plug>(OrcaTermJump)`, `<Plug>(OrcaTermReview)`,
-  `<Plug>(OrcaTermNotes)`, `<Plug>(OrcaTermTurns)`, `<Plug>(OrcaTermInstallCli)` and
-  `<Plug>(OrcaTermWorktree1)` to `<Plug>(OrcaTermWorktree9)` maps, and nothing else. Since #87 also
-  `pr-refresh` and `<Plug>(OrcaTermPrRefresh)` (`pr.refresh_all`). Since #113 also the
-  `orca-term-session` autocommand group: `BufFilePost` on `orca-term://sidebar` while a session is
-  sourced calls `sidebar.name_taken`, and `SessionLoadPost` calls `sidebar.session_loaded` once the
-  sidebar module is loaded; neither loads a module nor calls the core until a session names a
-  buffer after the sidebar. Since #124 also `SessionLoadPre` (where Neovim has it, 0.12 and
-  later) and `BufFilePre` while `g:SessionLoad` is set call `sidebar.session_loading` once the
-  sidebar module is loaded. Since #146 also `push` and `<Plug>(OrcaTermPush)`
-  (`actions.push_current`).
-- `build.lua`: the build hook, at the root where lazy.nvim finds it and runs it by itself (other
-  managers run `nvim -l build.lua`). It loads `install.lua` by its path, since the plugin is not on
-  the runtimepath yet, runs `install.build`, yielding to lazy.nvim's coroutine while it waits, and
-  fails only when no binary could be had.
-- `lua/orca-term/install.lua`: `build(opts)` finds the plugin's exact tag
-  (`git describe --tags --exact-match`) and this machine's release target from
-  `vim.uv.os_uname()` (`target`), downloads `<base_url>/<tag>/orca-term-<tag>-<target>.tar.gz`
-  and its `.sha256` with curl (`base_url` is `RELEASES_URL`, GitHub's, unless a spec points it at
-  a `file://` directory), checks the sha256 (Neovim's `sha256()` on the bytes, or `sha256sum` or
-  `shasum -a 256` on Neovim 0.11, whose `sha256()` refuses a NUL byte), unpacks only the binary
-  with tar and moves it to `<root>/bin/orca-term`. Without a tag, a target, the download or a
-  matching sha256, it says which, removes an earlier `bin/orca-term` and runs
-  `cargo build --release`; it returns `installed`, `built` or `failed`. `install_cli(dir)`
-  (`:OrcaTerm install-cli`) symlinks the binary `find_binary` returns, symlinks resolved, as
-  `<dir>/orca-term` (`dir` is `$XDG_BIN_HOME`, else `~/.local/bin`, when `nil`), creating `dir`; it
-  replaces a symlink, refuses anything else there, and warns when `dir` is not on PATH.
-- `lua/orca-term/init.lua`: `setup(opts)` and `config`, the settings (so far `binary`, the path to
-  the core binary). Calling setup() is optional; `config` holds the defaults until then.
-- `lua/orca-term/core.lua`: the link to the core. `find_binary` takes `binary` from setup(), else
-  `bin/orca-term` (the build hook's), `target/release/orca-term` or `target/debug/orca-term` in the
-  repository the client is loaded from, else `orca-term` on PATH. Each command runs the binary with `--json`, decodes the JSON
-  and refuses a document whose `contract` differs from the client's own `CONTRACT`.
-  `worktree_ls`, `worktree_ls_async`, `fleets` and `fleets_async` drop the worktree marked
-  `primary` (#175, `without_primary`): the client is frozen (ADR 0012) and keeps showing the
-  primary checkout only in the project header, while the application draws it as a row.
-  `worktree_ls` waits for it (10 s at most); `worktree_new`, `worktree_setup` (with
-  `--approve-setup` when asked to approve) and `worktree_rm`
-  (which may run a setup for minutes) do not: `vim.system` runs them with no time limit and their
-  result reaches a callback through `vim.schedule`. Each gives the document, or `nil` and an error
-  `{ kind, message }` whose message names the fix (`kind` is the core's `error.kind`, or the
-  client's `no_binary`, `contract`, `usage` for arguments the core refused, or `failed`); it never
-  throws. An `untrusted` error also carries the core's `script` and `source`. `worktree_ls_async` reads the fleet without waiting (10 s at most), for the core's
-  events. `worktree_seen` and `worktree_unseen` clear and set the unseen mark without waiting;
-  `worktree_review(target, cwd, on_done)` runs `worktree review` without waiting (10 s at most),
-  handing over the worktree (now seen), the review's `base` and the branch it was found `against`.
-  The note commands run without waiting (10 s at most): `note_add(target, path, lines, body, cwd,
-  on_done)` (`lines` the first and the last line, equal for one line, `nil` for the whole file; the
-  body passed as `--body=<body>`), `note_ls`, `note_edit`, `note_rm` and `note_send(target, ids,
-  cwd, on_done)` (every pending note when `ids` is empty), typed as `orca_term.Note` (its `anchor`
-  as made and its `current` one, the line in the file on disk now) and one class per document; a
-  send with no running agent fails as `no_holder`. Every worktree carries `notes`, its pending count,
-  and `denials`, its latest turn's count. `worktree_detail(target, cwd, on_done)` runs `worktree
-  detail` without waiting (10 s at most), typed as `orca_term.Detail`: the worktree, its whole
-  `detail`, its `denials` (`orca_term.Denial`), its `setup` (`orca_term.SetupDetail`) and its
-  `drift` (`orca_term.Drift`). `doctor()` runs `doctor` in Neovim's current directory and waits
-  for it (10 s at most), for `:checkhealth orca-term` only, typed as `orca_term.Report`: a report
-  with a missing or too old program is returned whole, its `error` inside, rather than as an
-  error. `turn_ls(target, cwd, on_done)` runs `turn ls` without waiting (10 s at most), typed as
-  `orca_term.TurnList`: the worktree's `name` and `path` and its `turns` (`orca_term.Turn`:
-  `number`, `outcome` or, while open, `phase`, `prompt`, `end_observed`, the `begin` and `end`
-  snapshots, ...), oldest first; it is the turn review's only source. `pr_refresh(targets, cwd,
-  on_done)` (#87) runs `pr refresh [<target>...]` without waiting (30 s at most), typed as
-  `orca_term.PrRefreshed`; each worktree of `worktree ls` and `worktree detail` carries `pr`
-  (`orca_term.Pr`, `nil` when never fetched). `pr_compose(target, cwd)` (#133) waits for `pr
-  compose` (10 s at most, it only reads git), typed as `orca_term.Composed`; `pr_create(target,
-  title, body, draft, cwd, on_done)` runs `pr create <target> --title=<title> [--draft]` without
-  waiting (120 s at most), the body written to a `vim.fn.tempname()` file for `--body-file` (none
-  for an empty body) and removed once the core ends, typed as `orca_term.PrCreated`.
-  `pr_merge(target, method, cwd, on_done)` (#136) runs `pr merge <target> --<method>` without
-  waiting (90 s at most), typed as `orca_term.PrMerged`. `worktree_rebase(target, cwd, on_done)`
-  (#141) runs `worktree rebase <target>` without waiting (120 s at most, for the fetch), typed as
-  `orca_term.Rebased`; `worktree_rebase_abort` runs it with `--abort` (10 s at most,
-  `orca_term.RebaseAborted`) and `agent_resolve` runs `agent resolve <target>` (10 s at most,
-  `orca_term.ResolveSent`); the fleet carries `remote_base`. `worktree_push(target, with_lease,
-  cwd, on_done)` (#146) runs `worktree push <target> [--force-with-lease]` without waiting (120 s
-  at most), typed as `orca_term.Pushed`; the fleet carries `has_origin`. `fleets(cwd)` (#154)
-  waits for `orca-term fleets` (10 s at most) and `fleets_async(cwd, on_done)` reads it without
-  waiting, typed as `orca_term.Fleets`: its `projects`, in the list's order, each an
-  `orca_term.ProjectFleet` (`name`, `path`, `gone`, then its `fleet`, an `orca_term.Fleet` without
-  `contract` and `version`, or its `error`). The list belongs to the person, so `cwd` only has to
-  exist. A gone or broken project is not an error; a project list that cannot be read is.
-  `project_add(path, cwd, on_done)` (#155) runs `project add <path>` without waiting (10 s at
-  most), typed as `orca_term.ProjectAdded` (`name`, `path`, `added`, `false` for a project already
-  on the list), and `project_rm(path, cwd, on_done)` runs `project rm <path>` the same way, typed
-  as `orca_term.ProjectRemoved` (`name`, `path`); the client always names a project by its path,
-  never by its name, which several projects may share.
-- `lua/orca-term/health.lua`: `:checkhealth orca-term`, through `vim.health`: the binary
-  `core.find_binary` resolves (or its error), each check of `core.doctor()` as ok, warn, error
-  (`missing`, `too_old`) or info, the contract (a core speaking another one is refused by
-  `core.lua`), Neovim 0.11 or later, diffview.nvim through `review.available()` (missing: a
-  warning, the review needs it), and claudecode.nvim in this Neovim through `package.loaded`
-  (missing: a warning; read here because this Neovim cannot answer the doctor while it waits for
-  it, #179). It only reports.
-  `nvim_register` runs without waiting; `nvim_unregister` waits 1 s at most, as it runs
-  while Neovim exits. `agent_start(path, size, fresh, approve, cwd, on_done)` (with the terminal's size, `--fresh` when
-  `fresh` and `--approve-sandbox` when `approve`) runs without blocking too; its document says which session was `resumed`.
-  `worktree_new(name, agent, size, cwd, on_done)` passes `--agent <agent> --rows R --cols C` when
-  given an agent (#93), and `agent_start` takes an optional last `agent` for `--agent`.
-  `agent_swap(path, agent, size, approve, cwd, on_done)` runs `agent swap` the same way (#35),
-  typed as `orca_term.Swapped` (the start document, `previous`, `stopped`).
-  `session_ls(target, cwd, on_done)` (10 s at most), `session_resume(path, id, size, approve, cwd,
-  on_done)` and `session_new(path, size, approve, cwd, on_done)` run the session commands without
-  blocking (#41), typed as `orca_term.SessionList`, `orca_term.Resumed` and `orca_term.Discarded`.
-  `agent_attach` is
-  the terminal's job, `agent attach <path> --no-detach-key` started with `jobstart` in the current
-  buffer, the one command run without `--json` (no key detaches: Ctrl-\ is Neovim's terminal
-  prefix; closing the terminal detaches).
-- `lua/orca-term/fleet.lua`: the attention order, pure: each worktree's rank (1 waiting to 8 no
-  agent, from the spec) and the sections *Needs you*, *Running* and *Quiet*, sorted by rank, then
-  by `last_activity` (newest first, none last, #91), then name, then path.
-- `lua/orca-term/render.lua`: the sidebar's look, pure: turns the fleet (or an error), the
-  selected worktree's path and a width (36) into lines, highlight spans and the worktree each line
-  belongs to. It draws prototype variant D: the header with the primary checkout, the sections, a
-  glyph and a second line per worktree, the rounded card around the selected one; an unseen
-  worktree gets the mark `render.UNSEEN` (`•`) in the first cell, before the glyph, and a bold
-  name. At the right end of a worktree's second line sit its icons (#103), a space apart: `≠`
-  (`render.OPERATION`) in `OrcaTermOperation` while a git operation is in progress, the denials of
-  its latest turn `⊘N` (`render.DENIED`) in `OrcaTermDenied`, then its pending notes `✎N`
-  (`render.NOTE`) in `OrcaTermBadge`, what the line says cut with `…` to leave them room and a
-  space; a zero count shows nothing, and a worktree with icons and nothing to say gets a second
-  line holding only them. Both lines flush their right part with one helper, `add_with_right`. At
-  the right end of the name line (#91) come the agent's label
-  (`agent_label`: `cc` for `claude-code`, `oc` for `opencode`, any other agent's own name) and the
-  age of its last activity (`age`: `now`, `9m`, `3h`, `2d`, measured from the `now` passed to
-  `fleet`, the clock's by default), both in `OrcaTermAge`; no agent shows neither, and no
-  `last_activity` shows only the label. The second line says how many files the worktree changed
-  (`files_changed`: `1 file changed`, `4 files changed`, #92) when `changed_files` is above 0 and
-  its state is `finished`, `interrupted`, `idle` or `no_agent`; a question, an error, a setup
-  failure, a broken worktree's reason and a working agent's activity keep the line, and the
-  `⎇ branch ·` prefix stays in front. No line reaches past the width. `detail(detail, width)` lays out what `worktree
-  detail` printed for the detail float, in the same lines and spans: the state glyph and label (in
-  the state's colour) and the agent, the branch and its drift (`↑2 ↓1 main`, `up to date with
-  main`, nothing without a local default branch), the changed files under it, muted, when there are
-  some (`3 files changed`), then, a blank line before each and only when it
-  has something, the git operation in progress in `OrcaTermOperation` (`operation_text`: `merge in
-  progress`, `rebase in progress (2/5)`), the whole detail in the state's colour, `Denied` and one
-  `⊘ <call>` per denial,
-  and `Setup (<status>)` (in words: `not approved`) with the end of its log, muted; the detail, the denials and the log wrap
-  to the width and are never cut. It also counts the fleet for the status strip: `counts(fleet)` gives the
-  worktrees in each state, in `STRIP_ORDER` (the attention order: `waiting`, `failed`,
-  `interrupted`, `broken`, `not_ready`, `working`, `setting_up`, `finished`, `idle`, `no_agent`,
-  then a state the client does not know yet, by name), leaving out the states no worktree is in,
-  and how many are unseen; `strip(fleet)` turns them into items `{ text, group }` such as
-  `{ text = '?1', group = 'OrcaTermStateWaiting' }`, the unseen count last as `•N` in
-  `OrcaTermUnseen`. The working glyph does not spin there. A worktree whose branch has a pull
-  request (#87) gets `PR` (`render.PR`) after `✎N`, in the group `pr_group` gives it: an open one by
-  its checks (`OrcaTermPrPassing`, `OrcaTermPrFailing`, `OrcaTermPrPending`, `OrcaTermPrOpen` with
-  none), else `OrcaTermPrMerged`, `OrcaTermPrClosed` or `OrcaTermPrDraft`; no pull request, one gh
-  could not tell and one never fetched show nothing. `detail` adds, after the branch, `PR #12 open,
-  checks passing (2 min ago)` (`pr_text`, the age by `ago` from `now`) in that group and the address,
-  muted, only for a pull request. `projects(projects, selected, width, frame, now)` (#154) draws
-  the project list, what `fleets --json` printed, in the list's order: per project its header
-  (`▾ <name>  <branch of its primary checkout>`), then its sections and worktrees exactly as
-  `fleet` draws one repository's (they share `add_sections`), a blank line between two projects.
-  A project with no worktrees gets `no worktrees yet` under its header, and one with no fleet (gone
-  or broken) the core's reason there, wrapped, and a header with no branch; both are muted and
-  start three cells in, where a worktree's second line does (`add_under_header`). `order` and the
-  selection run over the worktrees of every project, top to bottom, so the card may be in any
-  project. `fleet` itself draws what it drew before: it is the sidebar with an empty project list.
-  What `projects` returns also says which line is each project's header (#155): `headers` maps
-  the line to the project's place in the list, and is empty in what `fleet` and `error` return.
-- `lua/orca-term/highlights.lua`: the highlight groups (`OrcaTermHeader`, `OrcaTermMuted`,
-  `OrcaTermBorder`, `OrcaTermError`, one `OrcaTermState*` per state, `OrcaTermUnseen`,
-  `OrcaTermBadge` for a row's icons, `OrcaTermDenied` for the denials and `OrcaTermNote` for the
-  notes in a review), defined as default links to `Title`, `Comment`, `FloatBorder` and
-  `Diagnostic*` (`OrcaTermUnseen` and `OrcaTermDenied` to `DiagnosticWarn`, `OrcaTermBadge` to
-  `DiagnosticHint`, `OrcaTermNote` to `DiagnosticInfo`) so a
-  person's own definition wins; `OrcaTermUnseenName`, the unseen worktree's name, is a default of
-  its own, only bold. The sidebar, while open, the status strip, once started, and the notes, once a
-  review opened, define them again after every `:colorscheme`. The pull request's groups (#87):
-  `OrcaTermPrOpen` and `OrcaTermPrPassing` to `DiagnosticOk`, `OrcaTermPrFailing` to
-  `DiagnosticError`, `OrcaTermPrPending` to `DiagnosticWarn`, `OrcaTermPrMerged` to `Constant` (the
-  group the bundled colorschemes most often draw purple or magenta), `OrcaTermPrClosed` and
-  `OrcaTermPrDraft` to `Comment`.
-- `lua/orca-term/pr.lua`: when the client asks the core to refresh the pull requests (#87, the
-  policy of #22), touching no window or buffer and starting no process: `refresh(paths, cwd,
-  on_done)` runs `core.pr_refresh` and, when what it found changes what the sidebar shows (`shown`:
-  a pull request's number, state and checks), reads the live fleet again (`live.read_soon()`);
-  `refresh_due(fleets)`, on opening the sidebar and on `FocusGained` or entering it while open,
-  refreshes each worktree whose last answer (`fetched_at`) and last request are a minute old
-  (`MIN_AGE_MS`); `follow(fleets)`, each time the open sidebar gets its fleets, refreshes each
-  worktree whose turn ended (`turn_ended`: it left working or waiting, or reached finished, failed or
-  interrupted) and runs one timer every `POLL_MS` (60 s) refreshing the worktrees whose checks are
-  pending, stopped once none is or the sidebar closes (`stop()`); `refresh_all()` is `:OrcaTerm
-  pr-refresh`, every worktree of the current directory's repository, then `refreshed the pull
-  request of N worktrees` or the error. A broken worktree is never asked about. Since #156 those
-  three take the fleets the sidebar shows, every project's when the project list has projects,
-  and ask for the worktrees of each fleet in a `pr refresh` of its own, run from that fleet's
-  `primary.path`: the core knows a worktree only inside its repository. What a refresh found is
-  compared with every fleet `live.fleets()` keeps, so a change in any project reads again.
-- `lua/orca-term/live.lua`: the live fleet, the fleet last read kept for its subscribers, touching
-  no window or buffer. `subscribe(name, on_change)` calls `on_change(fleet, err)` after every read
-  that is kept, until `unsubscribe(name)`; subscribing again under a name replaces its function.
-  `read()` reads the fleet of the current directory through `core.lua`, waiting for it, and hands
-  it to every subscriber; `read_soon()` reads it without waiting `DELAY_MS` (100 ms) later, so a
-  burst makes one read, with one read in flight at a time (events during it make one more read
-  after it); `fleet()` gives the fleet last kept. A read that ends after a newer one started is
-  dropped, and so is every read once nobody is subscribed. Every subscription registers this
-  Neovim (`v:servername`, when it is a unix socket path) with the core, from the primary checkout
-  of the fleet last kept; it unregisters on `VimLeavePre`, and unsubscribing unregisters nothing.
-  `User OrcaTermWorktreeChanged` (`EVENT`) calls `read_soon()`, and `FocusGained` reads the fleet,
-  waiting, and registers again; both are ignored while nobody is subscribed. These autocommands
-  live in the `orca-term-live` group, made at the first subscription and never deleted. Since
-  #154 every read, waited for or not, first reads the project list with each project's fleet
-  (`core.fleets`, `core.fleets_async`) and keeps it: `projects()` gives the projects last kept
-  (an empty table for an empty list) and why the list could not be read. Since #156, with
-  projects on the list that one run of the core is the whole read: `worktree ls` is not run,
-  `fleet()` is `nil` and the subscribers are called with nothing. With an empty list, or one that
-  could not be read, the read goes on to `worktree ls` in the current directory and hands the
-  subscribers that fleet, as before the list existed. `fleets()` gives every fleet last kept
-  either way: each project's that could be read, in the list's order, or the current directory's
-  alone; the status strip, `pr.lua` and the registrations go through it. Every subscription
-  registers from the primary checkout of each of those fleets (`register`; from the current
-  directory while none is kept), and `VimLeavePre` unregisters from them all. After every read
-  that is kept, before the subscribers are told, the registrations follow it (`follow_fleets`):
-  this Neovim unregisters, waiting 1 second at most, from each project whose fleet was kept
-  before and no longer is (a project taken off the list, or one whose directory is gone), and,
-  while anyone is subscribed, registers from each fleet it is not registered from yet (a project
-  added to the list, or the repository of a new current directory). The project list belongs to
-  no repository, so changing it fires no event: the registrations follow at the next read.
-- `lua/orca-term/strip.lua`: the status strip, the fleet's health for a statusline while the
-  sidebar is closed. `statusline()` returns the strip as a statusline expression (each item as
-  `%#Group#text%*`, a space between items), for `%{%v:lua.require'orca-term.strip'.statusline()%}`;
-  `items()` returns the items, for the lualine component; `counts()` returns the counts, for a
-  statusline of one's own. Each returns what was kept from the fleet last read, or the empty
-  string (no item, zero counts) when there is no worktree, the fleet could not be read or was not
-  read yet; the strip never shows an error. The first call of any of them only schedules the start
-  (`vim.schedule`), since a statusline is drawn under textlock: the start defines the highlight
-  groups, makes the `orca-term-strip` autocommand group (`ColorScheme` defines them again,
-  `DirChanged` of the global or a tab directory reads the fleet again, `read_soon()`), subscribes
-  to `live.lua` as `strip`, shows the fleets already kept (when the sidebar read them) and reads
-  them again without waiting. After every read the live fleet keeps, the worktrees of every fleet
-  it keeps (`live.fleets()`: every project's with projects on the list, #156, else the current
-  directory's) are turned into the strip once, through `render.strip`, as one count; when what it
-  shows changed, `redrawstatus!` and `redrawtabline` (only while a UI
-  is attached: with none, a redraw writes the screen's mode message to the terminal) and, when
-  lualine is loaded, `require('lualine').refresh()` draw it. `_reset()` forgets it, for the specs.
-  It registers nothing itself: `live.lua` registers this Neovim from the fleets of each read. It stays
-  subscribed for the rest of the session, open sidebar or not, and touches no window or buffer.
-- `lua/lualine/components/orca-term.lua`: the strip as a lualine component, `lualine_x = {
-  'orca-term' }`; lualine finds it by name. It extends `lualine.component`: `init` (run again by
-  lualine after every `:colorscheme`) defines the highlight groups and creates one lualine
-  highlight per strip group with only that group's foreground (links followed), which lualine
-  completes with the section's background; `update_status` draws `strip.items()` in them, back to
-  the section's colour after each item, and returns the empty string when the strip is empty, so
-  lualine hides the component and its separators. The first draw starts the strip through
-  `strip.lua`: the live logic is not repeated.
-- `lua/orca-term/sidebar.lua`: `:OrcaTerm sidebar`. One scratch buffer, `orca-term://sidebar`,
-  shown in a 36-column left split of every tab while open (and of every tab made later). It reads
-  the fleet through `live.lua` on open and when an action asks (`refresh()`), and subscribes to it
-  while open, so it is drawn again on `FocusGained` and when the core says a worktree changed,
-  never polling; it paints what `render.lua` returns, and keeps the selection (a worktree's path) across refreshes;
-  on `TabEnter` and on `DirChanged` of a tab, the worktree whose directory is the tab's becomes
-  the selection (other tabs leave it alone). Its keys are local to its buffer: `j` and `k` move
-  the selection, `<CR>` goes to the tab of the worktree under the cursor (through `tabs.lua`), `a`
-  creates a worktree, `u` toggles the unseen mark of the worktree under the cursor, `d` opens its
-  review, `s` lists its sessions (#41) and `.` opens the menu of the worktree under the cursor (through
-  `actions.lua`), and `K` shows or hides its detail float (through `detail.lua`, which closing the
-  sidebar closes too), and `R` refreshes its pull request (through `pr.lua`, #87, which the sidebar
-  also hands every fleet and its opening and focus). It is never shown in a review tab
-  (`review.lua`): `show_in` skips one, also
-  while a review opens, and on `User DiffviewViewOpened` (a diffview the person opened by hand,
-  where the sidebar showed itself before diffview registered its view) it closes the sidebar's
-  window there; diffview split its diff windows from that window, so those get back a text window's
-  options. A tab is never left holding only the sidebar: on `QuitPre` for the tab's last
-  other window it closes the tab's sidebar first, and on `WinClosed` it closes a tab left with
-  only the sidebar (unless it is the last tab). The second line of each worktree shows its
-  activity; while a listed worktree is working, one timer turns its glyph through
-  `render.SPINNER` by painting the fleet already read again, never reading it, and stops once
-  nothing works or the sidebar closes. Opening the sidebar subscribes to `live.lua` after its first
-  read, which registers this Neovim from the primary checkout of every fleet read; closing it unsubscribes, so
-  the core's events read nothing for it while it is closed. A session saved with `blank` while the
-  sidebar was open (#113) keeps each sidebar window as `enew` and `file orca-term://sidebar`:
-  `name_taken` renames each such buffer that is not the sidebar's own to
-  `orca-term://sidebar-restored-<n>` while `g:SessionLoad` is set (and wipes the unloaded buffer
-  the rename leaves with the old name), so no tab's `file` fails with E95; `session_loaded`, once
-  the session is over (scheduled, since `:doautoall` runs `SessionLoadPost` in an autocommand
-  window), closes their windows (a tab's last window is emptied instead), wipes them and opens the
-  sidebar. A session sourced with the sidebar already open (#124): `session_loading` renames the
-  sidebar's own buffer to `orca-term://sidebar-loading` while `g:SessionLoad` is set, so the
-  session's `file` lines go through `name_taken`; the sidebar shows itself in no tab while the
-  session loads, since the session counts its tabs' windows; `session_loaded` gives the name back
-  at once and, scheduled, shows the open sidebar in every tab, also when the session kept no
-  sidebar window. `open` gives the name back too, for a session that failed before
-  `SessionLoadPost`. Grouped by project (#154): on every fleet `live.lua` hands it, the sidebar
-  also takes `live.projects()`. `render_shown` draws `render.projects` when the list has
-  projects, `render.fleet` of the current directory's repository when it is empty (the sidebar
-  as it was before the list), and `render.error` when the list, or that fleet, could not be read.
-  `shown_fleets` gives the fleets on screen (every project's that was read, or that one fleet),
-  which the selection following the tab and the spinner go through. The project of a worktree
-  is kept nowhere else: `worktree_under_cursor` finds the worktree of the cursor's line among
-  those fleets and returns it with the fleet that lists it, and every key on a worktree (`<CR>`,
-  `.`, `u`, `d`, `s`, `K`, `R`, and `create_pr_here`, `merge_pr_here`, `push_here`,
-  `list_sessions_here`) hands `actions.lua`, `detail.lua`, `pr.lua` or `compose.lua` that fleet's
-  `primary.path` as the directory the core runs in, with its `remote_base` and `has_origin` for
-  the menu; none of those modules changed. Since #156 the pull requests refreshed without being
-  asked are every shown fleet's: the sidebar hands `shown_fleets()` to `pr.refresh_due` and
-  `pr.follow`, and `R` leaves reading again to `pr.lua`, which compares with every fleet. With
-  projects on the list `live.lua` reads no fleet for the current directory, so the sidebar's own
-  `fleet` is `nil` then.
-  The project keys (#155): `render.projects` says which line is each project's header
-  (`headers`), so `project_headed_at(line)` gives the project headed there and
-  `project_under_cursor` the project the cursor is in, the one whose header is on the cursor's
-  line or the nearest above it; with an empty project list both give `nil`. `a`
-  (`create_worktree`) hands `actions.create` that project's `fleet.primary.path`, or
-  `primary_path()` with an empty list, as before; on a project with no fleet (gone or broken) it
-  only tells the core's reason. `P` is `actions.add_project`, mapped whatever the list holds. `.`
-  (`menu_under_cursor`) opens the worktree's menu on a worktree and `actions.project_menu` on a
-  header, and nothing on any other line. `j` and `k` still move between worktrees only.
-- `lua/orca-term/detail.lua`: the detail float, `K` in the sidebar. `toggle(sidebar, worktree,
-  cwd)` asks the core for `worktree detail` without waiting and opens a float of `render.detail`'s
-  lines in a scratch buffer (`bufhidden=wipe`, highlights in `NAMESPACE`): `relative = 'win'` on the
-  sidebar's window, just right of it at the cursor's row, moved up or left only as far as it takes
-  to stay in the editor, `border = 'rounded'`, the worktree's name as the title, `style =
-  'minimal'`, as wide as its longest line between `MIN_WIDTH` (40) and `MAX_WIDTH` (80) and the room
-  right of the sidebar, as high as its lines up to half the editor. It is never entered: the cursor
-  stays in the sidebar. From the moment `K` asks, the `orca-term-detail` group closes it (and drops
-  the answer still to come) on `CursorMoved` in the sidebar once the cursor left where `K` was
-  pressed, on `WinEnter` of any window but the sidebar or the float, and on `WinClosed` of the
-  sidebar's window; `K` again, `q` or `<Esc>` in the float and `close()` close it too. There is one
-  at most, and an answer for a request closed or replaced meanwhile is dropped; a refusal is told
-  with `vim.notify`. `answered()` counts the answers, shown or dropped, for the specs.
-- `lua/orca-term/tabs.lua`: the worktrees' tabs. A worktree's tab is the tab whose directory
-  (`getcwd(-1, tabnr)`, compared with symlinks resolved) is the worktree's path, found again each
-  time, never remembered. A review tab is never a worktree's tab, although diffview makes it from
-  the worktree's tab and it inherits that tab-local directory: `find_all` and `is_current` leave
-  review tabs out. `go_to` enters it and focuses its main window (not the sidebar), or
-  makes it after the last tab with `$tabnew` and `:tcd`; `close_all` closes every tab of a
-  worktree after its removal, pointing the last tab at the primary checkout instead.
-- `lua/orca-term/terminal.lua`: the agents' terminal buffers. A worktree's terminal is the buffer
-  whose `b:orca_term_agent` is the worktree's path, found again each time, never remembered.
-  `open` shows it in the current window in terminal mode, reusing a live one or attaching a new
-  one through `core.agent_attach`. Closing it only detaches: `:q` hides it, still attached, and
-  wiping it ends the attach; the agent runs on in its holder. The first terminal opened adds an
-  `ExitPre` autocommand that detaches every agent terminal, so a running attach never makes Neovim
-  refuse `:wqa` or `:xa` (E948). `reattach` shows a new terminal attached to the worktree's new
-  agent after a swap (#35), the old one's attach stopped and the buffer wiped.
-- `lua/orca-term/review.lua`: the review tabs, and the only module that calls diffview.nvim (its
-  modules and views typed loosely, as plain tables, since LuaLS knows no types of diffview). A
-  review tab is a tab holding a diffview view (`diffview.lib`'s `tabpage_to_view`, asked only once
-  diffview is loaded), a tab marked `t:orca_term_review` (the worktree's path, set on the tabs
-  orca-term opens), or the current tab while a review is being opened (diffview makes its tab with
-  `:tab split` before it registers its view). `open(path, base)`, called from the worktree's tab,
-  goes back to the worktree's review tab and refreshes it (`refresh_files`) when one is open, or
-  runs `require('diffview').open({ '-C' .. fnameescape(path), base })` (diffview passes `-C`
-  through `expand()`, so the path is escaped; spaces need nothing, the arguments being a list) and
-  marks the new tab. With a file (#177), a new review opens on it (`--selected-file`, escaped
-  likewise) and one already open shows it (`set_file_by_path`). The first review makes the `orca-term-review` group, whose `User
-  DiffviewViewOpened`, `DiffviewViewEnter` and `DiffviewDiffBufWinEnter` put a buffer-local `gf` on
-  the current buffer and on the view's file panel in orca-term's review tabs only; diffview sets
-  its own `gf` on a diff buffer each time it shows it, just before `DiffviewDiffBufWinEnter`, so
-  ours, set on that event, wins. That `gf` takes the file from the view's `infer_cur_file()` (the
-  panel's line, or the file the diff windows show), goes to the worktree's tab through `tabs.lua`
-  and `:edit`s its absolute path in the current window, or the first that is neither floating, the
-  sidebar nor an agent's terminal; when there is none, beside the terminal with `:vsplit`
-  ('splitright' picks the side). From the right-hand window (the layout's main window, the
-  worktree's file) the cursor lands on the same line. A file not on disk (the change deleted it) is
-  told and opens nothing. On a buffer diffview shares with a tab orca-term did not open, the same
-  map falls back to diffview's own `gf` there, or to Neovim's elsewhere. `close_all(path)` closes
-  the worktree's review tabs, letting diffview close its view and tab. For the notes, `shown()`
-  says what orca-term's review in the current tab shows (`nil` in any other tab, a diffview opened
-  by hand included): its worktree, the right-hand window when it shows the worktree's file on disk
-  (diffview's `LOCAL` revision: the window, the file's own buffer and its relative path), the
-  buffers of the base side, the file panel's buffer and the panel's line of each file (from the
-  components diffview rendered; a file in a folded directory has none); `file_in_panel()` gives
-  the file under the cursor in the panel. Opening a review starts the notes (`notes.start()`) and
-  lists them (`notes.refresh()`), and so does going back to one already open.
-  A turn review is a review tab of its own kind, marked `t:orca_term_turn` (`{ path, number }`,
-  `TURN_MARK`) and never `t:orca_term_review`: `open_turn(path, turn)`, called from the worktree's
-  tab, goes to that turn's review when one is open (`find_turn`), or runs `require('diffview').open({
-  '-C' .. fnameescape(path), begin .. '..' .. end })` and marks the new tab, so it shows exactly
-  `git diff <begin> <end>`. `is_review` counts it (the sidebar and `tabs.lua` leave it out), `gf`
-  works there as in the review (its right-hand side is the turn's end snapshot), and `close_all`
-  closes it with the worktree's review; but `current()`, `find` and `shown()` ignore it, so `d`
-  never goes to it and no note is drawn on it. `reviewed()` gives the worktree of either kind, and
-  `turn_buffers()` the buffers of the current turn review, for the `gn` that refuses there.
-- `lua/orca-term/notes.lua`: the notes in orca-term's review tabs, with no buffer of their own. It
-  asks `review.lua` what the current tab shows, never diffview itself, and keeps each worktree's
-  notes as `note ls` last printed them. `draw()` draws them in one namespace (`NAMESPACE`) at their
-  `current` anchor, the line in the file on disk now: on the right-hand window's buffer a sign
-  `✎` (`render.NOTE`) on a note's line (on a range's first line, `┆` on its others) and its body as
-  `virt_lines` below its last line, prefixed `✎ `, or below line 1, prefixed `✎ file: `, for a
-  whole-file note; in the file panel `✎N` at the end of each file's line (`virt_text`). All in
-  `OrcaTermNote`. It puts buffer-local keys on those buffers and on the base side's: `gn` (normal
-  and visual) and `gN`. Every other buffer it marked loses its extmarks and keys, so outside
-  orca-term's review tab nothing of the notes is left: it is drawn on `User DiffviewDiffBufRead`,
-  `DiffviewDiffBufWinEnter` and `DiffviewViewClosed`, drawn and listed again on
-  `DiffviewViewEnter`, and taken off every buffer on `DiffviewViewLeave` (diffview's `tab_leave`,
-  where it removes its own keys); the right-hand buffer is the file's own, which `gf` edits in the
-  worktree's tab, and diffview removes only the keys it set. The file panel's buffer is watched
-  with `nvim_buf_attach`, since diffview replaces its lines on each redraw, which moves the
-  extmarks; it is drawn again just after. `refresh()` lists the current review's notes again
-  through `note ls` without waiting (a listing overtaken by a newer one is dropped) and draws them:
-  after every note action, when a marked buffer is reloaded or written (`FileChangedShellPost`,
-  `BufWritePost`), and on every fleet the live fleet keeps, to which it subscribes as `notes` while
-  a review tab is current (so the core's `User OrcaTermWorktreeChanged` reaches it, and this Neovim
-  is registered). `gn` in the right-hand window adds a note on the cursor's line, in visual mode on
-  the selected lines (one line is a line note), in the file panel on the whole file under the
-  cursor; on the base side it says notes go on the right-hand side; it refuses a buffer with unsaved
-  changes, since the core anchors on the file on disk. The body is asked with `vim.ui.input`
-  (`PROMPT`, `Note for the agent: `); an empty or cancelled answer adds nothing. `list(path)`
-  (`gN`, and `:OrcaTerm notes` through `actions.lua`) asks with `vim.ui.select`: `Send all (N)`,
-  then each note as `path:N  body` (`path:S-E`, `path`; the body on one line, cut to 60 cells),
-  which asks `Send`, `Edit` (the body offered as `default`), `Delete` (no confirmation, as Orca) or
-  `Cancel`. With no pending notes it says so. Sending tells `sent N notes to <worktree>`; a
-  `no_holder` refusal says to press `<CR>` on the worktree in the sidebar to start its agent. After
-  every change the notes are listed again and the sidebar reads the fleet again (its `✎N`).
-  `_reset()` forgets it all, for the specs. In a turn review it draws nothing and lists nothing: its
-  buffers get only a `gn` (normal and visual) that says `notes go on the worktree's files: add them
-  from its review (d)`, taken off with the other keys.
-- `lua/orca-term/compose.lua` (#133): the pull request composer, like fugitive's buffer for a
-  commit message. `open(worktree, primary, draft)` runs `pr compose` (waited for: it only reads
-  git) and shows its message in a buffer named `orca-term://pr/<worktree>` (`PREFIX`), filetype
-  `markdown`, `buftype=acwrite`, `bufhidden=wipe`, in a split along the whole bottom of the tab:
-  the title, a blank line, then the body (`lines`), with no comment lines. `:w` (`BufWriteCmd`)
-  takes the first line, trimmed, as the title and the lines after it, blank lines at both ends left
-  out, as the body (`parse`); an empty title is refused (`EMPTY_TITLE`) before anything runs. It
-  then runs `pr create` without blocking (`core.pr_create`, which writes the body to a temporary
-  file for `--body-file` and removes it once the core ends; the base is the default branch). On
-  success the buffer is wiped, `created PR #N: <url>` (`(draft)` after the number for a draft) is
-  told, a warning says how many files with uncommitted changes were left out when there were some,
-  and the sidebar reads the fleet again, so its row shows `PR`. On a refusal or a failure the
-  buffer stays with its text and the core's message is told. A second `:w` while the core works
-  only says so. `:q!` or `:bwipeout` creates nothing. A composer already open for the worktree is
-  shown again, its text kept. `actions.lua` opens it from the menu (`Create pull request`, `Create
-  draft pull request`) and from `:OrcaTerm pr-create` and `<Plug>(OrcaTermCreatePr)`
-  (`create_pr_current`: the worktree under the cursor in the sidebar, through
-  `sidebar.create_pr_here`, else the current tab's worktree, as `:OrcaTerm sessions` finds it).
-- Merging a pull request (#136) lives in `actions.lua`: `menu_items` adds `Merge pull request`
-  (`MERGE_PR`) before `Remove worktree` only while the worktree's cached `pr` is `open` or
-  `draft`; `merge_pr` asks `Merge PR #<n> of <worktree>?` with `MERGE_METHODS` (`Squash and
-  merge` first, `Create a merge commit`, `Rebase and merge`, `Cancel`), then runs `core.pr_merge`
-  without blocking: on success `merged PR #N: <url>` and the sidebar read again, a warning
-  (`held_message`, the core's words) when the core says `merged: false`, on a refusal the core's
-  message; `merge_pr_current` (`:OrcaTerm pr-merge`, `<Plug>(OrcaTermMergePr)`) does it for
-  the worktree under the cursor in the sidebar (`sidebar.merge_pr_here`), else the current tab's
-  worktree.
-- Rebasing a worktree (#141) lives in `actions.lua`: `menu_items(worktree, remote_base)` adds,
-  before `Merge pull request` and `Remove worktree`, `rebase_item(remote_base)` (`Rebase onto
-  origin/main`) when no operation is in progress and the fleet has a `remote_base` (the sidebar
-  passes it to `menu`), or `RESOLVE_CONFLICTS` and `ABORT_REBASE` during a rebase. `rebase` runs
-  `core.worktree_rebase` without blocking and tells the core's line, warning with the core's words
-  on `rebase_conflict`; `abort_rebase` asks with `ABORT_REBASE_ANSWERS` first, then runs
-  `core.worktree_rebase_abort`; `resolve_conflicts` runs `core.agent_resolve`. Each reads the
-  sidebar again once the core answers.
-- Pushing a worktree (#146) lives in `actions.lua`: `menu_items(worktree, remote_base,
-  has_origin)` adds `Push` (`PUSH`) after the rebase entries when the worktree is on a branch and
-  the fleet has `has_origin` (the sidebar passes it to `menu`). `push` runs `core.worktree_push`
-  without blocking and tells the core's line, warning when files were left out; on
-  `push_diverged` it asks `Push rejected: <name> diverged from origin/<branch> (after a
-  rebase?)` with `FORCE_PUSH_ANSWERS` (`Force push (with lease)`, `Cancel`), and the first runs
-  `core.worktree_push` with the lease. `push_current` (`:OrcaTerm push`, `<Plug>(OrcaTermPush)`)
-  does it for the worktree under the cursor in the sidebar (`sidebar.push_here`), else the current
-  tab's worktree. Each reads the sidebar again once the core answers.
-- `lua/orca-term/actions.lua`: what the person does to worktrees, asked through `vim.ui.input` and
-  `vim.ui.select` and told through `vim.notify`: `open` (`<CR>`: the worktree's tab and, when it
-  has an agent, `agent start` without blocking, resuming the recorded session on a cold start,
-  then its terminal through `terminal.lua`; a `session_gone` refusal asks `Cannot resume the
-  session of <name>: <reason>` with `Start a fresh session` (`agent start --fresh`, then the
-  terminal) or `Cancel` (nothing starts); an `untrusted` refusal for the sandbox asks
-  `sandbox_prompt` (the worktree, the source, the paths) with `Allow` (`agent start
-  --approve-sandbox`, then the terminal) or `Cancel` (`APPROVE_SANDBOX`; nothing starts); any other
-  refusal is told with the core's reason), `create` (`a`, asking for the agent after the name:
-  `claude-code`, `opencode` or `No agent` (`AGENTS`), then one `worktree new`, with `--agent`
-  unless `No agent`, #93; a start the core refused lands in the worktree's tab and is told as for
-  `<CR>`),
-  `toggle_unseen` (`u`: `worktree seen` when the fleet last read
-  says unseen, `worktree unseen` otherwise, then the sidebar is read again; a refusal is told),
-  `review` (`d`: without diffview.nvim it only says it is needed, naming its URL, and runs
-  nothing; else `worktree review` without blocking, then the sidebar is read again (the mark goes)
-  and, unless the core refused, the worktree's tab through `tabs.lua` and the review through
-  `review.lua`, on a given file when one is given), `diff_from_core` (#177: what `orca-term nvim
-  diff` and the application's right column ask every Neovim of the repository; only a Neovim with
-  a tab whose directory is the worktree, as one started in it has, opens the review on the file,
-  scheduled after it answered; any other does nothing), `review_current` (`:OrcaTerm review`: the
-  worktree whose tab is current, or whose review tab is; anywhere else it says it needs a
-  worktree's tab),
-  `notes_current` (`:OrcaTerm notes`: the notes of the same worktree, through `notes.lua`;
-  anywhere else it says it needs a worktree's tab or its review),
-  `turns` and `turns_current` (`:OrcaTerm turns`: the same worktree's turns from `turn ls`, newest
-  first, picked with `vim.ui.select` (`Turns of <worktree>`, each `N  outcome  prompt` by
-  `turn_item`, the prompt cut to 60 cells); a turn without both snapshots says `turn N has not
-  ended yet` or `turn N has no snapshots` (`unreviewable`) and opens nothing; else the worktree's
-  tab through `tabs.lua` and the turn review through `review.lua`, then `turn N of <worktree>`, or,
-  for an interrupted turn, that its end was not observed; no turns is said; without diffview.nvim
-  it only says it is needed; a turn review counts as its worktree's for all three commands),
-  `sessions` (`s`, #41: `session ls` without waiting, then `vim.ui.select` titled `Sessions of
-  <worktree>`, each `<mark> <agent>  <N turns>  <age>  <first prompt>` by `session_item`, the
-  current one marked `*`, the age in words by `age`; the current session of the worktree's own
-  agent only opens it, as `<CR>` does; another goes to the worktree's tab, runs `session resume`
-  without blocking and attaches its terminal again through `terminal.reattach`; `untrusted` and
-  `busy` show as for `swap_agent`; no sessions is said), `new_session` (`.`, `New session`, #41:
-  asks `Start a new session` or `Cancel` (`NEW_SESSION`), then goes to the worktree's tab and runs
-  `session new` without blocking; a restarted agent is attached again, otherwise it says the next
-  start begins a new session; an `untrusted` restart is asked about, then `agent start --fresh
-  --approve-sandbox`),
-  `menu` (`.`: `run_setup`, `copy_path`, `swap_agent`, `new_session`, `remove`; `swap_agent`, #35, asks with
-  `vim.ui.select` for one of the other agents (`swap_choices`, from `ALL_AGENTS`), goes to the
-  worktree's tab, runs `agent swap` without blocking and attaches its terminal to the new agent
-  through `terminal.reattach`; `untrusted` writable paths are asked about as for `<CR>`, any other
-  refusal, such as `busy`, is told), `jump` (`:OrcaTerm jump`) and `go_to_nth`
-  (`:OrcaTerm worktree N`), the last two in the sidebar's order: they read `core.fleets` themselves
-  (`worktrees_in_order`, #156) and, with projects on the list, take every project's worktrees in
-  `render.projects(...).order`; with an empty list they read `worktree ls` in the current directory
-  and take `render.fleet(...).order`, as before. A project list that cannot be read is told.
-  `worktree new` and `worktree setup` run without blocking: the sidebar is read again 500 ms after
-  they start (showing *setting up*) and when they finish. When either fails as `untrusted`, a
-  `vim.ui.select` (`approval_prompt`: the worktree, the source and the script's lines) asks
-  `Run it` or `Cancel` (`APPROVE_SETUP`); `Run it` runs `worktree setup --approve-setup` (by name
-  after `a`, by path after `.`) and goes on as the command would have, `Cancel` runs nothing and
-  says the worktree is not ready. `remove` always asks first, adding `Its agent is running and
-  will be stopped.` when the worktree's holder is alive (#94); a
-  `dirty` refusal asks once more before `--force`; `busy` is only reported; a removed worktree's
-  tabs close, its review tabs included. The project list (#155): `add_project` (`P`) asks
-  `Add project: ` through `vim.ui.input` with `completion = 'dir'`, runs `project add` on the
-  answer after `vim.fs.normalize` (which expands `~` and drops a trailing slash) from Neovim's
-  current directory, without blocking, then reads the sidebar again and says `added project
-  <name> at <path>` or `project <name> at <path> is already on the list`; a refusal
-  (`not_a_repository`, a path that is no directory) is told with the core's reason, and an empty
-  answer adds nothing. `project_menu` (`.` on a project's header) offers `PROJECT_MENU`, so far
-  only `Remove from list`: `remove_project` asks `Remove project <name> from the list? Its
-  directory, worktrees and branches are not touched.` with `Remove` or `Cancel`
-  (`REMOVE_PROJECT_ANSWERS`), then runs `project rm` by the project's path, from Neovim's current
-  directory since the project's own may be gone, reads the sidebar again and says `removed
-  project <name> from the list (nothing on disk was touched)`. It touches no window or buffer.
+- `:checktime` when a hook records the end of a turn (`ops::ask_to_checktime`, #177);
+- the diff of a changed file (`ops/nvim_diff.rs`, #194): `nvim_exec_lua` with the core's own Lua,
+  `src/domain/nvim/open_diff.lua` (compiled in with `include_str!`), and as its arguments the
+  worktree, the file, the merge base's short id and the file's content there, which the core read
+  with git (`git::merge_base`, `git::file_at`). In a Neovim with a tab whose directory is the
+  worktree, the code answers `true` and then, scheduled after the answer, opens a new tab: the
+  file on the right (`:edit`, editable), a scratch buffer with the base's content on its left
+  (`orca-term://<base>/<file>`, `nofile`, wiped when hidden), both under `:diffthis`; a diff tab
+  already showing that file is closed first. Any other Neovim answers `false` and does nothing.
+  The Lua uses Neovim's own API only: no `require`, no process (`cargo xtask nvim-lua`);
+- the doctor's question whether claudecode.nvim is loaded (`domain/nvim/claudecode.rs`, #179).
 
-Its rules:
-
-- **Only `core.lua` talks to the core.** It is the only Lua file that starts a process, but for
-  `install.lua`, which runs the build hook's git, curl, tar, sha256 tool and cargo, never the core;
-  every other module calls `core.lua`. `cargo xtask client-boundary` refuses a process started
-  anywhere else in `lua/`, `plugin/` or `build.lua`.
-- **Only `sidebar.lua`, `detail.lua`, `tabs.lua`, `terminal.lua`, `review.lua`, `notes.lua` and
-  `compose.lua` touch windows, tabs and buffers; `fleet.lua` and `render.lua` are pure.** The order and the look are plain
-  functions of the fleet, tested without a window; the sidebar only paints them, and `actions.lua`
-  moves between tabs only through `tabs.lua`, opens terminals only through `terminal.lua`, reviews
-  only through `review.lua`, the one module that calls diffview.nvim (`notes.lua` asks it what a
-  review shows), and lists notes only through `notes.lua`.
-  `cargo xtask client-boundary` refuses a window, tab or buffer call (and a `vim.cmd` that splits
-  or runs `tabnew`, `tabedit`, `tabclose`, `tabonly`, `tcd` or `tchdir`) anywhere else, and any
-  `vim.api` or `vim.cmd` in the pure modules.
-- **A worktree is independent of its tabs.** Opening, closing or moving a tab never changes a
-  worktree; only `actions.lua`, through the core, creates, sets up or removes one, and removing
-  always asks for confirmation (twice when it would discard changes).
-- **The client never computes state.** The fleet, each worktree's state and every decision come
-  from the core's JSON; the client renders them. No logic is bound to the Neovim process.
-- **The status strip never blocks a statusline and never touches the layout.** Drawing it only
-  returns what was kept: it never waits and never starts a process, and its first call only
-  schedules the start. Without a UI it never redraws, so it writes nothing to the terminal. Neither requiring nor starting it changes `statusline`, `tabline`,
-  `winbar`, `laststatus`, `showtabline` or lualine's config: the person places it.
-  `spec/strip_spec.lua` checks both.
-- **A review tab is never a worktree's tab, and never shows the sidebar.** A tab holding a
-  diffview view, or marked `t:orca_term_review`, is left out by `tabs.lua` and skipped by the
-  sidebar, whoever opened it; `spec/review_spec.lua` checks both. A turn review, marked
-  `t:orca_term_turn`, is a review tab too, but never the worktree's review: `d` never goes to it;
-  `spec/turn_review_spec.lua` checks it.
-- **No global keymap.** Every key the client adds is local to one of its buffers, and the
-  commands are reached through `:OrcaTerm` and `<Plug>` maps a person binds;
-  `spec/plugin_spec.lua` checks that loading the client defines no global keymap.
-- **Notes never leak out of the review.** The notes' extmarks and their `gn` and `gN` are only on
-  the buffers of orca-term's review tab while it is current: leaving it takes them off every buffer,
-  the file's own included, so editing the same file in the worktree's tab has Neovim's own `gn` and
-  no note drawn; entering the review puts them back. `spec/notes_spec.lua` checks it.
-
-Its known limits:
-
-- If quitting is refused for another reason after `ExitPre` detached the terminals (a buffer with
-  unsaved changes), they stay detached until the next `<CR>` attaches again.
-- A person who changes tab while the agent is starting gets no terminal until their next `<CR>`.
-- A Neovim whose server is not a unix socket path (no server, or TCP) is never registered: its
-  sidebar updates on focus and after actions only.
-- The status strip shows the fleet of `getcwd()`: it reads again when the global or a tab's
-  directory changes, not on a window's `:lcd` nor when entering a tab whose directory is in
-  another repository.
-- In a plain statusline, each strip item ends with `%*`, which goes back to the statusline's own
-  colour (`StatusLine`), not to a colour set by an item placed before the strip.
-- The working glyph does not spin in the strip: it is always `◐`.
-- The review does not list files git does not track: it compares a commit with the working tree,
-  and diffview lists untracked files only when it compares the index with the working tree.
-- A review tab already open is refreshed, not reopened: when the worktree's fork point moved (a
-  rebase), it keeps comparing with the base it opened with until it is closed and opened again.
-- `gf` is set again on diffview's file panel when the view is entered or a diff window is filled:
-  after hiding and showing the panel again (`:DiffviewToggleFiles`), the panel has diffview's own
-  `gf` until then.
-- Removing a worktree closes its review tabs before the core runs, while the files are still on
-  disk (diffview restores their windows as it closes, and Neovim says `E211` for a file that is
-  gone). When the core then refuses (a busy worktree, or a cancelled forced removal), the review
-  stays closed.
-- `:OrcaTerm review` and `:OrcaTerm notes` read the fleet, waiting for it, to find the current
-  tab's worktree.
-- Notes are drawn only in orca-term's review tabs, on the right-hand side and the file panel: not
-  in a diffview opened by hand, not on the base side, not in the worktree's tab. `gn` adds notes
-  only on the files the review lists (a file git does not track is not listed); a note on any
-  other file, added with `orca-term note add`, is still listed by `gN` and sent.
-- While the right-hand buffer has unsaved changes, the notes drawn move with its text, but `gn` is
-  refused until it is written; once written (or reloaded), they are drawn where the core says.
-- After hiding and showing the file panel again (`:DiffviewToggleFiles`), its `✎N` and keys come
-  back on diffview's next event there, as `gf` does.
-- `gn` and `gN` take the place of Neovim's own `gn` (select the next match) and `gN` in the
-  review's buffers, while the review tab is current.
-- In a turn review, `gf` from the right-hand side, the turn's end snapshot, lands on the same line
-  number in the file on disk, which later edits may have moved.
-- The detail float is as high as half the editor at most: a longer detail shows the rest only once
-  the person enters the float (`<C-w>w`) and scrolls. It shows the detail as it was when `K` was
-  pressed, and closes when the sidebar is drawn again with the cursor moved.
+Nothing is sent when a worktree's state is written: the worktree-changed notice, which only the
+Lua client's sidebar listened to, went with it.

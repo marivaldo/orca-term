@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; the plugin and its build hook are gone since 0014
 ---
 
 # One repo, release binaries fetched by the plugin, and contract and schema integers
@@ -54,3 +54,9 @@ Decided in [issue #23](https://github.com/marivaldo/orca-term/issues/23).
 - The harness checks the client's contract against the core's, runs schema-migration tests over
   fixtures of every schema, verifies release checksums, and asserts that no command writes an
   agent's global config.
+
+> **Changed by [ADR 0014](0014-orca-term-ships-no-neovim-plugin.md)** (2026-11-11): orca-term
+> ships no Neovim plugin any more, so there is no build hook, no `:OrcaTerm install-cli` and no
+> `:checkhealth orca-term`. A person installs the binary from the release assets, which CI still
+> publishes with their checksums, or with `cargo install --path .`. One repository, the contract
+> and the schema integers stand.
