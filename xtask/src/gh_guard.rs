@@ -3,9 +3,9 @@
 //! never forced. gh is a program that speaks
 //! to GitHub with the person's credentials, so it is named, as a program to find and run, in two
 //! files alone, `src/ops/pr_refresh.rs` and `src/ops/pr_create.rs`; this lint rejects the string
-//! literal `"gh"` in every other file under `src/`, and any `"gh"` or `'gh'` in the Neovim client
-//! (`lua/`, `plugin/`, `build.lua`), which only ever asks the core. gh is found through
-//! `pr_refresh::find_gh`, which only those three ops may call.
+//! literal `"gh"` in every other file under `src/`. gh is found through `pr_refresh::find_gh`,
+//! which only those three ops may call. The Lua the core sends to Neovim starts no process at all
+//! (`cargo xtask nvim-lua`).
 //!
 //! A merge never deletes the branch (#136): `gh pr merge --delete-branch` fails while the worktree
 //! has the branch checked out, and nothing happens to the worktree after a merge, as in Orca. So
@@ -20,8 +20,8 @@
 //! A push never forces (#146): the string literal `--force` is refused in every file scanned, so
 //! git's force is never written (`branch -D` and `worktree remove -f` spell theirs out), and a
 //! literal starting with `--force-with-lease` is refused outside the git adapter, the one place a
-//! push with lease is built. The two files that name orca-term's own `worktree rm --force` and
-//! `worktree push --force-with-lease`, which git never sees, are left out (`OWN_FLAGS`).
+//! push with lease is built. The file that names orca-term's own `worktree rm --force`, which git
+//! never sees, is left out (`OWN_FLAGS`).
 //!
 //! A fetch reaches the network too (#141), so `git fetch` is started in one function alone,
 //! `fetch_into` in `src/adapters/git.rs`, the only file that may hold the literal `"fetch"`, and
@@ -72,10 +72,9 @@ const PUSH_OP: &str = "src/ops/worktree_push.rs";
 const PUSH_OP_TEXT: &str =
     "src/ops/worktree_push.rs (`send_to_origin`, which `worktree push` and `pr create` share)";
 
-/// The files that name orca-term's own flags `worktree rm --force` and `worktree push
-/// --force-with-lease`, which git never sees: the reason `worktree rm --json` prints, and the
-/// client passing them to the core.
-const OWN_FLAGS: &[&str] = &["src/output/json.rs", "lua/orca-term/core.lua"];
+/// The files that name orca-term's own flag `worktree rm --force`, which git never sees: the
+/// reason `worktree rm --json` prints.
+const OWN_FLAGS: &[&str] = &["src/output/json.rs"];
 
 /// The call that pushes.
 const PUSH_CALL: &str = "push_branch(";
@@ -86,26 +85,12 @@ const FETCH_OP: &str = "src/ops/worktree_rebase.rs";
 /// The call that fetches.
 const FETCH_CALL: &str = "fetch_into(";
 
-/// The directories scanned, relative to the repository root, with the extension of their files.
-const SCANNED: &[(&str, &str)] = &[("src", "rs"), ("lua", "lua"), ("plugin", "lua")];
-
-/// The client's files outside those directories: the build hook a plugin manager runs.
-const SCANNED_FILES: &[&str] = &["build.lua"];
+/// The directory scanned, relative to the repository root: the core's Rust.
+const SCANNED: &str = "src";
 
 pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
-    for (dir, extension) in SCANNED {
-        let dir = root.join(dir);
-        if dir.is_dir() {
-            collect_files(&dir, extension, &mut files)?;
-        }
-    }
-    for file in SCANNED_FILES {
-        let file = root.join(file);
-        if file.is_file() {
-            files.push(file);
-        }
-    }
+    collect_files(&root.join(SCANNED), "rs", &mut files)?;
     files.sort();
     let mut problems = Vec::new();
     for file in files {
@@ -120,18 +105,10 @@ pub(crate) fn lint_repository(root: &Path) -> Result<Vec<String>> {
 /// The findings for the file at `path` holding `text`, each as `path:line: message`.
 fn check_file(path: &str, text: &str) -> Vec<String> {
     let mut problems = check_push(path, text);
-    let is_lua = Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("lua"));
-    let (marker, literals): (&str, &[&str]) = if is_lua {
-        ("--", &["\"gh\"", "'gh'"])
-    } else {
-        ("//", &["\"gh\""])
-    };
-    problems.extend(check_force(path, text, marker));
+    problems.extend(check_force(path, text));
     for (n, line) in text.lines().enumerate() {
-        let code = without_comment(line, marker);
-        if !GH_MODULES.contains(&path) && literals.iter().any(|literal| code.contains(literal)) {
+        let code = without_comment(line, "//");
+        if !GH_MODULES.contains(&path) && code.contains("\"gh\"") {
             problems.push(format!(
                 "{path}:{}: names the program gh; only {GH_MODULES_TEXT} may run it",
                 n + 1
@@ -153,31 +130,24 @@ fn check_file(path: &str, text: &str) -> Vec<String> {
     problems
 }
 
-/// The findings about forcing in the file at `path` holding `text`, each line's code read with
-/// `marker` starting its comment: a string literal that is exactly `--force`, and one that starts
-/// with `--force-with-lease` outside the git adapter, in either quote. The files naming
-/// orca-term's own flags ([`OWN_FLAGS`]) may hold both.
-fn check_force(path: &str, text: &str, marker: &str) -> Vec<String> {
+/// The findings about forcing in the file at `path` holding `text`: a string literal that is
+/// exactly `--force`, and one that starts with `--force-with-lease` outside the git adapter. The
+/// files naming orca-term's own flag ([`OWN_FLAGS`]) may hold both.
+fn check_force(path: &str, text: &str) -> Vec<String> {
     if OWN_FLAGS.contains(&path) {
         return Vec::new();
     }
     let mut problems = Vec::new();
     for (n, line) in text.lines().enumerate() {
-        let code = without_comment(line, marker);
-        if ["\"--force\"", "'--force'"]
-            .iter()
-            .any(|literal| code.contains(literal))
-        {
+        let code = without_comment(line, "//");
+        if code.contains("\"--force\"") {
             problems.push(format!(
                 "{path}:{}: names --force; nothing is forced but a push with lease, in \
                  {PUSH_ADAPTER}",
                 n + 1
             ));
         }
-        let names_lease = ["\"--force-with-lease", "'--force-with-lease"]
-            .iter()
-            .any(|literal| code.contains(literal));
-        if names_lease && path != PUSH_ADAPTER {
+        if code.contains("\"--force-with-lease") && path != PUSH_ADAPTER {
             problems.push(format!(
                 "{path}:{}: names --force-with-lease; only {PUSH_ADAPTER} may push with a lease",
                 n + 1
@@ -277,19 +247,9 @@ mod tests {
             check_file("src/domain/pr/merge.rs", "\"delete-branch\",\n").len(),
             1
         );
-        assert_eq!(
-            check_file(
-                "lua/orca-term/core.lua",
-                "local args = { '--delete-branch' }\n"
-            )
-            .len(),
-            1
-        );
         let none = Vec::<String>::new();
         let comments = "//! never `--delete-branch`\n// delete-branch\n";
         assert_eq!(check_file("src/domain/pr/merge.rs", comments), none);
-        let lua = "-- no --delete-branch\n";
-        assert_eq!(check_file("lua/orca-term/actions.lua", lua), none);
     }
 
     #[test]
@@ -361,11 +321,6 @@ mod tests {
             check_file("src/ops/worktree_push.rs", "let force = \"--force\";\n").len(),
             1
         );
-        assert_eq!(
-            check_file("lua/orca-term/actions.lua", "local a = { '--force' }\n").len(),
-            1
-        );
-        assert_eq!(check_file("build.lua", "run({ \"--force\" })\n").len(), 1);
         let none = Vec::<String>::new();
         // A message naming orca-term's flag, a comment, git's short spelling and branch -D pass.
         let fine = "let why = \"pass --force to remove it\";\n// \"--force\" in a comment\n\
@@ -374,8 +329,6 @@ mod tests {
         // The files naming orca-term's own `worktree rm --force`.
         let reason = "(Some(branch), \"deleted\", Some(\"--force\".to_owned()))\n";
         assert_eq!(check_file("src/output/json.rs", reason), none);
-        let lua = "table.insert(args, '--force')\n";
-        assert_eq!(check_file("lua/orca-term/core.lua", lua), none);
     }
 
     #[test]
@@ -390,19 +343,9 @@ mod tests {
                  may push with a lease"
             ]
         );
-        assert_eq!(
-            check_file(
-                "lua/orca-term/actions.lua",
-                "local a = { '--force-with-lease' }\n"
-            )
-            .len(),
-            1
-        );
-        // A message naming orca-term's flag, and the client passing it to the core, pass.
+        // A message naming orca-term's flag passes.
         let message = "\"`orca-term worktree push {name} --force-with-lease` would replace it\"\n";
         assert_eq!(check_file("src/domain/error.rs", message), none);
-        let lua = "table.insert(args, '--force-with-lease')\n";
-        assert_eq!(check_file("lua/orca-term/core.lua", lua), none);
     }
 
     #[test]
@@ -422,23 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn the_client_may_not_name_gh_in_either_quote() {
-        assert_eq!(
-            check_file("lua/orca-term/core.lua", "vim.system({ 'gh', 'pr' })\n").len(),
-            1
-        );
-        assert_eq!(
-            check_file("plugin/orca-term.lua", "local p = \"gh\"\n").len(),
-            1
-        );
-        assert_eq!(check_file("build.lua", "run({ 'gh' })\n").len(), 1);
-    }
-
-    #[test]
     fn comments_and_longer_strings_are_not_the_program() {
         let rust = "// \"gh\" runs only from pr refresh\nlet why = \"gh auth login\";\n";
         assert!(check_file("src/domain/pr.rs", rust).is_empty());
-        let lua = "-- 'gh' is never run here\nlocal hint = 'run gh auth login'\n";
-        assert!(check_file("lua/orca-term/pr.lua", lua).is_empty());
     }
 }

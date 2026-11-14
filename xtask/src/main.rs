@@ -11,18 +11,18 @@ use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result, bail};
 
-mod client_boundary;
 mod commit;
 mod gh_guard;
 mod launch_guard;
 mod layers;
 mod live;
+mod nvim_lua;
 mod pr_title;
 mod release_version;
 mod schema_fixtures;
 mod vocab;
 
-const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | release-version <tag> | vocab | layers | client-boundary | launch-guard | gh-guard | schema-fixtures | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
+const USAGE: &str = "usage: cargo xtask commit-lint (--file <path> | --range <revs>) | pr-title-lint <title> | release-version <tag> | vocab | layers | nvim-lua | launch-guard | gh-guard | schema-fixtures | check-live [--orca-term <path>] [<scenario>...] | record-live [--orca-term <path>] <scenario>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -76,7 +76,7 @@ fn run(args: &[&str]) -> Result<Vec<String>> {
         }
         ["vocab"] => vocab::lint_repository(Path::new(".")),
         ["layers"] => layers::lint_repository(Path::new(".")),
-        ["client-boundary"] => client_boundary::lint_repository(Path::new(".")),
+        ["nvim-lua"] => nvim_lua::lint_repository(Path::new(".")),
         ["launch-guard"] => launch_guard::lint_repository(Path::new(".")),
         ["gh-guard"] => gh_guard::lint_repository(Path::new(".")),
         ["schema-fixtures"] => schema_fixtures::lint_repository(Path::new(".")),

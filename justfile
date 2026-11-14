@@ -3,7 +3,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Every check, as CI runs it.
-check: rust deny meta lua
+check: rust deny meta
 
 # Rust: format, lint and test.
 rust: fmt-check clippy test
@@ -20,89 +20,13 @@ clippy:
 test:
     cargo test --workspace --locked
 
-# The Neovim client: format, lint and type-check the Lua, then run its specs against the core.
-lua: lua-fmt-check lua-lint lua-types lua-test
-
-lua-fmt:
-    stylua lua plugin spec build.lua
-
-lua-fmt-check:
-    stylua --check lua plugin spec build.lua
-
-lua-lint:
-    selene lua plugin spec build.lua
-
-# LuaLS's type check, against the Lua API of the nvim on PATH; any warning fails it.
-lua-types:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # .luarc.json reads Neovim's Lua API from $VIMRUNTIME, the runtime of the nvim on PATH.
-    VIMRUNTIME="$(nvim --clean --headless --cmd 'lua io.stdout:write(os.getenv("VIMRUNTIME"))' --cmd 'qa!')"
-    export VIMRUNTIME
-    logs="$(mktemp -d)"
-    trap 'rm -rf "$logs"' EXIT
-    lua-language-server --check . --checklevel=Warning --logpath "$logs"
-
-# The specs: busted inside headless Neovim (through nlua), against the binary `cargo build` makes.
-lua-test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    rocks="$PWD/.rocks"
-    if [ ! -x "$rocks/bin/busted" ]; then
-        echo "lua-test: busted is not installed; run \`just lua-rocks\` once" >&2
-        exit 1
-    fi
-    if [ ! -f "$rocks/lualine.nvim/lua/lualine.lua" ]; then
-        echo "lua-test: lualine.nvim is not installed; run \`just lua-rocks\`" >&2
-        exit 1
-    fi
-    if [ ! -f "$rocks/diffview.nvim/lua/diffview/init.lua" ]; then
-        echo "lua-test: diffview.nvim is not installed; run \`just lua-rocks\`" >&2
-        exit 1
-    fi
-    cargo build --locked
-    export PATH="$rocks/bin:$PATH"
-    export LUA_PATH="$rocks/share/lua/5.1/?.lua;$rocks/share/lua/5.1/?/init.lua;;"
-    export LUA_CPATH="$rocks/lib/lua/5.1/?.so;;"
-    # nlua reads Lua from stdin when stdin is not a terminal: /dev/null keeps it from waiting.
-    busted </dev/null
-
-# Installs busted and nlua, pinned, into .rocks/ for `just lua-test`; lualine.nvim at a pinned
-# commit into .rocks/lualine.nvim, for the specs of the status strip's lualine component; and
-# diffview.nvim at a pinned commit into .rocks/diffview.nvim, for the specs of the review. Run it
-# once; running it again changes nothing.
-lua-rocks:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    luarocks --lua-version=5.1 --tree .rocks install busted 2.3.0-1
-    luarocks --lua-version=5.1 --tree .rocks install nlua 0.3.2-1
-    # lualine.nvim (MIT), the commit of 2026-05-31. Only that commit is fetched, and checked out
-    # again when the directory holds another.
-    lualine_sha=221ce6b2d999187044529f49da6554a92f740a96
-    lualine=.rocks/lualine.nvim
-    if [ "$(git -C "$lualine" rev-parse HEAD 2>/dev/null || true)" != "$lualine_sha" ]; then
-        rm -rf "$lualine"
-        git init --quiet "$lualine"
-        git -C "$lualine" fetch --quiet --depth 1 https://github.com/nvim-lualine/lualine.nvim "$lualine_sha"
-        git -C "$lualine" checkout --quiet FETCH_HEAD
-    fi
-    # diffview.nvim (MIT), the commit of 2024-06-13, fetched the same way.
-    diffview_sha=4516612fe98ff56ae0415a259ff6361a89419b0a
-    diffview=.rocks/diffview.nvim
-    if [ "$(git -C "$diffview" rev-parse HEAD 2>/dev/null || true)" != "$diffview_sha" ]; then
-        rm -rf "$diffview"
-        git init --quiet "$diffview"
-        git -C "$diffview" fetch --quiet --depth 1 https://github.com/sindrets/diffview.nvim "$diffview_sha"
-        git -C "$diffview" checkout --quiet FETCH_HEAD
-    fi
-
 # Advisories, bans, licenses and sources.
 deny:
     cargo deny check
 
-# Spelling, workflows, vocabulary, layers, the client boundary, the launch guard, the gh guard,
-# the schema fixtures, commit messages and the agent guard.
-meta range="origin/main..HEAD": typos workflows vocab layers client-boundary launch-guard gh-guard schema-fixtures (commit-lint range) guard-test
+# Spelling, workflows, vocabulary, layers, the Lua the core sends to Neovim, the launch guard, the
+# gh guard, the schema fixtures, commit messages and the agent guard.
+meta range="origin/main..HEAD": typos workflows vocab layers nvim-lua launch-guard gh-guard schema-fixtures (commit-lint range) guard-test
 
 # Spelling over the given files, or the whole tree; files the config excludes stay excluded when named.
 typos *files:
@@ -119,18 +43,18 @@ vocab:
 layers:
     cargo xtask layers
 
-# The Neovim client: only core.lua and install.lua start processes, only sidebar.lua, tabs.lua,
-# terminal.lua and review.lua touch windows, tabs and buffers, fleet.lua and render.lua are pure.
-client-boundary:
-    cargo xtask client-boundary
+# The only Lua is the code the core sends to Neovim: it lives in src/domain/nvim/, loads no module
+# and starts no process, so orca-term needs no Neovim plugin (ADR 0014).
+nvim-lua:
+    cargo xtask nvim-lua
 
 # No launch of an agent bypasses permissions: the forbidden flags and modes are named only in the
 # run-time guard, src/domain/launch.rs.
 launch-guard:
     cargo xtask launch-guard
 
-# The GitHub CLI runs only from `pr refresh`: only src/ops/pr_refresh.rs names gh, and the Neovim
-# client never does.
+# The GitHub CLI runs only from the pr ops (src/ops/pr_refresh.rs and src/ops/pr_create.rs name
+# it), and only `worktree push` pushes, never forced.
 gh-guard:
     cargo xtask gh-guard
 
